@@ -194,18 +194,27 @@ class VisionProcessor:
             raise
 
 
-def parse_order_text(extracted_text: str) -> List[Dict]:
+def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) -> List[Dict]:
     """
     Parse extracted text into structured order data
     Supports multiple order formats (Ford, S&S Truck Parts, etc.)
     
     Args:
         extracted_text: Raw text extracted from PDF
+        gemini_api_key: Optional Gemini API key for LLM-based parsing
         
     Returns:
         List of dictionaries representing order items
     """
     import re
+    
+    # Try Gemini parsing first if API key is provided
+    if gemini_api_key:
+        gemini_items = parse_order_with_gemini(extracted_text, gemini_api_key)
+        if gemini_items:
+            return gemini_items
+    
+    # Fallback to regex-based parsing
     
     items = []
     lines = extracted_text.split('\n')
@@ -544,3 +553,88 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
                 continue
     
     return items
+
+
+def parse_order_with_gemini(text: str, api_key: str) -> List[Dict]:
+    """
+    Use Google Gemini to parse order text into structured data
+    
+    Args:
+        text: Raw extracted text from the document
+        api_key: Gemini API key
+        
+    Returns:
+        List of dictionaries containing order items
+    """
+    try:
+        import google.generativeai as genai
+        
+        # Configure Gemini
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        # Create prompt for structured extraction
+        prompt = f"""Extract order information from this purchase order text and return it as JSON.
+
+Required fields:
+- Purchase Order Number
+- Date of Order (format: MM/DD/YY or MM/DD/YYYY)
+- Ship By Date (format: MM/DD/YY or MM/DD/YYYY)
+- Ship To (full address)
+- Invoice Address (full address)
+- Vendor (name or code)
+- Shipping Instructions
+- Comments
+- Items (array of objects with: Code, Item, Quantity, Unit Price, Total)
+
+Return ONLY valid JSON in this exact format:
+{{
+  "items": [
+    {{
+      "Purchase Order Number": "...",
+      "Date of Order": "...",
+      "Ship By Date": "...",
+      "Ship To": "...",
+      "Invoice Address": "...",
+      "Vendor": "...",
+      "Shipping Instructions": "...",
+      "Comments": "...",
+      "Code": "...",
+      "Item": "...",
+      "Quantity": 0,
+      "Unit Price": 0.0,
+      "Total": 0.0
+    }}
+  ]
+}}
+
+Purchase Order Text:
+{text}
+
+JSON Output:"""
+
+        # Generate response
+        response = model.generate_content(prompt)
+        response_text = response.text.strip()
+        
+        # Try to extract JSON from response
+        # Sometimes Gemini adds markdown code blocks
+        if '```json' in response_text:
+            response_text = response_text.split('```json')[1].split('```')[0].strip()
+        elif '```' in response_text:
+            response_text = response_text.split('```')[1].split('```')[0].strip()
+        
+        # Parse JSON
+        import json
+        result = json.loads(response_text)
+        
+        # Return items array
+        if 'items' in result and isinstance(result['items'], list):
+            return result['items']
+        else:
+            # If items not in expected format, return single item
+            return [result] if isinstance(result, dict) else []
+            
+    except Exception as e:
+        print(f"Gemini parsing error: {e}")
+        return []

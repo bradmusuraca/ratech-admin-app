@@ -65,7 +65,9 @@ if page == "Order Processing":
         
         # Parse order data
         with st.spinner("Parsing order data..."):
-            order_items = parse_order_text(extracted_text)
+            # Get Gemini API key for LLM-based parsing
+            gemini_key = os.getenv('GEMINI_API_KEY')
+            order_items = parse_order_text(extracted_text, gemini_api_key=gemini_key)
             
             if order_items:
                 df = pd.DataFrame(order_items)
@@ -320,6 +322,61 @@ elif page == "Settings":
                 load_dotenv(override=True)
                 st.success("Credentials cleared")
                 st.rerun()
+    
+    st.divider()
+    
+    st.subheader("Gemini AI (Optional)")
+    st.info("Add a Gemini API key to enable AI-powered parsing for better accuracy with complex formats.")
+    
+    # Show current status
+    current_gemini = os.getenv('GEMINI_API_KEY')
+    if current_gemini:
+        st.success("✅ Gemini API key is configured")
+    else:
+        st.info("ℹ️ Gemini API key not configured (optional - will use regex parsing)")
+    
+    gemini_key = st.text_input(
+        "Gemini API Key",
+        value=current_gemini if current_gemini else "",
+        type="password",
+        help="Enter your Gemini API key from Google AI Studio"
+    )
+    
+    if st.button("Save Gemini Key"):
+        if gemini_key:
+            # Update .env file
+            env_file = ".env"
+            if os.path.exists(env_file):
+                # Read existing env
+                with open(env_file, 'r') as f:
+                    lines = f.readlines()
+                
+                # Update or add GEMINI_API_KEY
+                updated = False
+                new_lines = []
+                for line in lines:
+                    if line.startswith('GEMINI_API_KEY='):
+                        new_lines.append(f'GEMINI_API_KEY={gemini_key}\n')
+                        updated = True
+                    else:
+                        new_lines.append(line)
+                
+                if not updated:
+                    new_lines.append(f'\nGEMINI_API_KEY={gemini_key}\n')
+                
+                with open(env_file, 'w') as f:
+                    f.writelines(new_lines)
+            else:
+                # Create new .env file
+                with open(env_file, 'w') as f:
+                    f.write(f'GEMINI_API_KEY={gemini_key}\n')
+            
+            # Reload environment
+            load_dotenv(override=True)
+            st.success("Gemini API key saved")
+            st.rerun()
+        else:
+            st.warning("Please enter a Gemini API key")
     
     st.divider()
     

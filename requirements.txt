@@ -1,5 +1,6 @@
 streamlit
 google-cloud-vision
+google-generativeai
 python-dotenv
 pypdf
 pandas
