@@ -312,7 +312,7 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
             order_info['Comments'] = ' | '.join(comments)
         
         # Find items - look for ITEM- pattern
-        for line in lines:
+        for idx, line in enumerate(lines):
             line = line.strip()
             if 'ITEM-' in line:
                 # Extract item code
@@ -321,7 +321,6 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
                     code = item_match.group(1)
                     
                     # Look for quantity and price in subsequent lines
-                    idx = lines.index(line)
                     for i in range(idx + 1, min(idx + 10, len(lines))):
                         next_line = lines[i].strip()
                         
