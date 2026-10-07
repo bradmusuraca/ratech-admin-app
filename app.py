@@ -208,18 +208,22 @@ if page == "Order Processing":
         
         # Calculate totals (for new entries)
         if not edited_df.empty:
+            # Convert numeric columns to proper types first
+            if 'Quantity' in edited_df.columns:
+                edited_df['Quantity'] = pd.to_numeric(edited_df['Quantity'], errors='coerce').fillna(0)
+            if 'Unit Price' in edited_df.columns:
+                edited_df['Unit Price'] = pd.to_numeric(edited_df['Unit Price'], errors='coerce').fillna(0)
+            if 'Price' in edited_df.columns:
+                edited_df['Price'] = pd.to_numeric(edited_df['Price'], errors='coerce').fillna(0)
+            if 'Total' in edited_df.columns:
+                edited_df['Total'] = pd.to_numeric(edited_df['Total'], errors='coerce').fillna(0)
+            
             if 'Unit Price' in edited_df.columns and 'Quantity' in edited_df.columns:
                 # Only calculate for rows where Total is empty or zero
                 mask = (edited_df['Total'].isna()) | (edited_df['Total'] == 0)
-                # Convert to numeric, coerce errors to NaN, then fill with 0
-                edited_df.loc[mask, 'Quantity'] = pd.to_numeric(edited_df.loc[mask, 'Quantity'], errors='coerce').fillna(0)
-                edited_df.loc[mask, 'Unit Price'] = pd.to_numeric(edited_df.loc[mask, 'Unit Price'], errors='coerce').fillna(0)
                 edited_df.loc[mask, 'Total'] = edited_df.loc[mask, 'Quantity'] * edited_df.loc[mask, 'Unit Price']
             elif 'Price' in edited_df.columns and 'Quantity' in edited_df.columns:
                 mask = (edited_df['Total'].isna()) | (edited_df['Total'] == 0)
-                # Convert to numeric, coerce errors to NaN, then fill with 0
-                edited_df.loc[mask, 'Quantity'] = pd.to_numeric(edited_df.loc[mask, 'Quantity'], errors='coerce').fillna(0)
-                edited_df.loc[mask, 'Price'] = pd.to_numeric(edited_df.loc[mask, 'Price'], errors='coerce').fillna(0)
                 edited_df.loc[mask, 'Total'] = edited_df.loc[mask, 'Quantity'] * edited_df.loc[mask, 'Price']
         
         # Update session state with edited data
