@@ -284,73 +284,64 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
     
     elif is_ss_truck:
         # S&S Truck Parts format parsing
-        # Look for PO number in the format "P059502" or similar
-        po_match = re.search(r'\*\*\s*PURCHASE ORDER\s*\*\*\s*\n\s*(\w+\d+)', full_text)
-        if not po_match:
-            # Try alternate pattern
-            po_match = re.search(r'P\.O\.\s*DATE\s+\d+/\d+/\d+\s+(\w+\d+)', full_text)
+        # The headers are at the top, data appears later in the document
+        
+        # Extract PO number - look for pattern like "** PURCHASE ORDER **\nP059502"
+        po_match = re.search(r'\*\*\s*PURCHASE ORDER\s*\*\*\s*\n\s*([P|p]\d+)', full_text)
         if po_match:
             order_info['Purchase Order Number'] = po_match.group(1)
         
-        # Extract PO date - look for pattern like "P.O. DATE 10/06/26"
-        date_match = re.search(r'P\.O\.\s*DATE\s*(\d{1,2}/\d{1,2}/\d{2,4})', full_text)
+        # Extract PO date - look for date before vendor number
+        # Pattern: "10/06/26\n101050" (date on one line, vendor on next)
+        date_match = re.search(r'(\d{1,2}/\d{1,2}/\d{2,4})\s*\n\s*(\d{6})', full_text)
         if date_match:
             order_info['Date of Order'] = date_match.group(1)
+            order_info['Vendor'] = date_match.group(2)
         
-        # Extract delivery date - look for pattern like "DELIVERY DATE 10/22/26"
-        delivery_match = re.search(r'DELIVERY DATE\s*(\d{1,2}/\d{1,2}/\d{2,4})', full_text)
+        # Extract delivery date from "DELIVER ON" line
+        delivery_match = re.search(r'DELIVER ON\s*(\d{1,2}/\d{1,2}/\d{2,4})', full_text)
         if delivery_match:
             order_info['Ship By Date'] = delivery_match.group(1)
         
-        # Extract vendor number
-        vendor_match = re.search(r'VENDOR\s*(\d+)', full_text)
-        if vendor_match:
-            order_info['Vendor'] = vendor_match.group(1)
+        # Extract Ship To - look for address block after "RATECH"
+        ship_to_match = re.search(r'RATECH\s*\n\s*(.*?)\s*\n\s*S&S Truck Parts', full_text, re.DOTALL)
+        if ship_to_match:
+            ship_to_lines = [line.strip() for line in ship_to_match.group(1).split('\n') if line.strip()]
+            # Include RATECH in the address
+            order_info['Ship To'] = 'RATECH ' + ' '.join(ship_to_lines)
         
-        # Extract Ship To
-        for i, line in enumerate(lines):
-            if 'SHIP TO:' in line:
-                ship_to_lines = []
-                for j in range(i + 1, min(i + 4, len(lines))):
-                    if lines[j].strip() and not any(x in lines[j] for x in ['BILL TO:', 'ORDER PLACED']):
-                        ship_to_lines.append(lines[j].strip())
-                    elif 'BILL TO:' in lines[j] or 'ORDER PLACED' in lines[j]:
-                        break
-                order_info['Ship To'] = ' '.join(ship_to_lines)
-                break
+        # Extract Bill To (Invoice Address) - S&S Truck Parts address
+        bill_to_match = re.search(r'S&S Truck Parts\s*\n\s*(9401.*?U\.S\.A\.)', full_text, re.DOTALL)
+        if bill_to_match:
+            bill_to_lines = [line.strip() for line in bill_to_match.group(1).split('\n') if line.strip()]
+            order_info['Invoice Address'] = 'S&S Truck Parts ' + ' '.join(bill_to_lines)
         
-        # Extract Bill To
-        for i, line in enumerate(lines):
-            if 'BILL TO:' in line:
-                bill_to_lines = []
-                for j in range(i + 1, min(i + 4, len(lines))):
-                    if lines[j].strip() and not any(x in lines[j] for x in ['ORDER PLACED', 'SHIP VIA']):
-                        bill_to_lines.append(lines[j].strip())
-                    elif 'ORDER PLACED' in lines[j] or 'SHIP VIA' in lines[j]:
-                        break
-                order_info['Invoice Address'] = ' '.join(bill_to_lines)
-                break
-        
-        # Extract shipping info
-        ship_via_match = re.search(r'SHIP VIA\s*(.+?)(?:FREIGHT|TERMS|$)', full_text)
+        # Extract Shipping Instructions - look for DAYTON FREIGHT
+        ship_via_match = re.search(r'(DAYTON FREIGHT|FEDEX|UPS|UPS GROUND)', full_text)
         if ship_via_match:
             order_info['Shipping Instructions'] = ship_via_match.group(1).strip()
         
-        # Extract notes/comments
-        notes_idx = -1
-        for i, line in enumerate(lines):
-            if 'Seller shall acknowledge' in line:
-                notes_idx = i
-                break
+        # Extract Comments - get freight terms and terms
+        comments = []
         
-        if notes_idx > 0:
-            notes_lines = []
-            for j in range(notes_idx, min(notes_idx + 10, len(lines))):
-                if lines[j].strip() and 'Print Date' not in lines[j]:
-                    notes_lines.append(lines[j].strip())
-                elif 'Print Date' in lines[j]:
-                    break
-            order_info['Comments'] = ' '.join(notes_lines)
+        # Look for "Collect" or "Prepaid" for freight terms
+        freight_match = re.search(r'(Collect|Prepaid|FOB Factory)', full_text)
+        if freight_match:
+            comments.append(f"Freight: {freight_match.group(1)}")
+        
+        # Look for NET terms
+        terms_match = re.search(r'NET \d+ DAYS [A-Z]+', full_text)
+        if terms_match:
+            comments.append(terms_match.group(0))
+        
+        # Add the shipping notes from the top section
+        notes_match = re.search(r'Seller shall acknowledge order.*?billed back to shipper\.', full_text, re.DOTALL)
+        if notes_match:
+            notes_text = re.sub(r'\s+', ' ', notes_match.group(0)).strip()
+            comments.append(notes_text)
+        
+        if comments:
+            order_info['Comments'] = ' | '.join(comments)
     
     # Try to detect Ford order format for items
     for line in lines:
@@ -433,9 +424,8 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
             #                       DELIVER ON 10/22/26    1500.000 EA            .7300  
             #       1095.00"
             
-            # Find lines that start with a number followed by ITEM-
-            i = 0
-            while i < len(lines):
+            # Find the first line that starts an item (number followed by ITEM-)
+            for i in range(len(lines)):
                 line = lines[i].strip()
                 
                 # Check if this line starts an item (number followed by ITEM-)
@@ -508,20 +498,14 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
                             # Collect description lines (skip metadata)
                             if current_line and not re.search(r'CAT NBR|PKG CODE', current_line):
                                 description_lines.append(current_line)
-                            elif 'CAT NBR' in current_line or 'PKG CODE' in current_line:
-                                # Skip metadata lines
-                                pass
                             
                             j += 1
                         
-                        # Move past this item's lines
-                        i = j
-                        continue
+                        # Only process the first item we find, then exit
+                        break
                         
                     except (ValueError, IndexError, AttributeError) as e:
-                        pass
-                
-                i += 1
+                        break
     
     # If Ford parsing found items, return them
     if items:
