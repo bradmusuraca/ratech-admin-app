@@ -93,12 +93,63 @@ if page == "Order Processing":
             key="order_editor"
         )
         
-        # Calculate totals
+        # Validation: Check for calculation errors
+        if not edited_df.empty:
+            errors = []
+            price_col = 'Unit Price' if 'Unit Price' in edited_df.columns else ('Price' if 'Price' in edited_df.columns else None)
+            
+            if price_col and 'Quantity' in edited_df.columns and 'Total' in edited_df.columns:
+                for idx, row in edited_df.iterrows():
+                    try:
+                        qty = float(row['Quantity']) if pd.notna(row['Quantity']) else 0
+                        price = float(row[price_col]) if pd.notna(row[price_col]) else 0
+                        total = float(row['Total']) if pd.notna(row['Total']) else 0
+                        calculated_total = qty * price
+                        
+                        # Allow small floating point differences
+                        if abs(calculated_total - total) > 0.01:
+                            errors.append({
+                                'Row': idx,
+                                'Item': row.get('Item', 'Unknown'),
+                                'Quantity': qty,
+                                'Price': price,
+                                'Total Listed': total,
+                                'Total Calculated': calculated_total,
+                                'Difference': calculated_total - total
+                            })
+                    except (ValueError, TypeError):
+                        continue
+            
+            if errors:
+                st.error(f"⚠️ Found {len(errors)} calculation error(s):")
+                error_df = pd.DataFrame(errors)
+                st.dataframe(error_df, use_container_width=True)
+                
+                st.subheader("Correction Options")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if st.button("Auto-Calculate Totals", type="primary"):
+                        if price_col and 'Quantity' in edited_df.columns:
+                            edited_df['Total'] = edited_df['Quantity'] * edited_df[price_col]
+                        st.success("✅ Totals have been recalculated")
+                        st.rerun()
+                
+                with col2:
+                    if st.button("Keep Original Totals"):
+                        st.info("Original totals will be kept. Please review manually.")
+            else:
+                st.success("✅ All calculations are correct!")
+        
+        # Calculate totals (for new entries)
         if not edited_df.empty:
             if 'Unit Price' in edited_df.columns and 'Quantity' in edited_df.columns:
-                edited_df['Total'] = edited_df['Quantity'] * edited_df['Unit Price']
+                # Only calculate for rows where Total is empty or zero
+                mask = (edited_df['Total'].isna()) | (edited_df['Total'] == 0)
+                edited_df.loc[mask, 'Total'] = edited_df.loc[mask, 'Quantity'] * edited_df.loc[mask, 'Unit Price']
             elif 'Price' in edited_df.columns and 'Quantity' in edited_df.columns:
-                edited_df['Total'] = edited_df['Quantity'] * edited_df['Price']
+                mask = (edited_df['Total'].isna()) | (edited_df['Total'] == 0)
+                edited_df.loc[mask, 'Total'] = edited_df.loc[mask, 'Quantity'] * edited_df.loc[mask, 'Price']
         
         # Export options
         col1, col2 = st.columns(2)
