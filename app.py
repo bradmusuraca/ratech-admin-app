@@ -72,7 +72,7 @@ if page == "Order Processing":
             if order_items:
                 df = pd.DataFrame(order_items)
                 # Reorder columns for better display
-                cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments', 'Code', 'Item', 'Quantity', 'Unit Price', 'Total']
+                cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments', 'Inventory Item', 'Description', 'Quantity', 'Unit Price', 'Total']
                 # Only include columns that exist
                 cols = [col for col in cols if col in df.columns]
                 df = df[cols]
@@ -80,7 +80,7 @@ if page == "Order Processing":
             else:
                 st.warning("⚠️ Could not automatically parse order items.")
                 st.info("📝 Please enter data manually using the editable table below.")
-                df = pd.DataFrame(columns=["Purchase Order Number", "Date of Order", "Ship By Date", "Ship To", "Invoice Address", "Vendor", "Shipping Instructions", "Comments", "Code", "Item", "Quantity", "Unit Price", "Total"])
+                df = pd.DataFrame(columns=["Purchase Order Number", "Date of Order", "Ship By Date", "Ship To", "Invoice Address", "Vendor", "Shipping Instructions", "Comments", "Inventory Item", "Description", "Quantity", "Unit Price", "Total"])
                 # Add one empty row for manual entry
                 df.loc[0] = [""] * len(df.columns)
         
@@ -167,7 +167,7 @@ if page == "Order Processing":
                         if abs(calculated_total - total) > 0.01:
                             errors.append({
                                 'Row': idx,
-                                'Item': row.get('Item', 'Unknown'),
+                                'Item': row.get('Description', 'Unknown'),
                                 'Quantity': qty,
                                 'Price': price,
                                 'Total Listed': total,

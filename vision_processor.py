@@ -324,11 +324,22 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
         for idx, line in enumerate(lines):
             line = line.strip()
             if 'ITEM-' in line:
-                # Extract item code
-                item_match = re.search(r'ITEM-\s*(\S+)', line)
-                if item_match:
-                    code = item_match.group(1)
-                    
+                # Extract CAT NBR (this is the inventory item code)
+                # Look for CAT NBR in subsequent lines
+                code = ""
+                for i in range(idx + 1, min(idx + 10, len(lines))):
+                    next_line = lines[i].strip()
+                    cat_match = re.search(r'CAT NBR\s*-\s*(\d+)', next_line)
+                    if cat_match:
+                        code = cat_match.group(1)
+                        break
+                
+                # Fallback to ITEM- number if CAT NBR not found
+                if not code:
+                    item_match = re.search(r'ITEM-\s*(\S+)', line)
+                    code = item_match.group(1) if item_match else ""
+                
+                if code:
                     # Look for quantity and price in subsequent lines
                     for i in range(idx + 1, min(idx + 10, len(lines))):
                         next_line = lines[i].strip()
@@ -374,8 +385,8 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
                                     total = unit_price * quantity
                             
                             item = {
-                                'Code': code,
-                                'Item': description,
+                                'Inventory Item': code,
+                                'Description': description,
                                 'Quantity': quantity,
                                 'Unit Price': unit_price,
                                 'Total': total
