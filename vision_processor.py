@@ -302,7 +302,7 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
         
         # Extract PO date and vendor - look for "10/06/26\n101050" pattern
         # The date appears before the 6-digit vendor number
-        date_vendor_match = re.search(r'(\d{2}/\d{2}/\d{2})\s*\n\s*(\d{6})', full_text)
+        date_vendor_match = re.search(r'(\d{1,2}/\d{1,2}/\d{2,4})\s*\n\s*(\d{6})', full_text)
         if date_vendor_match:
             order_info['Date of Order'] = date_vendor_match.group(1)
             order_info['Vendor'] = date_vendor_match.group(2)
@@ -313,9 +313,9 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
             order_info['Ship By Date'] = delivery_match.group(1)
         
         # Extract Ship To and Bill To - both are S&S Truck Parts
-        # The format is: S&S Truck Parts\n9401 Georgia Street Suite 1\nCrown Point IN 46307\nU.S.A.
-        # Find all occurrences of S&S Truck Parts followed by address
-        ss_matches = re.findall(r'S&S Truck Parts\s*\n\s*(9401.*?U\.S\.A\.)', full_text, re.DOTALL)
+        # Escape the & in S&S for regex
+        ss_pattern = r'S\&S Truck Parts\s*\n\s*(9401.*?U\.S\.A\.)'
+        ss_matches = re.findall(ss_pattern, full_text, re.DOTALL)
         if ss_matches:
             # Use the first match (they're the same address)
             ss_address_text = ss_matches[0].strip()
