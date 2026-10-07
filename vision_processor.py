@@ -210,7 +210,57 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
     items = []
     lines = extracted_text.split('\n')
     
-    # Try to detect Ford order format
+    # Extract order header information
+    order_info = {
+        'Purchase Order Number': '',
+        'Date of Order': '',
+        'Ship By Date': '',
+        'Ship To': '',
+        'Invoice Address': ''
+    }
+    
+    # Extract header info
+    for line in lines:
+        line = line.strip()
+        
+        # Purchase Order number
+        po_match = re.search(r'No\s*-\s*(\d+(?:-\d+)?)', line)
+        if po_match:
+            order_info['Purchase Order Number'] = po_match.group(1)
+        
+        # Date of order
+        date_match = re.search(r'Date of order:\s*(\d{1,2}/\d{1,2}/\d{4})', line)
+        if date_match:
+            order_info['Date of Order'] = date_match.group(1)
+        
+        # Ship by date
+        ship_match = re.search(r'Ship No Later Than\s*(\d{1,2}/\d{1,2}/\d{4})', line)
+        if ship_match:
+            order_info['Ship By Date'] = ship_match.group(1)
+        
+        # Ship to address (capture multiple lines)
+        if 'SHIP TO:' in line:
+            ship_to_idx = lines.index(line)
+            ship_to_lines = []
+            for i in range(ship_to_idx + 1, min(ship_to_idx + 4, len(lines))):
+                if lines[i].strip() and not any(x in lines[i] for x in ['INVOICE', 'Payment', 'Phone', 'E-mail']):
+                    ship_to_lines.append(lines[i].strip())
+                elif 'Phone:' in lines[i] or 'E-mail:' in lines[i]:
+                    break
+            order_info['Ship To'] = ' '.join(ship_to_lines)
+        
+        # Invoice address
+        if 'INVOICE:' in line:
+            invoice_idx = lines.index(line)
+            invoice_lines = []
+            for i in range(invoice_idx + 1, min(invoice_idx + 4, len(lines))):
+                if lines[i].strip() and not any(x in lines[i] for x in ['Submit', 'Email', 'Payment']):
+                    invoice_lines.append(lines[i].strip())
+                elif 'Submit' in lines[i] or 'Email' in lines[i]:
+                    break
+            order_info['Invoice Address'] = ' '.join(invoice_lines)
+    
+    # Try to detect Ford order format for items
     for line in lines:
         line = line.strip()
         if not line:
@@ -239,10 +289,12 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
                     continue
                 unit_price = float(unit_price_match.group(1).replace(',', ''))
                 
-                # Extract total price (second USD price)
-                total_price_matches = re.findall(r'(\d+[\.,]\d+)\s+USD', line)
+                # Extract total price (second USD price) - handle commas properly
+                total_price_matches = re.findall(r'(\d{1,3}[\.,]\d{2,4})\s+USD', line)
                 if len(total_price_matches) >= 2:
-                    total_price = float(total_price_matches[1].replace(',', ''))
+                    # Use the last match as total price (to get the larger value)
+                    total_price_str = total_price_matches[-1].replace(',', '')
+                    total_price = float(total_price_str)
                 else:
                     total_price = unit_price * quantity
                 
@@ -260,13 +312,18 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
                 else:
                     description = line
                 
-                items.append({
+                item = {
                     'Code': code,
                     'Item': description,
                     'Quantity': quantity,
                     'Unit Price': unit_price,
                     'Total': total_price
-                })
+                }
+                
+                # Add order info to each item
+                item.update(order_info)
+                
+                items.append(item)
                 
             except (ValueError, IndexError, AttributeError) as e:
                 # If Ford parsing fails, try generic parsing
@@ -298,13 +355,15 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
                     item_name = re.sub(r'[\$]?\d+[\.,]\d+\s*(USD)?.*', '', line).strip()
                     
                     if item_name:
-                        items.append({
+                        item = {
                             'Code': '',
                             'Item': item_name,
                             'Quantity': quantity,
                             'Unit Price': price,
                             'Total': price * quantity
-                        })
+                        }
+                        item.update(order_info)
+                        items.append(item)
             except (ValueError, IndexError):
                 continue
     

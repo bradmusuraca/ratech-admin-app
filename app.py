@@ -69,9 +69,14 @@ if page == "Order Processing":
             
             if order_items:
                 df = pd.DataFrame(order_items)
+                # Reorder columns for better display
+                cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Code', 'Item', 'Quantity', 'Unit Price', 'Total']
+                # Only include columns that exist
+                cols = [col for col in cols if col in df.columns]
+                df = df[cols]
             else:
                 st.warning("Could not automatically parse order items. Please enter data manually.")
-                df = pd.DataFrame(columns=["Code", "Item", "Quantity", "Unit Price", "Total"])
+                df = pd.DataFrame(columns=["Purchase Order Number", "Date of Order", "Ship By Date", "Ship To", "Invoice Address", "Code", "Item", "Quantity", "Unit Price", "Total"])
         
         st.session_state.processed_df = df
         
@@ -90,9 +95,9 @@ if page == "Order Processing":
         
         # Calculate totals
         if not edited_df.empty:
-            if 'Unit Price' in edited_df.columns:
+            if 'Unit Price' in edited_df.columns and 'Quantity' in edited_df.columns:
                 edited_df['Total'] = edited_df['Quantity'] * edited_df['Unit Price']
-            elif 'Price' in edited_df.columns:
+            elif 'Price' in edited_df.columns and 'Quantity' in edited_df.columns:
                 edited_df['Total'] = edited_df['Quantity'] * edited_df['Price']
         
         # Export options
