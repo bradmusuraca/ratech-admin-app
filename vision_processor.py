@@ -313,47 +313,69 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
         if comments_match:
             order_info['Comments'] = comments_match.group(1).strip()
         
-        # Find items - look for pattern like "0001 RAT-10005 6 PINION TOOL..."
-        # Pattern: line number, part number, quantity, description, price
-        # Split text by line numbers to avoid greedy matching
+        # Find items - Summit Racing email format has items across multiple lines
+        # Pattern: line_number \n part_number \n quantity \n description... \n price \n discount \n ext_price
         lines_text = extracted_text.split('\n')
         
         for i, line in enumerate(lines_text):
-            # Look for lines that start with a number followed by RAT-
-            if re.match(r'^\s*\d+\s+RAT-\d+', line):
+            # Look for lines that are just numbers (line numbers like "0001", "0002", etc.)
+            if re.match(r'^\s*\d{4}\s*$', line):
                 try:
-                    # Extract components
-                    match = re.match(r'^\s*(\d+)\s+(RAT-\d+)\s+(\d+)\s+(.*?)$', line)
-                    if match:
-                        line_num, part_num, qty_str, description = match.groups()
-                        
-                        # Look ahead for price (usually on same line or next line)
-                        price_line = line
-                        if '$' not in price_line and i + 1 < len(lines_text):
-                            price_line = lines_text[i + 1]
-                        
-                        # Extract prices
-                        price_match = re.search(r'\$([\d.]+)\s+0%\s+\$([\d.]+)', price_line)
-                        if price_match:
-                            unit_price_str, total_str = price_match.groups()
+                    # Get the part number (next line with RAT- prefix)
+                    if i + 1 < len(lines_text):
+                        part_line = lines_text[i + 1].strip()
+                        part_match = re.match(r'^(RAT-\d+)', part_line)
+                        if part_match:
+                            part_num = part_match.group(1)
                             
-                            # Clean up part number (remove RAT- prefix)
-                            inventory_item = re.sub(r'^RAT-', '', part_num)
-                            
-                            # Convert to numbers
-                            quantity = safe_int(qty_str)
-                            unit_price = safe_float(unit_price_str)
-                            total = safe_float(total_str)
-                            
-                            item = {
-                                'Inventory Item': inventory_item,
-                                'Description': description.strip(),
-                                'Quantity': quantity,
-                                'Unit Price': unit_price,
-                                'Total': total
-                            }
-                            item.update(order_info)
-                            items.append(item)
+                            # Get quantity (next line with just a number)
+                            if i + 2 < len(lines_text):
+                                qty_line = lines_text[i + 2].strip()
+                                if re.match(r'^\d+$', qty_line):
+                                    quantity = safe_int(qty_line)
+                                    
+                                    # Get description (next few lines until price)
+                                    description_lines = []
+                                    j = i + 3
+                                    while j < len(lines_text) and j < i + 10:
+                                        desc_line = lines_text[j].strip()
+                                        # Stop if we hit a price or the next item
+                                        if '$' in desc_line or re.match(r'^\d{4}', desc_line):
+                                            break
+                                        if desc_line and not re.match(r'^\d+%$', desc_line):
+                                            description_lines.append(desc_line)
+                                        j += 1
+                                    
+                                    description = ' '.join(description_lines)
+                                    
+                                    # Get price (next line with $)
+                                    unit_price = 0.0
+                                    total = 0.0
+                                    if j < len(lines_text):
+                                        price_line = lines_text[j].strip()
+                                        price_match = re.search(r'\$([\d.]+)', price_line)
+                                        if price_match:
+                                            unit_price = safe_float(price_match.group(1))
+                                        
+                                        # Get total (next line with $ after discount)
+                                        if j + 2 < len(lines_text):
+                                            total_line = lines_text[j + 2].strip()
+                                            total_match = re.search(r'\$([\d.]+)', total_line)
+                                            if total_match:
+                                                total = safe_float(total_match.group(1))
+                                    
+                                    # Clean up part number (remove RAT- prefix)
+                                    inventory_item = re.sub(r'^RAT-', '', part_num)
+                                    
+                                    item = {
+                                        'Inventory Item': inventory_item,
+                                        'Description': description,
+                                        'Quantity': quantity,
+                                        'Unit Price': unit_price,
+                                        'Total': total
+                                    }
+                                    item.update(order_info)
+                                    items.append(item)
                 except (ValueError, IndexError):
                     continue
     
