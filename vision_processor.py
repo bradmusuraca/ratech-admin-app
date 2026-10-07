@@ -208,7 +208,7 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
     """
     import re
     
-    # Try Gemini parsing first if API key is provided
+    # Always try Gemini first if API key is provided
     if gemini_api_key:
         print("DEBUG: Using Gemini API for parsing")
         gemini_items = parse_order_with_gemini(extracted_text, gemini_api_key)
@@ -216,12 +216,11 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
             print(f"DEBUG: Gemini returned {len(gemini_items)} items")
             return gemini_items
         else:
-            print("DEBUG: Gemini returned no items, falling back to regex")
-    else:
-        print("DEBUG: No Gemini API key provided, using regex fallback")
+            print("DEBUG: Gemini returned no items")
+            return []
     
-    # Fallback to simple regex-based parsing
-    print("DEBUG: Using regex fallback parsing")
+    # Only use regex as last resort if no Gemini key
+    print("DEBUG: No Gemini API key provided, using regex fallback")
     items = []
     lines = extracted_text.split('\n')
     
@@ -456,8 +455,8 @@ def parse_order_with_gemini(text: str, api_key: str) -> List[Dict]:
         # Create prompt for structured extraction
         prompt = f"""Extract order information from this purchase order text and return it as JSON.
 
-Required fields:
-- Purchase Order Number
+Required fields for each item:
+- Purchase Order Number (from the order)
 - Date of Order (format: MM/DD/YY or MM/DD/YYYY)
 - Ship By Date (format: MM/DD/YY or MM/DD/YYYY)
 - Ship To (full address)
@@ -465,7 +464,15 @@ Required fields:
 - Vendor (name or code)
 - Shipping Instructions
 - Comments
-- Items (array of objects with: Code, Item, Quantity, Unit Price, Total)
+- Inventory Item (part number or code - remove any "RAT -" prefix if present)
+- Description (item description)
+- Quantity (numeric)
+- Unit Price (numeric)
+- Total (numeric)
+
+Important:
+- If an item code starts with "RAT -" or "RAT-", remove that prefix and keep only the actual part number
+- Return ONLY valid JSON, no explanations
 
 Return ONLY valid JSON in this exact format:
 {{
@@ -479,8 +486,8 @@ Return ONLY valid JSON in this exact format:
       "Vendor": "...",
       "Shipping Instructions": "...",
       "Comments": "...",
-      "Code": "...",
-      "Item": "...",
+      "Inventory Item": "...",
+      "Description": "...",
       "Quantity": 0,
       "Unit Price": 0.0,
       "Total": 0.0
@@ -510,7 +517,13 @@ JSON Output:"""
         
         # Return items array
         if 'items' in result and isinstance(result['items'], list):
-            return result['items']
+            items = result['items']
+            # Clean up any "RAT -" prefixes that Gemini might have missed
+            for item in items:
+                if 'Inventory Item' in item and isinstance(item['Inventory Item'], str):
+                    # Remove "RAT -" or "RAT-" prefix
+                    item['Inventory Item'] = re.sub(r'^RAT\s*-\s*', '', item['Inventory Item'])
+            return items
         else:
             # If items not in expected format, return single item
             return [result] if isinstance(result, dict) else []
