@@ -230,88 +230,165 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
         'Comments': ''
     }
     
-    # Simple pattern matching for common fields
+    # Detect format type
     full_text = ' '.join(lines)
     
-    # Look for PO number
-    po_match = re.search(r'(?:PO|P\.O\.|PURCHASE ORDER)[\s#:\-]*([A-Z0-9\-]+)', full_text, re.IGNORECASE)
-    if po_match:
-        order_info['Purchase Order Number'] = po_match.group(1)
+    # Check if it's S&S Truck Parts format (has specific patterns)
+    is_ss_truck = 'S&S Truck Parts' in full_text or 'sandstruck.com' in full_text or 'SSPO' in full_text
     
-    # Look for dates (first date is usually order date)
-    dates = re.findall(r'\b\d{1,2}/\d{1,2}/\d{2,4}\b', full_text)
-    if dates:
-        order_info['Date of Order'] = dates[0]
-        if len(dates) > 1:
-            order_info['Ship By Date'] = dates[1]
-    
-    # Look for vendor name (usually first line with company name)
-    vendor_match = re.search(r'^([A-Z][a-zA-Z\s&]+(?:Parts|Company|Corp|Inc|LLC)?)', full_text, re.MULTILINE)
-    if vendor_match:
-        order_info['Vendor'] = vendor_match.group(1).strip()
-    
-    # Look for addresses (lines with street addresses)
-    address_lines = []
-    for line in lines:
-        if re.search(r'\d+\s+[A-Z][a-z]+\s+(?:St|Ave|Dr|Rd|Ln|Blvd)', line, re.IGNORECASE):
-            address_lines.append(line.strip())
-    
-    if len(address_lines) >= 2:
-        order_info['Ship To'] = address_lines[0]
-        order_info['Invoice Address'] = address_lines[1]
-    elif address_lines:
-        order_info['Ship To'] = address_lines[0]
-        order_info['Invoice Address'] = address_lines[0]
-    
-    # Look for shipping method
-    shipping_keywords = ['FEDEX', 'UPS', 'USPS', 'FREIGHT', 'TRUCK', 'DELIVERY']
-    for line in lines:
-        if any(keyword in line.upper() for keyword in shipping_keywords):
-            order_info['Shipping Instructions'] = line.strip()
-            break
-    
-    # Look for comments (text after "Notes:", "Comments:", etc.)
-    comment_match = re.search(r'(?:Notes|Comments|Special Instructions)[\s:]*(.+?)(?:\n|$)', full_text, re.IGNORECASE | re.DOTALL)
-    if comment_match:
-        order_info['Comments'] = comment_match.group(1).strip()
-    
-    # Try to find items - look for patterns like "Item: 5 x $20.00" or "Widget A - $10.00"
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
+    if is_ss_truck:
+        # S&S Truck Parts specific parsing
+        # Look for PO number in format like "P059502"
+        po_match = re.search(r'\b(P\d{5,})\b', full_text)
+        if po_match:
+            order_info['Purchase Order Number'] = po_match.group(1)
         
-        # Look for lines with prices
-        if '$' in line or 'USD' in line or re.search(r'\d+\.\d{2}', line):
-            try:
-                # Try to extract price
-                price_match = re.search(r'[\$]?(\d+[\.,]\d+)\s*(USD)?', line)
-                if price_match:
-                    price = float(price_match.group(1).replace(',', ''))
+        # Look for dates - specifically the date before a 6-digit vendor number
+        # Pattern: date\nvendor_number (like 10/06/26\n101050)
+        date_vendor_match = re.search(r'(\d{1,2}/\d{1,2}/\d{2,4})\s*\n\s*(\d{6})', full_text)
+        if date_vendor_match:
+            order_info['Date of Order'] = date_vendor_match.group(1)
+            order_info['Vendor'] = date_vendor_match.group(2)
+        
+        # Look for DELIVER ON date
+        delivery_match = re.search(r'DELIVER ON\s*(\d{1,2}/\d{1,2}/\d{2,4})', full_text)
+        if delivery_match:
+            order_info['Ship By Date'] = delivery_match.group(1)
+        
+        # Look for S&S Truck Parts address (appears twice - use first occurrence)
+        ss_address_match = re.search(r'S&S Truck Parts\s*\n\s*(9401.*?U\.S\.A\.)', full_text, re.DOTALL)
+        if ss_address_match:
+            ss_address = 'S&S Truck Parts\n' + ss_address_match.group(1).strip()
+            order_info['Ship To'] = ss_address
+            order_info['Invoice Address'] = ss_address
+        
+        # Look for shipping method
+        ship_match = re.search(r'\b(DAYTON FREIGHT|FEDEX|UPS|UPS GROUND|FREIGHT)\b', full_text)
+        if ship_match:
+            order_info['Shipping Instructions'] = ship_match.group(1)
+        
+        # Extract comments from specific sections
+        comments = []
+        
+        # Look for freight terms
+        freight_match = re.search(r'\b(Collect|Prepaid|FOB Factory)\b', full_text)
+        if freight_match:
+            comments.append(f"Freight: {freight_match.group(1)}")
+        
+        # Look for payment terms
+        terms_match = re.search(r'NET \d+ DAYS [A-Z\s]+', full_text)
+        if terms_match:
+            comments.append(terms_match.group(0).strip())
+        
+        # Look for shipping notes
+        notes_match = re.search(r'Seller shall acknowledge order.*?billed back to shipper\.', full_text, re.DOTALL)
+        if notes_match:
+            notes_text = re.sub(r'\s+', ' ', notes_match.group(0)).strip()
+            comments.append(notes_text)
+        
+        if comments:
+            order_info['Comments'] = ' | '.join(comments)
+        
+        # Find items - look for ITEM- pattern
+        for line in lines:
+            line = line.strip()
+            if 'ITEM-' in line:
+                # Extract item code
+                item_match = re.search(r'ITEM-\s*(\S+)', line)
+                if item_match:
+                    code = item_match.group(1)
                     
-                    # Try to extract quantity
-                    qty_match = re.search(r'(\d+)\s*(x|ea|pcs|units)?', line)
-                    quantity = int(qty_match.group(1)) if qty_match else 1
-                    
-                    # Extract item name (everything before price)
-                    item_name = re.sub(r'[\$]?\d+[\.,]\d+\s*(USD)?.*', '', line).strip()
-                    
-                    # Try to extract code (alphanumeric before description)
-                    code_match = re.search(r'([A-Z0-9\-]+)\s+', item_name)
-                    code = code_match.group(1) if code_match else ""
-                    
-                    if item_name:
-                        item = {
-                            'Code': code,
-                            'Item': item_name,
-                            'Quantity': quantity,
-                            'Unit Price': price,
-                            'Total': price * quantity
-                        }
-                        item.update(order_info)
-                        items.append(item)
-            except (ValueError, IndexError):
+                    # Look for quantity and price in subsequent lines
+                    idx = lines.index(line)
+                    for i in range(idx + 1, min(idx + 10, len(lines))):
+                        next_line = lines[i].strip()
+                        
+                        # Look for DELIVER ON line with quantity and price
+                        if 'DELIVER ON' in next_line:
+                            # Extract quantity (e.g., "1500.000 EA")
+                            qty_match = re.search(r'(\d+\.\d+)\s+EA', next_line)
+                            quantity = int(float(qty_match.group(1))) if qty_match else 0
+                            
+                            # Extract unit price (e.g., ".7300")
+                            price_match = re.search(r'(\d+\.\d+)\s+EA\s+(\.\d+|\d+\.\d+)', next_line)
+                            if price_match:
+                                price_str = price_match.group(2)
+                                unit_price = float('0' + price_str) if price_str.startswith('.') else float(price_str)
+                            else:
+                                unit_price = 0
+                            
+                            # Extract description from previous lines
+                            desc_lines = []
+                            for j in range(idx + 1, i):
+                                prev_line = lines[j].strip()
+                                if prev_line and 'CAT NBR' not in prev_line and 'PKG CODE' not in prev_line:
+                                    desc_lines.append(prev_line)
+                            
+                            description = ' '.join(desc_lines)
+                            # Clean up description
+                            description = re.sub(r'^\d+\s+ITEM-\S+\s*', '', description)
+                            description = re.sub(r'WMS UPC#:\d+\s*', '', description)
+                            description = re.sub(r'CAT NBR - \d+\s*', '', description)
+                            description = re.sub(r'PKG CODE:.*?APPROVED\s*', '', description)
+                            description = re.sub(r'\s+', ' ', description).strip()
+                            
+                            # Get total from next line
+                            total = 0
+                            if i + 1 < len(lines):
+                                total_line = lines[i + 1].strip()
+                                total_match = re.search(r'(\d+\.\d+)\s*$', total_line)
+                                if total_match:
+                                    total = float(total_match.group(1))
+                                else:
+                                    total = unit_price * quantity
+                            
+                            item = {
+                                'Code': code,
+                                'Item': description,
+                                'Quantity': quantity,
+                                'Unit Price': unit_price,
+                                'Total': total
+                            }
+                            item.update(order_info)
+                            items.append(item)
+                            break
+                    break
+    
+    else:
+        # Generic parsing for other formats
+        # Look for lines with prices and try to extract items
+        for line in lines:
+            line = line.strip()
+            if not line:
                 continue
+            
+            # Look for lines that might contain items (have prices)
+            if re.search(r'\d+\.\d{2}', line):
+                try:
+                    # Try to extract price
+                    price_match = re.search(r'(\d+\.\d{2})', line)
+                    if price_match:
+                        price = float(price_match.group(1))
+                        
+                        # Try to extract quantity (look for pattern like "5 x" or "5 EA")
+                        qty_match = re.search(r'(\d+)\s*(?:x|ea|pcs|units)', line, re.IGNORECASE)
+                        quantity = int(qty_match.group(1)) if qty_match else 1
+                        
+                        # Extract item name (everything before price)
+                        item_name = re.sub(r'\d+\.\d{2}.*', '', line).strip()
+                        
+                        if item_name and len(item_name) > 2:
+                            item = {
+                                'Code': '',
+                                'Item': item_name,
+                                'Quantity': quantity,
+                                'Unit Price': price,
+                                'Total': price * quantity
+                            }
+                            item.update(order_info)
+                            items.append(item)
+                except (ValueError, IndexError):
+                    continue
     
     return items
 
