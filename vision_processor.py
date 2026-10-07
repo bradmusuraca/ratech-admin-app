@@ -268,25 +268,25 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
     if is_ss_truck:
         # S&S Truck Parts specific parsing
         # Look for PO number - appears after "** PURCHASE ORDER **"
-        po_match = re.search(r'\*\*\s*PURCHASE ORDER\s*\*\*\s*([P|p]?\d+)', full_text)
+        po_match = re.search(r'\*\*\s*PURCHASE ORDER\s*\*\*\s*([P|p]?\d+)', extracted_text)
         if po_match:
             order_info['Purchase Order Number'] = po_match.group(1)
         
         # Look for date and vendor - date appears before 6-digit vendor number
         # Pattern: "10/06/26\n101050" 
-        date_vendor_match = re.search(r'(\d{1,2}/\d{1,2}/\d{2,4})\s*\n\s*(\d{6})', full_text)
+        date_vendor_match = re.search(r'(\d{1,2}/\d{1,2}/\d{2,4})\s*\n\s*(\d{6})', extracted_text)
         if date_vendor_match:
             order_info['Date of Order'] = date_vendor_match.group(1)
             order_info['Vendor'] = date_vendor_match.group(2)
         
         # Look for DELIVER ON date
-        delivery_match = re.search(r'DELIVER ON\s*(\d{1,2}/\d{1,2}/\d{2,4})', full_text)
+        delivery_match = re.search(r'DELIVER ON\s*(\d{1,2}/\d{1,2}/\d{2,4})', extracted_text)
         if delivery_match:
             order_info['Ship By Date'] = delivery_match.group(1)
         
         # Look for S&S Truck Parts address - appears twice in the text
         # The pattern is: S&S Truck Parts\n9401 Georgia Street Suite 1\nCrown Point IN 46307\nU.S.A.
-        ss_addresses = re.findall(r'S&S Truck Parts\s*\n\s*(9401.*?U\.S\.A\.)', full_text, re.DOTALL)
+        ss_addresses = re.findall(r'S&S Truck Parts\s*\n\s*(9401.*?U\.S\.A\.)', extracted_text, re.DOTALL)
         if ss_addresses:
             # Use the first occurrence
             ss_address = 'S&S Truck Parts\n' + ss_addresses[0].strip()
@@ -294,7 +294,7 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
             order_info['Invoice Address'] = ss_address
         
         # Look for shipping method - find DAYTON FREIGHT or similar
-        ship_match = re.search(r'\b(DAYTON FREIGHT|FEDEX|UPS|UPS GROUND|FREIGHT COLLECT)\b', full_text)
+        ship_match = re.search(r'\b(DAYTON FREIGHT|FEDEX|UPS|UPS GROUND|FREIGHT COLLECT)\b', extracted_text)
         if ship_match:
             order_info['Shipping Instructions'] = ship_match.group(1)
         
@@ -302,17 +302,17 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
         comments = []
         
         # Look for freight terms
-        freight_match = re.search(r'\b(Collect|Prepaid|FOB Factory)\b', full_text)
+        freight_match = re.search(r'\b(Collect|Prepaid|FOB Factory)\b', extracted_text)
         if freight_match:
             comments.append(f"Freight: {freight_match.group(1)}")
         
         # Look for payment terms
-        terms_match = re.search(r'NET \d+ DAYS [A-Z\s]+', full_text)
+        terms_match = re.search(r'NET \d+ DAYS [A-Z\s]+', extracted_text)
         if terms_match:
             comments.append(terms_match.group(0).strip())
         
         # Look for shipping notes
-        notes_match = re.search(r'Seller shall acknowledge order.*?billed back to shipper\.', full_text, re.DOTALL)
+        notes_match = re.search(r'Seller shall acknowledge order.*?billed back to shipper\.', extracted_text, re.DOTALL)
         if notes_match:
             notes_text = re.sub(r'\s+', ' ', notes_match.group(0)).strip()
             comments.append(notes_text)
