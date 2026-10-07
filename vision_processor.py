@@ -419,65 +419,105 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
                     continue
         
         elif is_ss_truck:
-            # S&S Truck Parts format pattern:
-            # "1 ITEM- 3507678 WMS UPC#:698231109694 CAT NBR - 3103 CRUSH SLEEVE C9.25" PKG CODE: PP014-BULK PACKAGING APPROVED DELIVER ON 10/22/26 1500.000 EA .7300 1095.00"
+            # S&S Truck Parts format - handle multi-line items
+            # Look for pattern like:
+            # "    1 ITEM- 3507678         WMS UPC#:698231109694
+            #    CAT NBR - 3103
+            #   CRUSH SLEEVE C9.25"
+            #   PKG CODE: PP014-BULK PACKAGING APPROVED
+            #                       DELIVER ON 10/22/26    1500.000 EA            .7300  
+            #       1095.00"
             
-            # Look for lines with item numbers and prices
-            if re.search(r'\d+\s+ITEM-', line) and re.search(r'\.\d+\s*$', line):
-                try:
-                    # Extract quantity (first number)
-                    quantity_match = re.search(r'^(\d+)\s+', line)
-                    if not quantity_match:
+            # Find lines that start with a number followed by ITEM-
+            for i in range(len(lines) - 1):
+                line = lines[i].strip()
+                
+                # Check if this line starts an item (has ITEM- and a number at start)
+                if re.search(r'^\s*\d+\s+ITEM-', line):
+                    try:
+                        # Extract quantity (first number)
+                        quantity_match = re.search(r'^\s*(\d+)\s+ITEM-', line)
+                        if not quantity_match:
+                            continue
+                        quantity = int(quantity_match.group(1))
+                        
+                        # Extract item number
+                        item_match = re.search(r'ITEM-\s*(\S+)', line)
+                        code = item_match.group(1) if item_match else ""
+                        
+                        # Collect description across multiple lines
+                        description_lines = [line]
+                        current_idx = i + 1
+                        
+                        # Look ahead to find description lines and price line
+                        while current_idx < len(lines):
+                            next_line = lines[current_idx].strip()
+                            
+                            # Check if this line has prices (DELIVER ON pattern)
+                            if 'DELIVER ON' in next_line and re.search(r'(\d+\.\d+)\s*$', next_line):
+                                # This is the price line
+                                # Extract unit price (decimal before EA)
+                                unit_price_match = re.search(r'(\d+\.\d+)\s+EA', next_line)
+                                if unit_price_match:
+                                    unit_price = float(unit_price_match.group(1))
+                                else:
+                                    unit_price = 0
+                                
+                                # Extract total (last decimal on this line or next line)
+                                total_match = re.search(r'(\d+\.\d+)\s*$', next_line)
+                                if total_match:
+                                    total = float(total_match.group(1))
+                                else:
+                                    # Check next line for total
+                                    if current_idx + 1 < len(lines):
+                                        total_match = re.search(r'(\d+\.\d+)\s*$', lines[current_idx + 1].strip())
+                                        if total_match:
+                                            total = float(total_match.group(1))
+                                        else:
+                                            total = unit_price * quantity
+                                    else:
+                                        total = unit_price * quantity
+                                
+                                # Build description from collected lines
+                                description = ' '.join(description_lines)
+                                
+                                # Clean up description
+                                description = re.sub(r'ITEM-\S+\s*', '', description)
+                                description = re.sub(r'WMS UPC#:\d+\s*', '', description)
+                                description = re.sub(r'CAT NBR - \d+\s*', '', description)
+                                description = re.sub(r'PKG CODE:.*?APPROVED\s*', '', description)
+                                description = re.sub(r'DELIVER ON.*?', '', description)
+                                description = re.sub(r'\s+', ' ', description).strip()
+                                
+                                item = {
+                                    'Code': code,
+                                    'Item': description,
+                                    'Quantity': quantity,
+                                    'Unit Price': unit_price,
+                                    'Total': total
+                                }
+                                
+                                # Add order info to each item
+                                item.update(order_info)
+                                
+                                items.append(item)
+                                break
+                            
+                            # If no prices found yet, add this line to description
+                            if next_line and not re.search(r'ITEM-|CAT NBR|PKG CODE', next_line):
+                                description_lines.append(next_line)
+                            else:
+                                # Skip metadata lines
+                                description_lines.append(next_line)
+                            
+                            current_idx += 1
+                            
+                            # Stop if we've gone too far
+                            if current_idx - i > 10:
+                                break
+                        
+                    except (ValueError, IndexError, AttributeError) as e:
                         continue
-                    quantity = int(quantity_match.group(1))
-                    
-                    # Extract item number
-                    item_match = re.search(r'ITEM-\s*(\S+)', line)
-                    code = item_match.group(1) if item_match else ""
-                    
-                    # Extract unit price (last decimal before final amount)
-                    unit_price_match = re.search(r'(\d+\.\d+)\s+EA', line)
-                    if not unit_price_match:
-                        # Try alternate pattern
-                        unit_price_match = re.search(r'(\d+\.\d+)\s*\d+\.\d+\s*$', line)
-                    if unit_price_match:
-                        unit_price = float(unit_price_match.group(1))
-                    else:
-                        continue
-                    
-                    # Extract total (last decimal)
-                    total_match = re.search(r'(\d+\.\d+)\s*$', line)
-                    if total_match:
-                        total = float(total_match.group(1))
-                    else:
-                        total = unit_price * quantity
-                    
-                    # Extract description (everything between item number and delivery date)
-                    desc_match = re.search(r'ITEM-\S+\s+(.+?)\s+DELIVER ON', line)
-                    if desc_match:
-                        description = desc_match.group(1).strip()
-                        # Clean up extra info
-                        description = re.sub(r'WMS UPC#:\d+\s*', '', description)
-                        description = re.sub(r'CAT NBR - \d+\s*', '', description)
-                        description = re.sub(r'PKG CODE:.*?APPROVED\s*', '', description)
-                    else:
-                        description = line
-                    
-                    item = {
-                        'Code': code,
-                        'Item': description,
-                        'Quantity': quantity,
-                        'Unit Price': unit_price,
-                        'Total': total
-                    }
-                    
-                    # Add order info to each item
-                    item.update(order_info)
-                    
-                    items.append(item)
-                    
-                except (ValueError, IndexError, AttributeError) as e:
-                    continue
     
     # If Ford parsing found items, return them
     if items:
