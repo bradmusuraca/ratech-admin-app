@@ -286,13 +286,13 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
         # S&S Truck Parts format parsing
         # The headers are at the top, data appears later in the document
         
-        # Extract PO number - look for pattern like "** PURCHASE ORDER **\nP059502"
-        po_match = re.search(r'\*\*\s*PURCHASE ORDER\s*\*\*\s*\n\s*([P|p]\d+)', full_text)
+        # Extract PO number - look for "P059502" pattern after "** PURCHASE ORDER **"
+        po_match = re.search(r'\*\*\s*PURCHASE ORDER\s*\*\*\s*([P|p]?\d+)', full_text)
         if po_match:
             order_info['Purchase Order Number'] = po_match.group(1)
         
-        # Extract PO date - look for date before vendor number
-        # Pattern: "10/06/26\n101050" (date on one line, vendor on next)
+        # Extract PO date - look for "10/06/26" which appears before vendor number "101050"
+        # Pattern: date on one line, 6-digit vendor on next line
         date_match = re.search(r'(\d{1,2}/\d{1,2}/\d{2,4})\s*\n\s*(\d{6})', full_text)
         if date_match:
             order_info['Date of Order'] = date_match.group(1)
@@ -303,38 +303,39 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
         if delivery_match:
             order_info['Ship By Date'] = delivery_match.group(1)
         
-        # Extract Ship To - look for address block after "RATECH"
-        ship_to_match = re.search(r'RATECH\s*\n\s*(.*?)\s*\n\s*S&S Truck Parts', full_text, re.DOTALL)
+        # Extract Ship To - look for address after "RATECH" keyword
+        # The format is: RATECH\n11110 ADWOOD DR.\nCINCINNATI OH 45240\nU.S.A.
+        ship_to_match = re.search(r'RATECH\s*\n(.*?)\nS&S Truck Parts', full_text, re.DOTALL)
         if ship_to_match:
             ship_to_lines = [line.strip() for line in ship_to_match.group(1).split('\n') if line.strip()]
-            # Include RATECH in the address
-            order_info['Ship To'] = 'RATECH ' + ' '.join(ship_to_lines)
+            order_info['Ship To'] = 'RATECH\n' + '\n'.join(ship_to_lines)
         
         # Extract Bill To (Invoice Address) - S&S Truck Parts address
-        bill_to_match = re.search(r'S&S Truck Parts\s*\n\s*(9401.*?U\.S\.A\.)', full_text, re.DOTALL)
+        # The format is: S&S Truck Parts\n9401 Georgia Street Suite 1\nCrown Point IN 46307\nU.S.A.
+        bill_to_match = re.search(r'S&S Truck Parts\s*\n(9401.*?U\.S\.A\.)', full_text, re.DOTALL)
         if bill_to_match:
             bill_to_lines = [line.strip() for line in bill_to_match.group(1).split('\n') if line.strip()]
-            order_info['Invoice Address'] = 'S&S Truck Parts ' + ' '.join(bill_to_lines)
+            order_info['Invoice Address'] = 'S&S Truck Parts\n' + '\n'.join(bill_to_lines)
         
-        # Extract Shipping Instructions - look for DAYTON FREIGHT
-        ship_via_match = re.search(r'(DAYTON FREIGHT|FEDEX|UPS|UPS GROUND)', full_text)
+        # Extract Shipping Instructions - look for freight carrier
+        ship_via_match = re.search(r'(DAYTON FREIGHT|FEDEX|UPS|UPS GROUND|FREIGHT COLLECT)', full_text)
         if ship_via_match:
             order_info['Shipping Instructions'] = ship_via_match.group(1).strip()
         
-        # Extract Comments - get freight terms and terms
+        # Extract Comments - get freight terms and payment terms
         comments = []
         
-        # Look for "Collect" or "Prepaid" for freight terms
-        freight_match = re.search(r'(Collect|Prepaid|FOB Factory)', full_text)
+        # Look for freight terms (Collect, Prepaid, FOB Factory, etc.)
+        freight_match = re.search(r'\b(Collect|Prepaid|FOB Factory|Freight Collect)\b', full_text)
         if freight_match:
             comments.append(f"Freight: {freight_match.group(1)}")
         
-        # Look for NET terms
-        terms_match = re.search(r'NET \d+ DAYS [A-Z]+', full_text)
+        # Look for NET payment terms
+        terms_match = re.search(r'NET \d+ DAYS [A-Z\s]+', full_text)
         if terms_match:
-            comments.append(terms_match.group(0))
+            comments.append(terms_match.group(0).strip())
         
-        # Add the shipping notes from the top section
+        # Add the shipping notes from the vendor copy section
         notes_match = re.search(r'Seller shall acknowledge order.*?billed back to shipper\.', full_text, re.DOTALL)
         if notes_match:
             notes_text = re.sub(r'\s+', ' ', notes_match.group(0)).strip()
