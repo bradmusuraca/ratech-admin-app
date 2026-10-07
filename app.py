@@ -156,39 +156,38 @@ elif page == "Settings":
                 except json.JSONDecodeError as e:
                     st.error(f"Invalid JSON format: {e}")
                     st.info("Please ensure you pasted the entire JSON file contents without extra characters.")
-                    return
-                
-                # Update .env file
-                env_file = ".env"
-                if os.path.exists(env_file):
-                    # Read existing env
-                    with open(env_file, 'r') as f:
-                        lines = f.readlines()
-                    
-                    # Update or add GOOGLE_CREDENTIALS
-                    updated = False
-                    new_lines = []
-                    for line in lines:
-                        if line.startswith('GOOGLE_CREDENTIALS='):
-                            new_lines.append(f'GOOGLE_CREDENTIALS={google_credentials}\n')
-                            updated = True
-                        else:
-                            new_lines.append(line)
-                    
-                    if not updated:
-                        new_lines.append(f'\nGOOGLE_CREDENTIALS={google_credentials}\n')
-                    
-                    with open(env_file, 'w') as f:
-                        f.writelines(new_lines)
                 else:
-                    # Create new .env file
-                    with open(env_file, 'w') as f:
-                        f.write(f'GOOGLE_CREDENTIALS={google_credentials}\n')
-                
-                # Reload environment
-                load_dotenv(override=True)
-                st.success("Credentials saved to .env file")
-                st.rerun()
+                    # Update .env file
+                    env_file = ".env"
+                    if os.path.exists(env_file):
+                        # Read existing env
+                        with open(env_file, 'r') as f:
+                            lines = f.readlines()
+                        
+                        # Update or add GOOGLE_CREDENTIALS
+                        updated = False
+                        new_lines = []
+                        for line in lines:
+                            if line.startswith('GOOGLE_CREDENTIALS='):
+                                new_lines.append(f'GOOGLE_CREDENTIALS={google_credentials}\n')
+                                updated = True
+                            else:
+                                new_lines.append(line)
+                        
+                        if not updated:
+                            new_lines.append(f'\nGOOGLE_CREDENTIALS={google_credentials}\n')
+                        
+                        with open(env_file, 'w') as f:
+                            f.writelines(new_lines)
+                    else:
+                        # Create new .env file
+                        with open(env_file, 'w') as f:
+                            f.write(f'GOOGLE_CREDENTIALS={google_credentials}\n')
+                    
+                    # Reload environment
+                    load_dotenv(override=True)
+                    st.success("Credentials saved to .env file")
+                    st.rerun()
             else:
                 st.warning("Please enter credentials")
     
