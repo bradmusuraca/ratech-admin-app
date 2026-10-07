@@ -226,11 +226,10 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
             print(f"DEBUG: Gemini returned {len(gemini_items)} items")
             return gemini_items
         else:
-            print("DEBUG: Gemini returned no items")
-            return []
+            print("DEBUG: Gemini returned no items, falling back to regex")
     
-    # Only use regex as last resort if no Gemini key
-    print("DEBUG: No Gemini API key provided, using regex fallback")
+    # Fallback to regex-based parsing
+    print("DEBUG: Using regex fallback")
     items = []
     lines = extracted_text.split('\n')
     
@@ -271,10 +270,78 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
     # Detect format type
     full_text = ' '.join(lines)
     
-    # Check if it's S&S Truck Parts format (has specific patterns)
+    # Check if it's S&S Truck Parts format
     is_ss_truck = 'S&S Truck Parts' in full_text or 'sandstruck.com' in full_text or 'SSPO' in full_text
     
-    if is_ss_truck:
+    # Check if it's Summit Racing format
+    is_summit = 'Summit Racing' in full_text or 'summitracing.com' in full_text.lower() or 'SUMMIT RACING' in full_text
+    
+    if is_summit:
+        # Summit Racing format parsing
+        # Look for Order Number
+        po_match = re.search(r'Order Number\s*(\d+)', extracted_text)
+        if po_match:
+            order_info['Purchase Order Number'] = po_match.group(1)
+        
+        # Look for Order Date
+        date_match = re.search(r'Order Date:\s*(\d{1,2}/\d{1,2}/\d{4})', extracted_text)
+        if date_match:
+            order_info['Date of Order'] = date_match.group(1)
+        
+        # Look for Arrive On/Before date
+        delivery_match = re.search(r'Arrive On/Before:\s*(\d{1,2}/\d{1,2}/\d{4})', extracted_text)
+        if delivery_match:
+            order_info['Ship By Date'] = delivery_match.group(1)
+        
+        # Look for Ship To address
+        ship_to_match = re.search(r'Ship To:\s*\n\s*(.*?)\s*\n\s*PH:', extracted_text, re.DOTALL)
+        if ship_to_match:
+            order_info['Ship To'] = 'SUMMIT RACING\n' + ship_to_match.group(1).strip()
+        
+        # Look for Bill To address
+        bill_to_match = re.search(r'Bill To:\s*\n\s*(.*?)\s*\n\s*PH:', extracted_text, re.DOTALL)
+        if bill_to_match:
+            order_info['Invoice Address'] = bill_to_match.group(1).strip()
+        
+        # Look for Vendor (Purchase Order To)
+        vendor_match = re.search(r'Purchase Order To:\s*\n\s*\((.*?)\)\s*([^\n]+)', extracted_text)
+        if vendor_match:
+            order_info['Vendor'] = f"{vendor_match.group(1)} {vendor_match.group(2).strip()}"
+        
+        # Look for comments
+        comments_match = re.search(r'Comments\s*\n\s*(.*?)\s*\n\s*Order Items', extracted_text, re.DOTALL)
+        if comments_match:
+            order_info['Comments'] = comments_match.group(1).strip()
+        
+        # Find items - look for pattern like "0001 RAT-10005 6 PINION TOOL..."
+        # Pattern: line number, part number, quantity, description, price
+        item_pattern = r'(\d+)\s+(RAT-\d+)\s+(\d+)\s+(.*?)\s+\$([\d.]+)\s+0%\s+\$([\d.]+)'
+        
+        for match in re.finditer(item_pattern, extracted_text, re.DOTALL):
+            try:
+                line_num, part_num, qty_str, description, unit_price_str, total_str = match.groups()
+                
+                # Clean up part number (remove RAT- prefix)
+                inventory_item = re.sub(r'^RAT-', '', part_num)
+                
+                # Convert to numbers
+                quantity = safe_int(qty_str)
+                unit_price = safe_float(unit_price_str)
+                total = safe_float(total_str)
+                
+                item = {
+                    'Inventory Item': inventory_item,
+                    'Description': description.strip(),
+                    'Quantity': quantity,
+                    'Unit Price': unit_price,
+                    'Total': total
+                }
+                item.update(order_info)
+                items.append(item)
+            except (ValueError, IndexError):
+                continue
+    
+    elif is_ss_truck:
         # S&S Truck Parts specific parsing
         # Look for PO number - appears after "** PURCHASE ORDER **"
         po_match = re.search(r'\*\*\s*PURCHASE ORDER\s*\*\*\s*([P|p]?\d+)', extracted_text)
@@ -470,10 +537,10 @@ def parse_order_with_gemini(text: str, api_key: str) -> List[Dict]:
         model = genai.GenerativeModel('gemini-1.5-flash')
         
         # Create prompt for structured extraction
-        prompt = f"""Extract order information from this purchase order text and return it as JSON.
+        prompt = f"""Extract order information from this text and return it as JSON. The text may be from an email printout, so ignore email headers and formatting.
 
 Required fields for each item:
-- Purchase Order Number (from the order)
+- Purchase Order Number (from the order, not the email)
 - Date of Order (format: MM/DD/YY or MM/DD/YYYY)
 - Ship By Date (format: MM/DD/YY or MM/DD/YYYY)
 - Ship To (full address)
@@ -481,15 +548,17 @@ Required fields for each item:
 - Vendor (name or code)
 - Shipping Instructions
 - Comments
-- Inventory Item (part number or code - remove any "RAT -" prefix if present)
+- Inventory Item (part number or code - remove any "RAT -" or "RAT-" prefix if present)
 - Description (item description)
 - Quantity (numeric)
 - Unit Price (numeric)
 - Total (numeric)
 
 Important:
+- If the text contains email headers (From:, To:, Subject:, Date:), ignore them
 - If an item code starts with "RAT -" or "RAT-", remove that prefix and keep only the actual part number
 - Return ONLY valid JSON, no explanations
+- Extract ALL items from the order
 
 Return ONLY valid JSON in this exact format:
 {{
@@ -512,7 +581,7 @@ Return ONLY valid JSON in this exact format:
   ]
 }}
 
-Purchase Order Text:
+Text to parse:
 {text}
 
 JSON Output:"""
