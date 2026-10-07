@@ -27,6 +27,11 @@ class VisionProcessor:
                 credentials_dict = json.loads(credentials_json)
                 from google.oauth2 import service_account
                 credentials = service_account.Credentials.from_service_account_info(credentials_dict)
+                
+                # Debug: Show which project is being used
+                print(f"DEBUG: Using credentials for project: {credentials_dict.get('project_id')}")
+                print(f"DEBUG: Service account: {credentials_dict.get('client_email')}")
+                
                 self.client = vision.ImageAnnotatorClient(credentials=credentials)
             except json.JSONDecodeError as e:
                 print(f"Invalid JSON format in credentials: {e}")
