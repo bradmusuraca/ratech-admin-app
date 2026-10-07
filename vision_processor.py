@@ -448,6 +448,13 @@ def parse_order_with_gemini(text: str, api_key: str) -> List[Dict]:
     try:
         import google.generativeai as genai
         
+        # Check if API key is provided
+        if not api_key:
+            print("ERROR: No Gemini API key provided")
+            return []
+        
+        print(f"DEBUG: Using Gemini API key: {api_key[:10]}...")
+        
         # Configure Gemini
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel('gemini-1.5-flash')
@@ -501,8 +508,11 @@ Purchase Order Text:
 JSON Output:"""
 
         # Generate response
+        print("DEBUG: Calling Gemini API...")
         response = model.generate_content(prompt)
         response_text = response.text.strip()
+        
+        print(f"DEBUG: Gemini response: {response_text[:200]}...")
         
         # Try to extract JSON from response
         # Sometimes Gemini adds markdown code blocks
@@ -518,6 +528,7 @@ JSON Output:"""
         # Return items array
         if 'items' in result and isinstance(result['items'], list):
             items = result['items']
+            print(f"DEBUG: Gemini returned {len(items)} items")
             # Clean up any "RAT -" prefixes that Gemini might have missed
             for item in items:
                 if 'Inventory Item' in item and isinstance(item['Inventory Item'], str):
@@ -526,8 +537,11 @@ JSON Output:"""
             return items
         else:
             # If items not in expected format, return single item
+            print("DEBUG: Gemini response not in expected format")
             return [result] if isinstance(result, dict) else []
             
     except Exception as e:
         print(f"Gemini parsing error: {e}")
+        import traceback
+        traceback.print_exc()
         return []

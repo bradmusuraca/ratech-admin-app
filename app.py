@@ -67,6 +67,13 @@ if page == "Order Processing":
         with st.spinner("Parsing order data..."):
             # Get Gemini API key for LLM-based parsing
             gemini_key = os.getenv('GEMINI_API_KEY')
+            
+            # Show which parsing method is being used
+            if gemini_key:
+                st.info("🤖 Using Gemini AI for parsing")
+            else:
+                st.warning("⚠️ No Gemini API key found - using regex fallback")
+            
             order_items = parse_order_text(extracted_text, gemini_api_key=gemini_key)
             
             if order_items:
