@@ -315,31 +315,47 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
         
         # Find items - look for pattern like "0001 RAT-10005 6 PINION TOOL..."
         # Pattern: line number, part number, quantity, description, price
-        item_pattern = r'(\d+)\s+(RAT-\d+)\s+(\d+)\s+(.*?)\s+\$([\d.]+)\s+0%\s+\$([\d.]+)'
+        # Split text by line numbers to avoid greedy matching
+        lines_text = extracted_text.split('\n')
         
-        for match in re.finditer(item_pattern, extracted_text, re.DOTALL):
-            try:
-                line_num, part_num, qty_str, description, unit_price_str, total_str = match.groups()
-                
-                # Clean up part number (remove RAT- prefix)
-                inventory_item = re.sub(r'^RAT-', '', part_num)
-                
-                # Convert to numbers
-                quantity = safe_int(qty_str)
-                unit_price = safe_float(unit_price_str)
-                total = safe_float(total_str)
-                
-                item = {
-                    'Inventory Item': inventory_item,
-                    'Description': description.strip(),
-                    'Quantity': quantity,
-                    'Unit Price': unit_price,
-                    'Total': total
-                }
-                item.update(order_info)
-                items.append(item)
-            except (ValueError, IndexError):
-                continue
+        for i, line in enumerate(lines_text):
+            # Look for lines that start with a number followed by RAT-
+            if re.match(r'^\s*\d+\s+RAT-\d+', line):
+                try:
+                    # Extract components
+                    match = re.match(r'^\s*(\d+)\s+(RAT-\d+)\s+(\d+)\s+(.*?)$', line)
+                    if match:
+                        line_num, part_num, qty_str, description = match.groups()
+                        
+                        # Look ahead for price (usually on same line or next line)
+                        price_line = line
+                        if '$' not in price_line and i + 1 < len(lines_text):
+                            price_line = lines_text[i + 1]
+                        
+                        # Extract prices
+                        price_match = re.search(r'\$([\d.]+)\s+0%\s+\$([\d.]+)', price_line)
+                        if price_match:
+                            unit_price_str, total_str = price_match.groups()
+                            
+                            # Clean up part number (remove RAT- prefix)
+                            inventory_item = re.sub(r'^RAT-', '', part_num)
+                            
+                            # Convert to numbers
+                            quantity = safe_int(qty_str)
+                            unit_price = safe_float(unit_price_str)
+                            total = safe_float(total_str)
+                            
+                            item = {
+                                'Inventory Item': inventory_item,
+                                'Description': description.strip(),
+                                'Quantity': quantity,
+                                'Unit Price': unit_price,
+                                'Total': total
+                            }
+                            item.update(order_info)
+                            items.append(item)
+                except (ValueError, IndexError):
+                    continue
     
     elif is_ss_truck:
         # S&S Truck Parts specific parsing
