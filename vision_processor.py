@@ -284,20 +284,25 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
     
     elif is_ss_truck:
         # S&S Truck Parts format parsing
-        po_match = re.search(r'PURCHASE ORDER\s+(\w+\d+)', full_text)
+        # Look for PO number in the format "P059502" or similar
+        po_match = re.search(r'\*\*\s*PURCHASE ORDER\s*\*\*\s*\n\s*(\w+\d+)', full_text)
         if not po_match:
-            po_match = re.search(r'P\.O\.\s*(\w+\d+)', full_text)
+            # Try alternate pattern
+            po_match = re.search(r'P\.O\.\s*DATE\s+\d+/\d+/\d+\s+(\w+\d+)', full_text)
         if po_match:
             order_info['Purchase Order Number'] = po_match.group(1)
         
+        # Extract PO date - look for pattern like "P.O. DATE 10/06/26"
         date_match = re.search(r'P\.O\.\s*DATE\s*(\d{1,2}/\d{1,2}/\d{2,4})', full_text)
         if date_match:
             order_info['Date of Order'] = date_match.group(1)
         
+        # Extract delivery date - look for pattern like "DELIVERY DATE 10/22/26"
         delivery_match = re.search(r'DELIVERY DATE\s*(\d{1,2}/\d{1,2}/\d{2,4})', full_text)
         if delivery_match:
             order_info['Ship By Date'] = delivery_match.group(1)
         
+        # Extract vendor number
         vendor_match = re.search(r'VENDOR\s*(\d+)', full_text)
         if vendor_match:
             order_info['Vendor'] = vendor_match.group(1)
@@ -428,6 +433,7 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
             #                       DELIVER ON 10/22/26    1500.000 EA            .7300  
             #       1095.00"
             
+            # Find lines that start with a number followed by ITEM-
             i = 0
             while i < len(lines):
                 line = lines[i].strip()
@@ -435,13 +441,6 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
                 # Check if this line starts an item (number followed by ITEM-)
                 if re.search(r'^\s*\d+\s+ITEM-', line):
                     try:
-                        # Extract quantity
-                        quantity_match = re.search(r'^\s*(\d+)\s+ITEM-', line)
-                        if not quantity_match:
-                            i += 1
-                            continue
-                        quantity = int(quantity_match.group(1))
-                        
                         # Extract item number
                         item_match = re.search(r'ITEM-\s*(\S+)', line)
                         code = item_match.group(1) if item_match else ""
@@ -450,6 +449,7 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
                         description_lines = []
                         unit_price = 0
                         total = 0
+                        quantity = 0
                         j = i + 1
                         
                         # Look ahead for description and price lines
@@ -458,6 +458,11 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
                             
                             # Check if this line has DELIVER ON with prices
                             if 'DELIVER ON' in current_line:
+                                # Extract quantity from DELIVER ON line (e.g., "1500.000 EA")
+                                qty_match = re.search(r'(\d+\.\d+)\s+EA', current_line)
+                                if qty_match:
+                                    quantity = int(float(qty_match.group(1)))
+                                
                                 # Extract unit price - look for pattern like ".7300" or "0.7300"
                                 price_match = re.search(r'(\d+\.\d+)\s+EA\s+(\.\d+|\d+\.\d+)', current_line)
                                 if price_match:
@@ -500,12 +505,12 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
                                 items.append(item)
                                 break
                             
-                            # Collect description lines
+                            # Collect description lines (skip metadata)
                             if current_line and not re.search(r'CAT NBR|PKG CODE', current_line):
                                 description_lines.append(current_line)
                             elif 'CAT NBR' in current_line or 'PKG CODE' in current_line:
-                                # These are metadata lines, add them but they'll be cleaned later
-                                description_lines.append(current_line)
+                                # Skip metadata lines
+                                pass
                             
                             j += 1
                         
