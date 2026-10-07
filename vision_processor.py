@@ -230,6 +230,28 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
         'Comments': ''
     }
     
+    # Helper function to safely convert to float
+    def safe_float(value, default=0.0):
+        try:
+            if isinstance(value, str):
+                # Remove non-numeric characters except . and -
+                cleaned = re.sub(r'[^\d.\-]', '', value)
+                return float(cleaned) if cleaned else default
+            return float(value)
+        except (ValueError, TypeError):
+            return default
+    
+    # Helper function to safely convert to int
+    def safe_int(value, default=0):
+        try:
+            if isinstance(value, str):
+                # Remove non-numeric characters except . and -
+                cleaned = re.sub(r'[^\d]', '', value)
+                return int(float(cleaned)) if cleaned else default
+            return int(float(value))
+        except (ValueError, TypeError):
+            return default
+    
     # Detect format type
     full_text = ' '.join(lines)
     
@@ -307,15 +329,16 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
                         if 'DELIVER ON' in next_line:
                             # Extract quantity (e.g., "1500.000 EA")
                             qty_match = re.search(r'(\d+\.\d+)\s+EA', next_line)
-                            quantity = int(float(qty_match.group(1))) if qty_match else 0
+                            quantity = safe_float(qty_match.group(1)) if qty_match else 0
+                            quantity = int(quantity) if quantity else 0
                             
                             # Extract unit price (e.g., ".7300")
                             price_match = re.search(r'(\d+\.\d+)\s+EA\s+(\.\d+|\d+\.\d+)', next_line)
                             if price_match:
                                 price_str = price_match.group(2)
-                                unit_price = float('0' + price_str) if price_str.startswith('.') else float(price_str)
+                                unit_price = safe_float('0' + price_str) if price_str.startswith('.') else safe_float(price_str)
                             else:
-                                unit_price = 0
+                                unit_price = 0.0
                             
                             # Extract description from previous lines
                             desc_lines = []
@@ -333,12 +356,12 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
                             description = re.sub(r'\s+', ' ', description).strip()
                             
                             # Get total from next line
-                            total = 0
+                            total = 0.0
                             if i + 1 < len(lines):
                                 total_line = lines[i + 1].strip()
                                 total_match = re.search(r'(\d+\.\d+)\s*$', total_line)
                                 if total_match:
-                                    total = float(total_match.group(1))
+                                    total = safe_float(total_match.group(1))
                                 else:
                                     total = unit_price * quantity
                             
@@ -368,11 +391,11 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
                     # Try to extract price
                     price_match = re.search(r'(\d+\.\d{2})', line)
                     if price_match:
-                        price = float(price_match.group(1))
+                        price = safe_float(price_match.group(1))
                         
                         # Try to extract quantity (look for pattern like "5 x" or "5 EA")
                         qty_match = re.search(r'(\d+)\s*(?:x|ea|pcs|units)', line, re.IGNORECASE)
-                        quantity = int(qty_match.group(1)) if qty_match else 1
+                        quantity = safe_int(qty_match.group(1)) if qty_match else 1
                         
                         # Extract item name (everything before price)
                         item_name = re.sub(r'\d+\.\d{2}.*', '', line).strip()
