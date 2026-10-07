@@ -137,7 +137,6 @@ elif page == "Settings":
     google_credentials = st.text_area(
         "Google Cloud Credentials JSON",
         value=current_creds if current_creds else "",
-        type="default",
         height=200,
         help="Paste your Google Cloud service account JSON credentials here"
     )
