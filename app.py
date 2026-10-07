@@ -70,13 +70,17 @@ if page == "Order Processing":
             if order_items:
                 df = pd.DataFrame(order_items)
                 # Reorder columns for better display
-                cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Code', 'Item', 'Quantity', 'Unit Price', 'Total']
+                cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments', 'Code', 'Item', 'Quantity', 'Unit Price', 'Total']
                 # Only include columns that exist
                 cols = [col for col in cols if col in df.columns]
                 df = df[cols]
+                st.success(f"✅ Successfully parsed {len(order_items)} item(s)")
             else:
-                st.warning("Could not automatically parse order items. Please enter data manually.")
-                df = pd.DataFrame(columns=["Purchase Order Number", "Date of Order", "Ship By Date", "Ship To", "Invoice Address", "Code", "Item", "Quantity", "Unit Price", "Total"])
+                st.warning("⚠️ Could not automatically parse order items.")
+                st.info("📝 Please enter data manually using the editable table below.")
+                df = pd.DataFrame(columns=["Purchase Order Number", "Date of Order", "Ship By Date", "Ship To", "Invoice Address", "Vendor", "Shipping Instructions", "Comments", "Code", "Item", "Quantity", "Unit Price", "Total"])
+                # Add one empty row for manual entry
+                df.loc[0] = [""] * len(df.columns)
         
         st.session_state.processed_df = df
         
@@ -86,12 +90,63 @@ if page == "Order Processing":
     # Show processed data if available
     if st.session_state.processed_df is not None:
         st.subheader("Validate and Edit Order")
+        
+        # Add helpful tips
+        with st.expander("💡 Tips for Manual Entry"):
+            st.markdown("""
+            - **Click any cell** to edit its value
+            - **Click "+ Add row"** at the bottom to add new items
+            - **Click the "×"** button to delete a row
+            - **Common fields** (PO number, dates, addresses) are automatically copied to all rows when parsing
+            - **Hover over column headers** to see what information goes there
+            """)
+        
         edited_df = st.data_editor(
             st.session_state.processed_df,
             num_rows="dynamic",
             use_container_width=True,
             key="order_editor"
         )
+        
+        # Quick actions for manual entry
+        st.subheader("Quick Actions")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("Copy Header Info to All Rows"):
+                # Copy header fields (PO number, dates, addresses) to all rows
+                if not edited_df.empty:
+                    header_cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments']
+                    for col in header_cols:
+                        if col in edited_df.columns:
+                            # Get the first non-empty value
+                            first_value = edited_df[col].dropna().iloc[0] if not edited_df[col].dropna().empty else ""
+                            if first_value:
+                                edited_df[col] = first_value
+                    st.session_state.processed_df = edited_df
+                    st.success("✅ Header info copied to all rows")
+                    st.rerun()
+        
+        with col2:
+            if st.button("Clear All Data"):
+                st.session_state.processed_df = None
+                st.session_state.extracted_text = None
+                st.rerun()
+        
+        with col3:
+            if st.button("Add New Row"):
+                if not edited_df.empty:
+                    new_row = {col: "" for col in edited_df.columns}
+                    # Copy header fields to new row
+                    header_cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments']
+                    for col in header_cols:
+                        if col in edited_df.columns:
+                            first_value = edited_df[col].dropna().iloc[0] if not edited_df[col].dropna().empty else ""
+                            if first_value:
+                                new_row[col] = first_value
+                    edited_df = pd.concat([edited_df, pd.DataFrame([new_row])], ignore_index=True)
+                    st.session_state.processed_df = edited_df
+                    st.rerun()
         
         # Validation: Check for calculation errors
         if not edited_df.empty:
@@ -132,6 +187,7 @@ if page == "Order Processing":
                     if st.button("Auto-Calculate Totals", type="primary"):
                         if price_col and 'Quantity' in edited_df.columns:
                             edited_df['Total'] = edited_df['Quantity'] * edited_df[price_col]
+                        st.session_state.processed_df = edited_df
                         st.success("✅ Totals have been recalculated")
                         st.rerun()
                 
@@ -150,6 +206,9 @@ if page == "Order Processing":
             elif 'Price' in edited_df.columns and 'Quantity' in edited_df.columns:
                 mask = (edited_df['Total'].isna()) | (edited_df['Total'] == 0)
                 edited_df.loc[mask, 'Total'] = edited_df.loc[mask, 'Quantity'] * edited_df.loc[mask, 'Price']
+        
+        # Update session state with edited data
+        st.session_state.processed_df = edited_df
         
         # Export options
         col1, col2 = st.columns(2)
