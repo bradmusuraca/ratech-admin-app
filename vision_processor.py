@@ -343,16 +343,16 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
         if comments:
             order_info['Comments'] = ' | '.join(comments)
     
-    # Try to detect Ford order format for items
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
+    # Try to detect order format for items
+    if is_ford:
+        # Ford order format pattern:
+        # "873 M-1225-B 8.8" AXLE BEARING AND SEAL KIT (PAIR) 1 12.5500 USD 10,956.15 USD"
+        # Pattern: quantity code description unit_pack unit_price total_price
         
-        if is_ford:
-            # Ford order format pattern:
-            # "873 M-1225-B 8.8" AXLE BEARING AND SEAL KIT (PAIR) 1 12.5500 USD 10,956.15 USD"
-            # Pattern: quantity code description unit_pack unit_price total_price
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
             
             # Look for lines with USD prices (indicates order item line)
             if 'USD' in line and re.search(r'\d+\.\d+\s+USD', line):
@@ -413,99 +413,99 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
                 except (ValueError, IndexError, AttributeError) as e:
                     # If Ford parsing fails, try generic parsing
                     continue
+    
+    elif is_ss_truck:
+        # S&S Truck Parts format - handle multi-line items
+        # Format example:
+        # "    1 ITEM- 3507678         WMS UPC#:698231109694
+        #    CAT NBR - 3103
+        #   CRUSH SLEEVE C9.25"
+        #   PKG CODE: PP014-BULK PACKAGING APPROVED
+        #                       DELIVER ON 10/22/26    1500.000 EA            .7300  
+        #       1095.00"
         
-        elif is_ss_truck:
-            # S&S Truck Parts format - handle multi-line items
-            # Format example:
-            # "    1 ITEM- 3507678         WMS UPC#:698231109694
-            #    CAT NBR - 3103
-            #   CRUSH SLEEVE C9.25"
-            #   PKG CODE: PP014-BULK PACKAGING APPROVED
-            #                       DELIVER ON 10/22/26    1500.000 EA            .7300  
-            #       1095.00"
+        # Find the first line that starts an item (number followed by ITEM-)
+        for i in range(len(lines)):
+            line = lines[i].strip()
             
-            # Find the first line that starts an item (number followed by ITEM-)
-            for i in range(len(lines)):
-                line = lines[i].strip()
-                
-                # Check if this line starts an item (number followed by ITEM-)
-                if re.search(r'^\s*\d+\s+ITEM-', line):
-                    try:
-                        # Extract item number
-                        item_match = re.search(r'ITEM-\s*(\S+)', line)
-                        code = item_match.group(1) if item_match else ""
+            # Check if this line starts an item (number followed by ITEM-)
+            if re.search(r'^\s*\d+\s+ITEM-', line):
+                try:
+                    # Extract item number
+                    item_match = re.search(r'ITEM-\s*(\S+)', line)
+                    code = item_match.group(1) if item_match else ""
+                    
+                    # Collect description lines and find price info
+                    description_lines = []
+                    unit_price = 0
+                    total = 0
+                    quantity = 0
+                    j = i + 1
+                    
+                    # Look ahead for description and price lines
+                    while j < len(lines) and j < i + 8:
+                        current_line = lines[j].strip()
                         
-                        # Collect description lines and find price info
-                        description_lines = []
-                        unit_price = 0
-                        total = 0
-                        quantity = 0
-                        j = i + 1
-                        
-                        # Look ahead for description and price lines
-                        while j < len(lines) and j < i + 8:
-                            current_line = lines[j].strip()
+                        # Check if this line has DELIVER ON with prices
+                        if 'DELIVER ON' in current_line:
+                            # Extract quantity from DELIVER ON line (e.g., "1500.000 EA")
+                            qty_match = re.search(r'(\d+\.\d+)\s+EA', current_line)
+                            if qty_match:
+                                quantity = int(float(qty_match.group(1)))
                             
-                            # Check if this line has DELIVER ON with prices
-                            if 'DELIVER ON' in current_line:
-                                # Extract quantity from DELIVER ON line (e.g., "1500.000 EA")
-                                qty_match = re.search(r'(\d+\.\d+)\s+EA', current_line)
-                                if qty_match:
-                                    quantity = int(float(qty_match.group(1)))
-                                
-                                # Extract unit price - look for pattern like ".7300" or "0.7300"
-                                price_match = re.search(r'(\d+\.\d+)\s+EA\s+(\.\d+|\d+\.\d+)', current_line)
-                                if price_match:
-                                    unit_price_str = price_match.group(2)
-                                    # Handle leading decimal point (e.g., ".7300" -> 0.73)
-                                    if unit_price_str.startswith('.'):
-                                        unit_price = float('0' + unit_price_str)
-                                    else:
-                                        unit_price = float(unit_price_str)
-                                
-                                # Get total from next line
-                                if j + 1 < len(lines):
-                                    total_line = lines[j + 1].strip()
-                                    total_match = re.search(r'(\d+\.\d+)\s*$', total_line)
-                                    if total_match:
-                                        total = float(total_match.group(1))
-                                    else:
-                                        total = unit_price * quantity
-                                
-                                # Build description
-                                description = ' '.join(description_lines)
-                                # Clean up description
-                                description = re.sub(r'^\s*\d+\s+ITEM-\S+\s*', '', description)
-                                description = re.sub(r'WMS UPC#:\d+\s*', '', description)
-                                description = re.sub(r'CAT NBR - \d+\s*', '', description)
-                                description = re.sub(r'PKG CODE:.*?APPROVED\s*', '', description)
-                                description = re.sub(r'\s+', ' ', description).strip()
-                                
-                                item = {
-                                    'Code': code,
-                                    'Item': description,
-                                    'Quantity': quantity,
-                                    'Unit Price': unit_price,
-                                    'Total': total
-                                }
-                                
-                                # Add order info to each item
-                                item.update(order_info)
-                                
-                                items.append(item)
-                                break
+                            # Extract unit price - look for pattern like ".7300" or "0.7300"
+                            price_match = re.search(r'(\d+\.\d+)\s+EA\s+(\.\d+|\d+\.\d+)', current_line)
+                            if price_match:
+                                unit_price_str = price_match.group(2)
+                                # Handle leading decimal point (e.g., ".7300" -> 0.73)
+                                if unit_price_str.startswith('.'):
+                                    unit_price = float('0' + unit_price_str)
+                                else:
+                                    unit_price = float(unit_price_str)
                             
-                            # Collect description lines (skip metadata)
-                            if current_line and not re.search(r'CAT NBR|PKG CODE', current_line):
-                                description_lines.append(current_line)
+                            # Get total from next line
+                            if j + 1 < len(lines):
+                                total_line = lines[j + 1].strip()
+                                total_match = re.search(r'(\d+\.\d+)\s*$', total_line)
+                                if total_match:
+                                    total = float(total_match.group(1))
+                                else:
+                                    total = unit_price * quantity
                             
-                            j += 1
+                            # Build description
+                            description = ' '.join(description_lines)
+                            # Clean up description
+                            description = re.sub(r'^\s*\d+\s+ITEM-\S+\s*', '', description)
+                            description = re.sub(r'WMS UPC#:\d+\s*', '', description)
+                            description = re.sub(r'CAT NBR - \d+\s*', '', description)
+                            description = re.sub(r'PKG CODE:.*?APPROVED\s*', '', description)
+                            description = re.sub(r'\s+', ' ', description).strip()
+                            
+                            item = {
+                                'Code': code,
+                                'Item': description,
+                                'Quantity': quantity,
+                                'Unit Price': unit_price,
+                                'Total': total
+                            }
+                            
+                            # Add order info to each item
+                            item.update(order_info)
+                            
+                            items.append(item)
+                            break
                         
-                        # Only process the first item we find, then exit
-                        break
+                        # Collect description lines (skip metadata)
+                        if current_line and not re.search(r'CAT NBR|PKG CODE', current_line):
+                            description_lines.append(current_line)
                         
-                    except (ValueError, IndexError, AttributeError) as e:
-                        break
+                        j += 1
+                    
+                    # Only process the first item we find, then exit
+                    break
+                    
+                except (ValueError, IndexError, AttributeError) as e:
+                    break
     
     # If Ford parsing found items, return them
     if items:
