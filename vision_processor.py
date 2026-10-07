@@ -291,31 +291,26 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
         if po_match:
             order_info['Purchase Order Number'] = po_match.group(1)
         
-        # Extract PO date - look for "10/06/26" which appears before vendor number "101050"
-        # Pattern: date on one line, 6-digit vendor on next line
-        date_match = re.search(r'(\d{1,2}/\d{1,2}/\d{2,4})\s*\n\s*(\d{6})', full_text)
-        if date_match:
-            order_info['Date of Order'] = date_match.group(1)
-            order_info['Vendor'] = date_match.group(2)
+        # Extract PO date and vendor - look for "10/06/26\n101050" pattern
+        # The date appears before the 6-digit vendor number
+        date_vendor_match = re.search(r'(\d{2}/\d{2}/\d{2})\s*\n\s*(\d{6})', full_text)
+        if date_vendor_match:
+            order_info['Date of Order'] = date_vendor_match.group(1)
+            order_info['Vendor'] = date_vendor_match.group(2)
         
         # Extract delivery date from "DELIVER ON" line
         delivery_match = re.search(r'DELIVER ON\s*(\d{1,2}/\d{1,2}/\d{2,4})', full_text)
         if delivery_match:
             order_info['Ship By Date'] = delivery_match.group(1)
         
-        # Extract Ship To - look for address after "RATECH" keyword
-        # The format is: RATECH\n11110 ADWOOD DR.\nCINCINNATI OH 45240\nU.S.A.
-        ship_to_match = re.search(r'RATECH\s*\n(.*?)\nS&S Truck Parts', full_text, re.DOTALL)
-        if ship_to_match:
-            ship_to_lines = [line.strip() for line in ship_to_match.group(1).split('\n') if line.strip()]
-            order_info['Ship To'] = 'RATECH\n' + '\n'.join(ship_to_lines)
-        
-        # Extract Bill To (Invoice Address) - S&S Truck Parts address
+        # Extract Ship To and Bill To - both are S&S Truck Parts
         # The format is: S&S Truck Parts\n9401 Georgia Street Suite 1\nCrown Point IN 46307\nU.S.A.
-        bill_to_match = re.search(r'S&S Truck Parts\s*\n(9401.*?U\.S\.A\.)', full_text, re.DOTALL)
-        if bill_to_match:
-            bill_to_lines = [line.strip() for line in bill_to_match.group(1).split('\n') if line.strip()]
-            order_info['Invoice Address'] = 'S&S Truck Parts\n' + '\n'.join(bill_to_lines)
+        ss_address_match = re.search(r'S&S Truck Parts\s*\n(9401.*?U\.S\.A\.)', full_text, re.DOTALL)
+        if ss_address_match:
+            ss_address_text = ss_address_match.group(1).strip()
+            ss_full_address = 'S&S Truck Parts\n' + ss_address_text
+            order_info['Ship To'] = ss_full_address
+            order_info['Invoice Address'] = ss_full_address
         
         # Extract Shipping Instructions - look for freight carrier
         ship_via_match = re.search(r'(DAYTON FREIGHT|FEDEX|UPS|UPS GROUND|FREIGHT COLLECT)', full_text)
