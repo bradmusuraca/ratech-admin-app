@@ -197,7 +197,7 @@ class VisionProcessor:
 def parse_order_text(extracted_text: str) -> List[Dict]:
     """
     Parse extracted text into structured order data
-    Custom parser for Ford Motor Company purchase orders
+    Supports multiple order formats (Ford, S&S Truck Parts, etc.)
     
     Args:
         extracted_text: Raw text extracted from PDF
@@ -216,50 +216,136 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
         'Date of Order': '',
         'Ship By Date': '',
         'Ship To': '',
-        'Invoice Address': ''
+        'Invoice Address': '',
+        'Vendor': '',
+        'Shipping Instructions': '',
+        'Comments': ''
     }
     
-    # Extract header info - look for patterns across the entire text
+    # Detect format type
     full_text = ' '.join(lines)
     
-    # Purchase Order number
-    po_match = re.search(r'No\s*-\s*(\d+(?:-\d+)?)', full_text)
-    if po_match:
-        order_info['Purchase Order Number'] = po_match.group(1)
+    # Check if it's Ford format
+    is_ford = 'Ford Motor Company' in full_text or 'FORD RACING' in full_text
+    # Check if it's S&S Truck Parts format
+    is_ss_truck = 'S&S Truck Parts' in full_text or 'sandstruck.com' in full_text
     
-    # Date of order - handle various spacing
-    date_match = re.search(r'Date\s+of\s+order:\s*(\d{1,2}/\d{1,2}/\d{4})', full_text)
-    if date_match:
-        order_info['Date of Order'] = date_match.group(1)
-    
-    # Ship by date - handle various spacing
-    ship_match = re.search(r'Ship\s+No\s+Later\s+Than\s*(\d{1,2}/\d{1,2}/\d{4})', full_text)
-    if ship_match:
-        order_info['Ship By Date'] = ship_match.group(1)
-    
-    # Ship to address (capture multiple lines)
-    for i, line in enumerate(lines):
-        if 'SHIP TO:' in line:
-            ship_to_lines = []
-            for j in range(i + 1, min(i + 5, len(lines))):
-                if lines[j].strip() and not any(x in lines[j] for x in ['INVOICE', 'Payment', 'Phone', 'E-mail', 'FAILURE']):
-                    ship_to_lines.append(lines[j].strip())
-                elif 'Phone:' in lines[j] or 'E-mail:' in lines[j] or 'FAILURE' in lines[j]:
+    if is_ford:
+        # Ford format parsing
+        po_match = re.search(r'No\s*-\s*(\d+(?:-\d+)?)', full_text)
+        if po_match:
+            order_info['Purchase Order Number'] = po_match.group(1)
+        
+        date_match = re.search(r'Date\s+of\s+order:\s*(\d{1,2}/\d{1,2}/\d{4})', full_text)
+        if date_match:
+            order_info['Date of Order'] = date_match.group(1)
+        
+        ship_match = re.search(r'Ship\s+No\s+Later\s+Than\s*(\d{1,2}/\d{1,2}/\d{4})', full_text)
+        if ship_match:
+            order_info['Ship By Date'] = ship_match.group(1)
+        
+        for i, line in enumerate(lines):
+            if 'SHIP TO:' in line:
+                ship_to_lines = []
+                for j in range(i + 1, min(i + 5, len(lines))):
+                    if lines[j].strip() and not any(x in lines[j] for x in ['INVOICE', 'Payment', 'Phone', 'E-mail', 'FAILURE']):
+                        ship_to_lines.append(lines[j].strip())
+                    elif 'Phone:' in lines[j] or 'E-mail:' in lines[j] or 'FAILURE' in lines[j]:
+                        break
+                order_info['Ship To'] = ' '.join(ship_to_lines)
+                break
+        
+        for i, line in enumerate(lines):
+            if 'INVOICE:' in line:
+                invoice_lines = []
+                for j in range(i + 1, min(i + 5, len(lines))):
+                    if lines[j].strip() and not any(x in lines[j] for x in ['Submit', 'Email', 'Payment']):
+                        invoice_lines.append(lines[j].strip())
+                    elif 'Submit' in lines[j] or 'Email' in lines[j]:
+                        break
+                order_info['Invoice Address'] = ' '.join(invoice_lines)
+                break
+        
+        # Extract freight/shipping instructions
+        freight_idx = -1
+        for i, line in enumerate(lines):
+            if 'Freight Routing Instructions:' in line:
+                freight_idx = i
+                break
+        
+        if freight_idx > 0:
+            freight_lines = []
+            for j in range(freight_idx + 1, min(freight_idx + 20, len(lines))):
+                if lines[j].strip() and not any(x in lines[j] for x in ['Notes:', 'For additional', 'Ford\'s Global']):
+                    freight_lines.append(lines[j].strip())
+                elif 'Notes:' in lines[j] or 'For additional' in lines[j]:
                     break
-            order_info['Ship To'] = ' '.join(ship_to_lines)
-            break
+            order_info['Shipping Instructions'] = ' '.join(freight_lines)
     
-    # Invoice address
-    for i, line in enumerate(lines):
-        if 'INVOICE:' in line:
-            invoice_lines = []
-            for j in range(i + 1, min(i + 5, len(lines))):
-                if lines[j].strip() and not any(x in lines[j] for x in ['Submit', 'Email', 'Payment']):
-                    invoice_lines.append(lines[j].strip())
-                elif 'Submit' in lines[j] or 'Email' in lines[j]:
+    elif is_ss_truck:
+        # S&S Truck Parts format parsing
+        po_match = re.search(r'PURCHASE ORDER\s+(\w+\d+)', full_text)
+        if not po_match:
+            po_match = re.search(r'P\.O\.\s*(\w+\d+)', full_text)
+        if po_match:
+            order_info['Purchase Order Number'] = po_match.group(1)
+        
+        date_match = re.search(r'P\.O\.\s*DATE\s*(\d{1,2}/\d{1,2}/\d{2,4})', full_text)
+        if date_match:
+            order_info['Date of Order'] = date_match.group(1)
+        
+        delivery_match = re.search(r'DELIVERY DATE\s*(\d{1,2}/\d{1,2}/\d{2,4})', full_text)
+        if delivery_match:
+            order_info['Ship By Date'] = delivery_match.group(1)
+        
+        vendor_match = re.search(r'VENDOR\s*(\d+)', full_text)
+        if vendor_match:
+            order_info['Vendor'] = vendor_match.group(1)
+        
+        # Extract Ship To
+        for i, line in enumerate(lines):
+            if 'SHIP TO:' in line:
+                ship_to_lines = []
+                for j in range(i + 1, min(i + 4, len(lines))):
+                    if lines[j].strip() and not any(x in lines[j] for x in ['BILL TO:', 'ORDER PLACED']):
+                        ship_to_lines.append(lines[j].strip())
+                    elif 'BILL TO:' in lines[j] or 'ORDER PLACED' in lines[j]:
+                        break
+                order_info['Ship To'] = ' '.join(ship_to_lines)
+                break
+        
+        # Extract Bill To
+        for i, line in enumerate(lines):
+            if 'BILL TO:' in line:
+                bill_to_lines = []
+                for j in range(i + 1, min(i + 4, len(lines))):
+                    if lines[j].strip() and not any(x in lines[j] for x in ['ORDER PLACED', 'SHIP VIA']):
+                        bill_to_lines.append(lines[j].strip())
+                    elif 'ORDER PLACED' in lines[j] or 'SHIP VIA' in lines[j]:
+                        break
+                order_info['Invoice Address'] = ' '.join(bill_to_lines)
+                break
+        
+        # Extract shipping info
+        ship_via_match = re.search(r'SHIP VIA\s*(.+?)(?:FREIGHT|TERMS|$)', full_text)
+        if ship_via_match:
+            order_info['Shipping Instructions'] = ship_via_match.group(1).strip()
+        
+        # Extract notes/comments
+        notes_idx = -1
+        for i, line in enumerate(lines):
+            if 'Seller shall acknowledge' in line:
+                notes_idx = i
+                break
+        
+        if notes_idx > 0:
+            notes_lines = []
+            for j in range(notes_idx, min(notes_idx + 10, len(lines))):
+                if lines[j].strip() and 'Print Date' not in lines[j]:
+                    notes_lines.append(lines[j].strip())
+                elif 'Print Date' in lines[j]:
                     break
-            order_info['Invoice Address'] = ' '.join(invoice_lines)
-            break
+            order_info['Comments'] = ' '.join(notes_lines)
     
     # Try to detect Ford order format for items
     for line in lines:
@@ -267,69 +353,131 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
         if not line:
             continue
         
-        # Ford order format pattern:
-        # "873 M-1225-B 8.8" AXLE BEARING AND SEAL KIT (PAIR) 1 12.5500 USD 10,956.15 USD"
-        # Pattern: quantity code description unit_pack unit_price total_price
+        if is_ford:
+            # Ford order format pattern:
+            # "873 M-1225-B 8.8" AXLE BEARING AND SEAL KIT (PAIR) 1 12.5500 USD 10,956.15 USD"
+            # Pattern: quantity code description unit_pack unit_price total_price
+            
+            # Look for lines with USD prices (indicates order item line)
+            if 'USD' in line and re.search(r'\d+\.\d+\s+USD', line):
+                try:
+                    # Extract quantity (first number)
+                    quantity_match = re.search(r'^(\d+)\s+', line)
+                    if not quantity_match:
+                        continue
+                    quantity = int(quantity_match.group(1))
+                    
+                    # Extract code (alphanumeric with dashes, after quantity)
+                    code_match = re.search(r'^\d+\s+([A-Z0-9-]+)\s+', line)
+                    code = code_match.group(1) if code_match else ""
+                    
+                    # Extract unit price (first USD price)
+                    unit_price_match = re.search(r'(\d+[\.,]\d+)\s+USD', line)
+                    if not unit_price_match:
+                        continue
+                    unit_price = float(unit_price_match.group(1).replace(',', ''))
+                    
+                    # Extract total price (second USD price) - handle commas properly
+                    # Find all USD prices in the line
+                    total_price_matches = re.findall(r'([\d,]+\.?\d*)\s+USD', line)
+                    if len(total_price_matches) >= 2:
+                        # Use the last match as total price (typically the larger value)
+                        total_price_str = total_price_matches[-1].replace(',', '')
+                        total_price = float(total_price_str)
+                    else:
+                        total_price = unit_price * quantity
+                    
+                    # Extract description (between code and unit price)
+                    description_parts = line.split(code)
+                    if len(description_parts) > 1:
+                        description_part = description_parts[1]
+                        # Remove unit pack and price info
+                        desc_match = re.match(r'\s+(.+?)\s+\d+\s+\d+[\.,]\d+\s+USD', description_part)
+                        if desc_match:
+                            description = desc_match.group(1).strip()
+                        else:
+                            # Fallback: take everything before the price
+                            description = re.sub(r'\s+\d+\s+\d+[\.,]\d+\s+USD.*', '', description_part).strip()
+                    else:
+                        description = line
+                    
+                    item = {
+                        'Code': code,
+                        'Item': description,
+                        'Quantity': quantity,
+                        'Unit Price': unit_price,
+                        'Total': total_price
+                    }
+                    
+                    # Add order info to each item
+                    item.update(order_info)
+                    
+                    items.append(item)
+                    
+                except (ValueError, IndexError, AttributeError) as e:
+                    # If Ford parsing fails, try generic parsing
+                    continue
         
-        # Look for lines with USD prices (indicates order item line)
-        if 'USD' in line and re.search(r'\d+\.\d+\s+USD', line):
-            try:
-                # Extract quantity (first number)
-                quantity_match = re.search(r'^(\d+)\s+', line)
-                if not quantity_match:
-                    continue
-                quantity = int(quantity_match.group(1))
-                
-                # Extract code (alphanumeric with dashes, after quantity)
-                code_match = re.search(r'^\d+\s+([A-Z0-9-]+)\s+', line)
-                code = code_match.group(1) if code_match else ""
-                
-                # Extract unit price (first USD price)
-                unit_price_match = re.search(r'(\d+[\.,]\d+)\s+USD', line)
-                if not unit_price_match:
-                    continue
-                unit_price = float(unit_price_match.group(1).replace(',', ''))
-                
-                # Extract total price (second USD price) - handle commas properly
-                # Find all USD prices in the line
-                total_price_matches = re.findall(r'([\d,]+\.?\d*)\s+USD', line)
-                if len(total_price_matches) >= 2:
-                    # Use the last match as total price (typically the larger value)
-                    total_price_str = total_price_matches[-1].replace(',', '')
-                    total_price = float(total_price_str)
-                else:
-                    total_price = unit_price * quantity
-                
-                # Extract description (between code and unit price)
-                description_parts = line.split(code)
-                if len(description_parts) > 1:
-                    description_part = description_parts[1]
-                    # Remove unit pack and price info
-                    desc_match = re.match(r'\s+(.+?)\s+\d+\s+\d+[\.,]\d+\s+USD', description_part)
+        elif is_ss_truck:
+            # S&S Truck Parts format pattern:
+            # "1 ITEM- 3507678 WMS UPC#:698231109694 CAT NBR - 3103 CRUSH SLEEVE C9.25" PKG CODE: PP014-BULK PACKAGING APPROVED DELIVER ON 10/22/26 1500.000 EA .7300 1095.00"
+            
+            # Look for lines with item numbers and prices
+            if re.search(r'\d+\s+ITEM-', line) and re.search(r'\.\d+\s*$', line):
+                try:
+                    # Extract quantity (first number)
+                    quantity_match = re.search(r'^(\d+)\s+', line)
+                    if not quantity_match:
+                        continue
+                    quantity = int(quantity_match.group(1))
+                    
+                    # Extract item number
+                    item_match = re.search(r'ITEM-\s*(\S+)', line)
+                    code = item_match.group(1) if item_match else ""
+                    
+                    # Extract unit price (last decimal before final amount)
+                    unit_price_match = re.search(r'(\d+\.\d+)\s+EA', line)
+                    if not unit_price_match:
+                        # Try alternate pattern
+                        unit_price_match = re.search(r'(\d+\.\d+)\s*\d+\.\d+\s*$', line)
+                    if unit_price_match:
+                        unit_price = float(unit_price_match.group(1))
+                    else:
+                        continue
+                    
+                    # Extract total (last decimal)
+                    total_match = re.search(r'(\d+\.\d+)\s*$', line)
+                    if total_match:
+                        total = float(total_match.group(1))
+                    else:
+                        total = unit_price * quantity
+                    
+                    # Extract description (everything between item number and delivery date)
+                    desc_match = re.search(r'ITEM-\S+\s+(.+?)\s+DELIVER ON', line)
                     if desc_match:
                         description = desc_match.group(1).strip()
+                        # Clean up extra info
+                        description = re.sub(r'WMS UPC#:\d+\s*', '', description)
+                        description = re.sub(r'CAT NBR - \d+\s*', '', description)
+                        description = re.sub(r'PKG CODE:.*?APPROVED\s*', '', description)
                     else:
-                        # Fallback: take everything before the price
-                        description = re.sub(r'\s+\d+\s+\d+[\.,]\d+\s+USD.*', '', description_part).strip()
-                else:
-                    description = line
-                
-                item = {
-                    'Code': code,
-                    'Item': description,
-                    'Quantity': quantity,
-                    'Unit Price': unit_price,
-                    'Total': total_price
-                }
-                
-                # Add order info to each item
-                item.update(order_info)
-                
-                items.append(item)
-                
-            except (ValueError, IndexError, AttributeError) as e:
-                # If Ford parsing fails, try generic parsing
-                continue
+                        description = line
+                    
+                    item = {
+                        'Code': code,
+                        'Item': description,
+                        'Quantity': quantity,
+                        'Unit Price': unit_price,
+                        'Total': total
+                    }
+                    
+                    # Add order info to each item
+                    item.update(order_info)
+                    
+                    items.append(item)
+                    
+                except (ValueError, IndexError, AttributeError) as e:
+                    continue
     
     # If Ford parsing found items, return them
     if items:
