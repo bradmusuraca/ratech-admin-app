@@ -305,9 +305,11 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
         
         # Extract Ship To and Bill To - both are S&S Truck Parts
         # The format is: S&S Truck Parts\n9401 Georgia Street Suite 1\nCrown Point IN 46307\nU.S.A.
-        ss_address_match = re.search(r'S&S Truck Parts\s*\n(9401.*?U\.S\.A\.)', full_text, re.DOTALL)
-        if ss_address_match:
-            ss_address_text = ss_address_match.group(1).strip()
+        # Find all occurrences of S&S Truck Parts followed by address
+        ss_matches = re.findall(r'S&S Truck Parts\s*\n\s*(9401.*?U\.S\.A\.)', full_text, re.DOTALL)
+        if ss_matches:
+            # Use the first match (they're the same address)
+            ss_address_text = ss_matches[0].strip()
             ss_full_address = 'S&S Truck Parts\n' + ss_address_text
             order_info['Ship To'] = ss_full_address
             order_info['Invoice Address'] = ss_full_address
