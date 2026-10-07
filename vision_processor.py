@@ -210,11 +210,18 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
     
     # Try Gemini parsing first if API key is provided
     if gemini_api_key:
+        print("DEBUG: Using Gemini API for parsing")
         gemini_items = parse_order_with_gemini(extracted_text, gemini_api_key)
         if gemini_items:
+            print(f"DEBUG: Gemini returned {len(gemini_items)} items")
             return gemini_items
+        else:
+            print("DEBUG: Gemini returned no items, falling back to regex")
+    else:
+        print("DEBUG: No Gemini API key provided, using regex fallback")
     
     # Fallback to simple regex-based parsing
+    print("DEBUG: Using regex fallback parsing")
     items = []
     lines = extracted_text.split('\n')
     
@@ -260,13 +267,13 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
     
     if is_ss_truck:
         # S&S Truck Parts specific parsing
-        # Look for PO number in format like "P059502"
-        po_match = re.search(r'\b(P\d{5,})\b', full_text)
+        # Look for PO number - appears after "** PURCHASE ORDER **"
+        po_match = re.search(r'\*\*\s*PURCHASE ORDER\s*\*\*\s*([P|p]?\d+)', full_text)
         if po_match:
             order_info['Purchase Order Number'] = po_match.group(1)
         
-        # Look for dates - specifically the date before a 6-digit vendor number
-        # Pattern: date\nvendor_number (like 10/06/26\n101050)
+        # Look for date and vendor - date appears before 6-digit vendor number
+        # Pattern: "10/06/26\n101050" 
         date_vendor_match = re.search(r'(\d{1,2}/\d{1,2}/\d{2,4})\s*\n\s*(\d{6})', full_text)
         if date_vendor_match:
             order_info['Date of Order'] = date_vendor_match.group(1)
@@ -277,15 +284,17 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
         if delivery_match:
             order_info['Ship By Date'] = delivery_match.group(1)
         
-        # Look for S&S Truck Parts address (appears twice - use first occurrence)
-        ss_address_match = re.search(r'S&S Truck Parts\s*\n\s*(9401.*?U\.S\.A\.)', full_text, re.DOTALL)
-        if ss_address_match:
-            ss_address = 'S&S Truck Parts\n' + ss_address_match.group(1).strip()
+        # Look for S&S Truck Parts address - appears twice in the text
+        # The pattern is: S&S Truck Parts\n9401 Georgia Street Suite 1\nCrown Point IN 46307\nU.S.A.
+        ss_addresses = re.findall(r'S&S Truck Parts\s*\n\s*(9401.*?U\.S\.A\.)', full_text, re.DOTALL)
+        if ss_addresses:
+            # Use the first occurrence
+            ss_address = 'S&S Truck Parts\n' + ss_addresses[0].strip()
             order_info['Ship To'] = ss_address
             order_info['Invoice Address'] = ss_address
         
-        # Look for shipping method
-        ship_match = re.search(r'\b(DAYTON FREIGHT|FEDEX|UPS|UPS GROUND|FREIGHT)\b', full_text)
+        # Look for shipping method - find DAYTON FREIGHT or similar
+        ship_match = re.search(r'\b(DAYTON FREIGHT|FEDEX|UPS|UPS GROUND|FREIGHT COLLECT)\b', full_text)
         if ship_match:
             order_info['Shipping Instructions'] = ship_match.group(1)
         
