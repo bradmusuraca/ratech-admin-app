@@ -22,10 +22,18 @@ class VisionProcessor:
         if credentials_json:
             # Parse and use credentials from string
             try:
+                # Clean up the credentials string - remove extra whitespace
+                credentials_json = credentials_json.strip()
                 credentials_dict = json.loads(credentials_json)
                 from google.oauth2 import service_account
                 credentials = service_account.Credentials.from_service_account_info(credentials_dict)
                 self.client = vision.ImageAnnotatorClient(credentials=credentials)
+            except json.JSONDecodeError as e:
+                print(f"Invalid JSON format in credentials: {e}")
+                raise ValueError(
+                    f"The Google Cloud credentials are not valid JSON. "
+                    f"Error: {e}. Please ensure you pasted the entire JSON file contents."
+                )
             except Exception as e:
                 print(f"Error loading credentials from string: {e}")
                 raise
@@ -189,7 +197,7 @@ class VisionProcessor:
 def parse_order_text(extracted_text: str) -> List[Dict]:
     """
     Parse extracted text into structured order data
-    This is a placeholder - actual parsing logic will depend on your order format
+    Custom parser for Ford Motor Company purchase orders
     
     Args:
         extracted_text: Raw text extracted from PDF
@@ -197,33 +205,106 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
     Returns:
         List of dictionaries representing order items
     """
-    # This is a basic placeholder parser
-    # You'll need to customize this based on your actual order format
+    import re
     
     items = []
     lines = extracted_text.split('\n')
     
-    # Example parsing logic - customize based on your order format
+    # Try to detect Ford order format
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Ford order format pattern:
+        # "873 M-1225-B 8.8" AXLE BEARING AND SEAL KIT (PAIR) 1 12.5500 USD 10,956.15 USD"
+        # Pattern: quantity code description unit_pack unit_price total_price
+        
+        # Look for lines with USD prices (indicates order item line)
+        if 'USD' in line and re.search(r'\d+\.\d+\s+USD', line):
+            try:
+                # Extract quantity (first number)
+                quantity_match = re.search(r'^(\d+)\s+', line)
+                if not quantity_match:
+                    continue
+                quantity = int(quantity_match.group(1))
+                
+                # Extract code (alphanumeric with dashes, after quantity)
+                code_match = re.search(r'^\d+\s+([A-Z0-9-]+)\s+', line)
+                code = code_match.group(1) if code_match else ""
+                
+                # Extract unit price (first USD price)
+                unit_price_match = re.search(r'(\d+[\.,]\d+)\s+USD', line)
+                if not unit_price_match:
+                    continue
+                unit_price = float(unit_price_match.group(1).replace(',', ''))
+                
+                # Extract total price (second USD price)
+                total_price_matches = re.findall(r'(\d+[\.,]\d+)\s+USD', line)
+                if len(total_price_matches) >= 2:
+                    total_price = float(total_price_matches[1].replace(',', ''))
+                else:
+                    total_price = unit_price * quantity
+                
+                # Extract description (between code and unit price)
+                description_parts = line.split(code)
+                if len(description_parts) > 1:
+                    description_part = description_parts[1]
+                    # Remove unit pack and price info
+                    desc_match = re.match(r'\s+(.+?)\s+\d+\s+\d+[\.,]\d+\s+USD', description_part)
+                    if desc_match:
+                        description = desc_match.group(1).strip()
+                    else:
+                        # Fallback: take everything before the price
+                        description = re.sub(r'\s+\d+\s+\d+[\.,]\d+\s+USD.*', '', description_part).strip()
+                else:
+                    description = line
+                
+                items.append({
+                    'Code': code,
+                    'Item': description,
+                    'Quantity': quantity,
+                    'Unit Price': unit_price,
+                    'Total': total_price
+                })
+                
+            except (ValueError, IndexError, AttributeError) as e:
+                # If Ford parsing fails, try generic parsing
+                continue
+    
+    # If Ford parsing found items, return them
+    if items:
+        return items
+    
+    # Fallback: generic parsing for other formats
     for line in lines:
         line = line.strip()
         if not line:
             continue
         
         # Look for patterns like: "Item Name - $10.00" or "Item: 5 x $20.00"
-        # This is just an example - adjust regex patterns to match your format
-        if '$' in line:
+        if '$' in line or 'USD' in line:
             try:
-                parts = line.split('$')
-                if len(parts) >= 2:
-                    item_name = parts[0].strip()
-                    price = float(parts[1].strip())
+                # Try to extract price
+                price_match = re.search(r'[\$]?(\d+[\.,]\d+)\s*(USD)?', line)
+                if price_match:
+                    price = float(price_match.group(1).replace(',', ''))
                     
-                    items.append({
-                        'Item': item_name,
-                        'Quantity': 1,  # Default to 1 if not specified
-                        'Price': price,
-                        'Total': price
-                    })
+                    # Try to extract quantity
+                    qty_match = re.search(r'(\d+)\s*(x|ea|pcs|units)?', line)
+                    quantity = int(qty_match.group(1)) if qty_match else 1
+                    
+                    # Extract item name (everything before price)
+                    item_name = re.sub(r'[\$]?\d+[\.,]\d+\s*(USD)?.*', '', line).strip()
+                    
+                    if item_name:
+                        items.append({
+                            'Code': '',
+                            'Item': item_name,
+                            'Quantity': quantity,
+                            'Unit Price': price,
+                            'Total': price * quantity
+                        })
             except (ValueError, IndexError):
                 continue
     

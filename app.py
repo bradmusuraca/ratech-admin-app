@@ -71,7 +71,7 @@ if page == "Order Processing":
                 df = pd.DataFrame(order_items)
             else:
                 st.warning("Could not automatically parse order items. Please enter data manually.")
-                df = pd.DataFrame(columns=["Item", "Quantity", "Price", "Total"])
+                df = pd.DataFrame(columns=["Code", "Item", "Quantity", "Unit Price", "Total"])
         
         st.session_state.processed_df = df
         
@@ -90,7 +90,10 @@ if page == "Order Processing":
         
         # Calculate totals
         if not edited_df.empty:
-            edited_df['Total'] = edited_df['Quantity'] * edited_df['Price']
+            if 'Unit Price' in edited_df.columns:
+                edited_df['Total'] = edited_df['Quantity'] * edited_df['Unit Price']
+            elif 'Price' in edited_df.columns:
+                edited_df['Total'] = edited_df['Quantity'] * edited_df['Price']
         
         # Export options
         col1, col2 = st.columns(2)
@@ -146,6 +149,15 @@ elif page == "Settings":
     with col1:
         if st.button("Save Credentials"):
             if google_credentials:
+                # Validate JSON format before saving
+                try:
+                    import json
+                    json.loads(google_credentials.strip())
+                except json.JSONDecodeError as e:
+                    st.error(f"Invalid JSON format: {e}")
+                    st.info("Please ensure you pasted the entire JSON file contents without extra characters.")
+                    return
+                
                 # Update .env file
                 env_file = ".env"
                 if os.path.exists(env_file):
