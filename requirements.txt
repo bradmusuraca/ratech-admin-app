@@ -3,6 +3,7 @@ google-cloud-vision
 google-generativeai
 python-dotenv
 pypdf
+pymupdf
 pandas
 pillow
 google-auth

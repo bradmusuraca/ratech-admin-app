@@ -108,8 +108,7 @@ class VisionProcessor:
     
     def _ocr_pdf(self, pdf_path: str) -> str:
         """
-        OCR a PDF by converting pages to images first
-        Note: This requires pdf2image which may not be available on all platforms
+        OCR a PDF by converting pages to images using PyMuPDF
         
         Args:
             pdf_path: Path to the PDF file
@@ -118,36 +117,42 @@ class VisionProcessor:
             Extracted text as a string
         """
         try:
-            from pdf2image import convert_from_path
+            import fitz  # PyMuPDF
             
-            # Convert PDF to images
-            images = convert_from_path(pdf_path)
+            # Open the PDF
+            pdf_document = fitz.open(pdf_path)
             
             full_text = ""
-            for i, image in enumerate(images):
-                # Convert PIL image to bytes
-                img_byte_arr = io.BytesIO()
-                image.save(img_byte_arr, format='PNG')
-                img_byte_arr = img_byte_arr.getvalue()
+            for page_num in range(len(pdf_document)):
+                # Get the page
+                page = pdf_document[page_num]
                 
-                # Use Vision API
-                vision_image = vision.Image(content=img_byte_arr)
+                # Convert to image
+                pix = page.get_pixmap()
+                img_bytes = pix.tobytes("png")
+                
+                # Use Vision API on the image
+                vision_image = vision.Image(content=img_bytes)
                 response = self.client.document_text_detection(image=vision_image)
                 
                 if response.error.message:
-                    print(f"Error on page {i+1}: {response.error.message}")
+                    print(f"Error on page {page_num+1}: {response.error.message}")
                     continue
                 
                 full_text += response.full_text_annotation.text + "\n"
             
+            pdf_document.close()
             return full_text
             
         except ImportError:
-            print("pdf2image not available. For scanned PDFs, please convert to images first.")
+            print("PyMuPDF (fitz) not available. For scanned PDFs, please convert to images first.")
             raise NotImplementedError(
-                "OCR for scanned PDFs requires pdf2image. "
+                "OCR for scanned PDFs requires PyMuPDF. "
                 "Please convert your PDF to images or use a PDF with embedded text."
             )
+        except Exception as e:
+            print(f"Error in OCR PDF: {e}")
+            raise
         except Exception as e:
             print(f"Error OCRing PDF: {e}")
             raise
