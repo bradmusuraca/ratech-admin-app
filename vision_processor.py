@@ -102,6 +102,7 @@ class VisionProcessor:
     def _ocr_pdf(self, pdf_path: str) -> str:
         """
         OCR a PDF by converting pages to images first
+        Note: This requires pdf2image which may not be available on all platforms
         
         Args:
             pdf_path: Path to the PDF file
@@ -135,8 +136,11 @@ class VisionProcessor:
             return full_text
             
         except ImportError:
-            print("pdf2image not installed. Please install it with: pip install pdf2image")
-            raise
+            print("pdf2image not available. For scanned PDFs, please convert to images first.")
+            raise NotImplementedError(
+                "OCR for scanned PDFs requires pdf2image. "
+                "Please convert your PDF to images or use a PDF with embedded text."
+            )
         except Exception as e:
             print(f"Error OCRing PDF: {e}")
             raise
