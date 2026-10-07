@@ -2,7 +2,6 @@ import os
 import json
 from typing import List, Dict, Optional
 from google.cloud import vision
-from google.cloud.vision import types
 from PIL import Image
 import io
 
