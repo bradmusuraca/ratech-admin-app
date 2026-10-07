@@ -420,7 +420,7 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
         
         elif is_ss_truck:
             # S&S Truck Parts format - handle multi-line items
-            # Look for pattern like:
+            # Format example:
             # "    1 ITEM- 3507678         WMS UPC#:698231109694
             #    CAT NBR - 3103
             #   CRUSH SLEEVE C9.25"
@@ -428,16 +428,17 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
             #                       DELIVER ON 10/22/26    1500.000 EA            .7300  
             #       1095.00"
             
-            # Find lines that start with a number followed by ITEM-
-            for i in range(len(lines) - 1):
+            i = 0
+            while i < len(lines):
                 line = lines[i].strip()
                 
-                # Check if this line starts an item (has ITEM- and a number at start)
+                # Check if this line starts an item (number followed by ITEM-)
                 if re.search(r'^\s*\d+\s+ITEM-', line):
                     try:
-                        # Extract quantity (first number)
+                        # Extract quantity
                         quantity_match = re.search(r'^\s*(\d+)\s+ITEM-', line)
                         if not quantity_match:
+                            i += 1
                             continue
                         quantity = int(quantity_match.group(1))
                         
@@ -445,48 +446,44 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
                         item_match = re.search(r'ITEM-\s*(\S+)', line)
                         code = item_match.group(1) if item_match else ""
                         
-                        # Collect description across multiple lines
-                        description_lines = [line]
-                        current_idx = i + 1
+                        # Collect description lines and find price info
+                        description_lines = []
+                        unit_price = 0
+                        total = 0
+                        j = i + 1
                         
-                        # Look ahead to find description lines and price line
-                        while current_idx < len(lines):
-                            next_line = lines[current_idx].strip()
+                        # Look ahead for description and price lines
+                        while j < len(lines) and j < i + 8:
+                            current_line = lines[j].strip()
                             
-                            # Check if this line has prices (DELIVER ON pattern)
-                            if 'DELIVER ON' in next_line and re.search(r'(\d+\.\d+)\s*$', next_line):
-                                # This is the price line
-                                # Extract unit price (decimal before EA)
-                                unit_price_match = re.search(r'(\d+\.\d+)\s+EA', next_line)
-                                if unit_price_match:
-                                    unit_price = float(unit_price_match.group(1))
-                                else:
-                                    unit_price = 0
+                            # Check if this line has DELIVER ON with prices
+                            if 'DELIVER ON' in current_line:
+                                # Extract unit price - look for pattern like ".7300" or "0.7300"
+                                price_match = re.search(r'(\d+\.\d+)\s+EA\s+(\.\d+|\d+\.\d+)', current_line)
+                                if price_match:
+                                    unit_price_str = price_match.group(2)
+                                    # Handle leading decimal point (e.g., ".7300" -> 0.73)
+                                    if unit_price_str.startswith('.'):
+                                        unit_price = float('0' + unit_price_str)
+                                    else:
+                                        unit_price = float(unit_price_str)
                                 
-                                # Extract total (last decimal on this line or next line)
-                                total_match = re.search(r'(\d+\.\d+)\s*$', next_line)
-                                if total_match:
-                                    total = float(total_match.group(1))
-                                else:
-                                    # Check next line for total
-                                    if current_idx + 1 < len(lines):
-                                        total_match = re.search(r'(\d+\.\d+)\s*$', lines[current_idx + 1].strip())
-                                        if total_match:
-                                            total = float(total_match.group(1))
-                                        else:
-                                            total = unit_price * quantity
+                                # Get total from next line
+                                if j + 1 < len(lines):
+                                    total_line = lines[j + 1].strip()
+                                    total_match = re.search(r'(\d+\.\d+)\s*$', total_line)
+                                    if total_match:
+                                        total = float(total_match.group(1))
                                     else:
                                         total = unit_price * quantity
                                 
-                                # Build description from collected lines
+                                # Build description
                                 description = ' '.join(description_lines)
-                                
                                 # Clean up description
-                                description = re.sub(r'ITEM-\S+\s*', '', description)
+                                description = re.sub(r'^\s*\d+\s+ITEM-\S+\s*', '', description)
                                 description = re.sub(r'WMS UPC#:\d+\s*', '', description)
                                 description = re.sub(r'CAT NBR - \d+\s*', '', description)
                                 description = re.sub(r'PKG CODE:.*?APPROVED\s*', '', description)
-                                description = re.sub(r'DELIVER ON.*?', '', description)
                                 description = re.sub(r'\s+', ' ', description).strip()
                                 
                                 item = {
@@ -503,21 +500,23 @@ def parse_order_text(extracted_text: str) -> List[Dict]:
                                 items.append(item)
                                 break
                             
-                            # If no prices found yet, add this line to description
-                            if next_line and not re.search(r'ITEM-|CAT NBR|PKG CODE', next_line):
-                                description_lines.append(next_line)
-                            else:
-                                # Skip metadata lines
-                                description_lines.append(next_line)
+                            # Collect description lines
+                            if current_line and not re.search(r'CAT NBR|PKG CODE', current_line):
+                                description_lines.append(current_line)
+                            elif 'CAT NBR' in current_line or 'PKG CODE' in current_line:
+                                # These are metadata lines, add them but they'll be cleaned later
+                                description_lines.append(current_line)
                             
-                            current_idx += 1
-                            
-                            # Stop if we've gone too far
-                            if current_idx - i > 10:
-                                break
+                            j += 1
+                        
+                        # Move past this item's lines
+                        i = j
+                        continue
                         
                     except (ValueError, IndexError, AttributeError) as e:
-                        continue
+                        pass
+                
+                i += 1
     
     # If Ford parsing found items, return them
     if items:
