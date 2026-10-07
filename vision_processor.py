@@ -384,11 +384,11 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
                                     total = unit_price * quantity
                             
                             item = {
-                                'Inventory Item': code,
-                                'Description': description,
-                                'Quantity': quantity,
-                                'Unit Price': unit_price,
-                                'Total': total
+                                'Inventory Item': str(code),
+                                'Description': str(description),
+                                'Quantity': int(quantity),
+                                'Unit Price': float(unit_price),
+                                'Total': float(total)
                             }
                             item.update(order_info)
                             items.append(item)
