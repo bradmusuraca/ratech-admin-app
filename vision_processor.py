@@ -1,5 +1,6 @@
 import os
 import json
+import html
 from typing import List, Dict, Optional
 from google.cloud import vision
 from PIL import Image
@@ -217,22 +218,10 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
         List of dictionaries representing order items
     """
     import re
-    
-    # Always try Gemini first if API key is provided
-    if gemini_api_key:
-        print("DEBUG: Using Gemini API for parsing")
-        gemini_items = parse_order_with_gemini(extracted_text, gemini_api_key)
-        if gemini_items:
-            print(f"DEBUG: Gemini returned {len(gemini_items)} items")
-            return gemini_items
-        else:
-            print("DEBUG: Gemini returned no items, falling back to regex")
-    
-    # Fallback to regex-based parsing
-    print("DEBUG: Using regex fallback")
     items = []
     lines = extracted_text.split('\n')
-    
+    full_text = ' '.join(lines)
+
     # Extract order header information
     order_info = {
         'Purchase Order Number': '',
@@ -244,7 +233,7 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
         'Shipping Instructions': '',
         'Comments': ''
     }
-    
+
     # Helper function to safely convert to float
     def safe_float(value, default=0.0):
         try:
@@ -255,7 +244,7 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
             return float(value)
         except (ValueError, TypeError):
             return default
-    
+
     # Helper function to safely convert to int
     def safe_int(value, default=0):
         try:
@@ -266,15 +255,43 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
             return int(float(value))
         except (ValueError, TypeError):
             return default
-    
-    # Detect format type
-    full_text = ' '.join(lines)
-    
+
     # Check if it's S&S Truck Parts format
     is_ss_truck = 'S&S Truck Parts' in full_text or 'sandstruck.com' in full_text or 'SSPO' in full_text
-    
+
     # Check if it's Summit Racing format
     is_summit = 'Summit Racing' in full_text or 'summitracing.com' in full_text.lower() or 'SUMMIT RACING' in full_text
+
+    def summit_items_ok(items_list):
+        """Validate Gemini output for Summit docs: no empty descriptions,
+        and Total must equal Quantity x Unit Price."""
+        if not items_list:
+            return False
+        for it in items_list:
+            if not str(it.get('Description', '')).strip():
+                return False
+            q = safe_float(it.get('Quantity', 0))
+            p = safe_float(it.get('Unit Price', it.get('Price', 0)))
+            t = safe_float(it.get('Total', 0))
+            if t and abs(q * p - t) > 0.05:
+                return False
+        return True
+
+    # Always try Gemini first if API key is provided
+    if gemini_api_key:
+        print("DEBUG: Using Gemini API for parsing")
+        gemini_items = parse_order_with_gemini(extracted_text, gemini_api_key)
+        if gemini_items:
+            if is_summit and not summit_items_ok(gemini_items):
+                print("DEBUG: Gemini Summit output failed validation, using deterministic parser")
+            else:
+                print(f"DEBUG: Gemini returned {len(gemini_items)} items")
+                return gemini_items
+        else:
+            print("DEBUG: Gemini returned no items, falling back to regex")
+
+    # Fallback to regex-based parsing
+    print("DEBUG: Using regex fallback")
     
     if is_summit:
         # Summit Racing format parsing
@@ -316,87 +333,104 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
         if comments_match:
             order_info['Comments'] = comments_match.group(1).strip()
         
-        # Find items - Summit Racing email format has items across multiple lines
-        # Pattern: line_number \n part_number \n quantity \n description... \n price \n discount \n ext_price
-        lines_text = extracted_text.split('\n')
-        
-        for i, line in enumerate(lines_text):
-            # Look for lines that are just 4-digit numbers (line numbers like "0001", "0002")
-            if re.match(r'^\s*\d{4}\s*$', line):
-                try:
-                    # Get the part number (next line with RAT- prefix)
-                    if i + 1 < len(lines_text):
-                        part_line = lines_text[i + 1].strip()
-                        part_match = re.match(r'^(RAT-\d+)', part_line)
-                        if part_match:
-                            part_num = part_match.group(1)
-                            
-                            # Get quantity (next line with just a number)
-                            if i + 2 < len(lines_text):
-                                qty_line = lines_text[i + 2].strip()
-                                if re.match(r'^\d+$', qty_line):
-                                    quantity = safe_int(qty_line)
-                                    
-                                    # Get description (collect lines until we hit price or next item)
-                                    description_lines = []
-                                    j = i + 3
-                                    while j < len(lines_text) and j < i + 10:
-                                        desc_line = lines_text[j].strip()
-                                        
-                                        # Stop if we hit a price line (contains $)
-                                        if '$' in desc_line:
-                                            break
-                                        # Stop if we hit the next item (4-digit number)
-                                        if re.match(r'^\s*\d{4}\s*$', desc_line):
-                                            break
-                                        # Skip discount percentage lines
-                                        if re.match(r'^\d+%$', desc_line):
-                                            break
-                                        # Skip empty lines
-                                        if not desc_line:
-                                            j += 1
-                                            continue
-                                        
-                                        description_lines.append(desc_line)
-                                        j += 1
-                                    
-                                    description = ' '.join(description_lines)
-                                    
-                                    # Get price (look for $ in current line or next line)
-                                    unit_price = 0.0
-                                    total = 0.0
-                                    
-                                    # Look for price in current line or next line
-                                    for k in range(j, min(j + 2, len(lines_text))):
-                                        price_line = lines_text[k].strip()
-                                        price_match = re.search(r'\$([\d.]+)', price_line)
-                                        if price_match:
-                                            unit_price = safe_float(price_match.group(1))
-                                            
-                                            # Look for total (next $ value after discount)
-                                            for m in range(k + 1, min(k + 3, len(lines_text))):
-                                                total_line = lines_text[m].strip()
-                                                total_match = re.search(r'\$([\d,]+\.\d{2})', total_line)
-                                                if total_match:
-                                                    total_str = total_match.group(1).replace(',', '')
-                                                    total = safe_float(total_str)
-                                                    break
-                                            break
-                                    
-                                    # Clean up part number (remove RAT- prefix)
-                                    inventory_item = re.sub(r'^RAT-', '', part_num)
-                                    
-                                    item = {
-                                        'Inventory Item': inventory_item,
-                                        'Description': description,
-                                        'Quantity': quantity,
-                                        'Unit Price': unit_price,
-                                        'Total': total
-                                    }
-                                    item.update(order_info)
-                                    items.append(item)
-                except (ValueError, IndexError):
+        # Find items - Summit Racing email table spans multiple lines per row.
+        # Layout: "0001" / "RAT-xxxx" / qty / description... / $cost / 0% / $ext
+        # Some descriptions are split: first line appears BEFORE the item number
+        # and the last line AFTER the extended price.
+        tbl_lines = [l.strip() for l in extracted_text.split('\n')]
+
+        # Start scanning after the "Ext Price" column header
+        start_idx = 0
+        for idx, l in enumerate(tbl_lines):
+            if 'Ext Price' in l:
+                start_idx = idx + 1
+
+        def is_junk_line(l):
+            low = l.lower()
+            return (not l
+                    or 'http' in low
+                    or 'outlook' in low
+                    or 'inbox' in low
+                    or 'this email was sent' in low
+                    or 'copyright' in low
+                    or bool(re.match(r'^\d{1,2}/\d{1,2}/\d{2,4},', l)))
+
+        def stray_lines(a, b):
+            zone = []
+            for l in tbl_lines[a:b]:
+                if (is_junk_line(l) or '$' in l or re.match(r'^\d+%$', l)
+                        or re.match(r'^\d{4}$', l) or re.match(r'^\d+$', l)
+                        or re.match(r'^RAT-', l)):
                     continue
+                zone.append(l)
+            return zone
+
+        # Locate item anchors: "0001" / "RAT-xxxx" / qty on consecutive lines
+        anchors = [i for i in range(start_idx, len(tbl_lines) - 2)
+                   if re.match(r'^\d{4}$', tbl_lines[i])
+                   and re.match(r'^RAT-[A-Za-z0-9]+', tbl_lines[i + 1])
+                   and re.match(r'^\d+$', tbl_lines[i + 2])]
+
+        money_re = re.compile(r'\$([\d,]+\.?\d*)')
+        blocks = []
+        for i in anchors:
+            part_num = re.match(r'^(RAT-[A-Za-z0-9]+)', tbl_lines[i + 1]).group(1)
+            qty = safe_int(tbl_lines[i + 2])
+            middle = []
+            unit_price = 0.0
+            ext_price = 0.0
+            ext_idx = None
+            j = i + 3
+            while j < len(tbl_lines):
+                m = money_re.search(tbl_lines[j])
+                if m:
+                    unit_price = safe_float(m.group(1).replace(',', ''))
+                    break
+                if re.match(r'^\d{4}$', tbl_lines[j]):
+                    break
+                if not is_junk_line(tbl_lines[j]):
+                    middle.append(tbl_lines[j])
+                j += 1
+            for k in range(j + 1, min(j + 4, len(tbl_lines))):
+                m = money_re.search(tbl_lines[k])
+                if m:
+                    ext_price = safe_float(m.group(1).replace(',', ''))
+                    ext_idx = k
+                    break
+            blocks.append({'anchor': i, 'part': part_num, 'qty': qty,
+                           'middle': middle, 'unit_price': unit_price,
+                           'ext_price': ext_price,
+                           'ext_idx': ext_idx if ext_idx is not None else j})
+
+        # Distribute stray description lines: when an item has no middle
+        # description, its first part sits before the marker and its last
+        # line sits right after the extended price
+        prev_end = start_idx
+        for n, blk in enumerate(blocks):
+            zone = stray_lines(prev_end, blk['anchor'])
+            if n > 0 and not blocks[n - 1]['middle'] and zone:
+                blocks[n - 1]['suffix'] = [zone[0]]
+                zone = zone[1:]
+            blk['prefix'] = zone
+            prev_end = blk['ext_idx'] + 1
+        if blocks:
+            last_zone = stray_lines(blocks[-1]['ext_idx'] + 1, len(tbl_lines))
+            blocks[-1]['suffix'] = ([last_zone[0]]
+                                    if not blocks[-1]['middle'] and last_zone
+                                    else [])
+
+        for blk in blocks:
+            desc = ' '.join(blk.get('prefix', []) + blk['middle'] + blk.get('suffix', []))
+            desc = html.unescape(html.unescape(desc)).strip()
+            item = {
+                'Inventory Item': re.sub(r'^RAT-', '', blk['part']),
+                'Description': desc,
+                'Quantity': blk['qty'],
+                'Unit Price': blk['unit_price'],
+                'Total': blk['ext_price']
+            }
+            item.update(order_info)
+            items.append(item)
     
     elif is_ss_truck:
         # S&S Truck Parts specific parsing
