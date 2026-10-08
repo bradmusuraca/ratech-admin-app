@@ -262,8 +262,11 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
     # Check if it's Summit Racing format
     is_summit = 'Summit Racing' in full_text or 'summitracing.com' in full_text.lower() or 'SUMMIT RACING' in full_text
 
-    def summit_items_ok(items_list):
-        """Validate Gemini output for Summit docs: no empty descriptions,
+    # Check if it's Drive Train Specialists format
+    is_dts = 'DRIVE TRAIN SPECIALISTS' in full_text.upper()
+
+    def items_look_valid(items_list):
+        """Validate parsed items: no empty descriptions,
         and Total must equal Quantity x Unit Price."""
         if not items_list:
             return False
@@ -282,8 +285,8 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
         print("DEBUG: Using Gemini API for parsing")
         gemini_items = parse_order_with_gemini(extracted_text, gemini_api_key)
         if gemini_items:
-            if is_summit and not summit_items_ok(gemini_items):
-                print("DEBUG: Gemini Summit output failed validation, using deterministic parser")
+            if (is_summit or is_dts or is_ss_truck) and not items_look_valid(gemini_items):
+                print("DEBUG: Gemini output failed validation, using deterministic parser")
             else:
                 print(f"DEBUG: Gemini returned {len(gemini_items)} items")
                 return gemini_items
@@ -432,6 +435,108 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
             item.update(order_info)
             items.append(item)
     
+    elif is_dts:
+        # Drive Train Specialists format
+        # Number : 87882 Date: 10/07/2026
+        po_match = re.search(r'Number\s*:\s*(\d+)', extracted_text)
+        if po_match:
+            order_info['Purchase Order Number'] = po_match.group(1)
+
+        date_match = re.search(r'Number\s*:\s*\d+\s*Date:\s*(\d{1,2}/\d{1,2}/\d{4})', extracted_text)
+        if date_match:
+            order_info['Date of Order'] = date_match.group(1)
+
+        # Need By date is the 2nd |-separated field on the "PO #:" line
+        need_match = re.search(r'PO #:\s*\d+\s*\|\s*(\d{1,2}/\d{1,2}/\d{4})', extracted_text)
+        if need_match:
+            order_info['Ship By Date'] = need_match.group(1)
+
+        # Vendor account number for Ratech
+        acct_match = re.search(r'Account:\s*(\d+)', extracted_text)
+        if acct_match:
+            order_info['Vendor'] = acct_match.group(1)
+
+        # Shipping instruction is the last |-separated field on the PO# line
+        ship_match = re.search(r'PO #:.*\|.*\|.*\|.*\|\s*([^|_\n]+)', extracted_text)
+        if ship_match:
+            order_info['Shipping Instructions'] = ship_match.group(1).strip()
+
+        # Ship To / Bill To = Drive Train Specialists' own address
+        ship_parts = []
+        name_match = re.search(r'(DRIVE TRAIN SPECIALISTS[^\n]*)', extracted_text)
+        street_match = re.search(r'(\d{4,6}\s+Groesbeck[^\n]*)', extracted_text)
+        csz_match = re.search(r'([A-Za-z]+,\s*MI\s*\d{5})', extracted_text)
+        if name_match:
+            ship_parts.append(name_match.group(1).strip())
+        if street_match:
+            ship_parts.append(street_match.group(1).strip())
+        if csz_match:
+            ship_parts.append(re.sub(r'\s+', ' ', csz_match.group(1)).strip())
+        if ship_parts:
+            order_info['Ship To'] = '\n'.join(ship_parts)
+            order_info['Invoice Address'] = order_info['Ship To']
+
+        comments = []
+        terms_match = re.search(r'(Net\s+\d+\s+Days)', extracted_text)
+        if terms_match:
+            comments.append('Terms: ' + terms_match.group(1))
+        so_match = re.search(r'PO #:.*\|.*\|.*\|\s*([A-Za-z0-9]+)\s*\|', extracted_text)
+        if so_match:
+            comments.append('Vendor SO #: ' + so_match.group(1))
+        tax_match = re.search(r'\b(\d{2}-\d{6,})\b', extracted_text)
+        if tax_match:
+            comments.append('Tax Exempt: ' + tax_match.group(1))
+        req_match = re.search(r'Requested By\s*:\s*(\w+)', extracted_text)
+        if req_match:
+            comments.append('Requested By: ' + req_match.group(1))
+        if comments:
+            order_info['Comments'] = ' | '.join(comments)
+
+        # Items: " 75 EACH AXLE SIDE SEAL  $3.00  $225.00" on one line,
+        # then optional description continuation lines and a part number
+        # line like "CR  13988" until the "____" section separator.
+        dts_lines = extracted_text.split('\n')
+        item_row_re = re.compile(r'^\s*([\d,]*\.?\d+)\s+[A-Z]{2,5}\s+(.*\S)\s+\$([\d,]+\.?\d*)\s+\$([\d,]+\.?\d*)\s*$')
+        part_re = re.compile(r'^\s*([A-Z]{1,5})\s+([0-9][0-9A-Za-z\-]*)\s*$')
+        raw_items = []
+        in_items = False
+        cur = None
+        for l in dts_lines:
+            if not in_items:
+                if re.search(r'Quantity\s+UM\s+Description', l):
+                    in_items = True
+                continue
+            if re.match(r'^\s*_{5,}', l) or re.match(r'^\s*Terms\b', l):
+                break
+            m = item_row_re.match(l)
+            if m:
+                cur = {
+                    'qty': safe_float(m.group(1)),
+                    'desc': [html.unescape(html.unescape(m.group(2))).strip()],
+                    'price': safe_float(m.group(3)),
+                    'total': safe_float(m.group(4)),
+                    'part': ''
+                }
+                raw_items.append(cur)
+                continue
+            pm = part_re.match(l)
+            if cur is not None and pm:
+                cur['part'] = f"{pm.group(1)} {pm.group(2)}"
+            elif cur is not None and l.strip():
+                cur['desc'].append(html.unescape(html.unescape(l.strip())))
+
+        for r in raw_items:
+            qty = r['qty']
+            item = {
+                'Inventory Item': r['part'],
+                'Description': ' '.join(r['desc']).strip(),
+                'Quantity': int(qty) if qty == int(qty) else qty,
+                'Unit Price': r['price'],
+                'Total': r['total']
+            }
+            item.update(order_info)
+            items.append(item)
+
     elif is_ss_truck:
         # S&S Truck Parts specific parsing
         # Look for PO number - appears after "** PURCHASE ORDER **"
