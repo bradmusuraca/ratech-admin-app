@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 import pandas as pd
 from io import StringIO
 from vision_processor import VisionProcessor, parse_order_text
+from email_inbox import list_unseen_orders, fetch_pdf_from_message
 
 load_dotenv()
 
@@ -32,6 +33,85 @@ def render_pdf_images(pdf_bytes):
         print(f"PDF preview render failed: {e}")
         return []
 
+
+def save_env_vars(pairs):
+    """Update or add keys in the .env file."""
+    env_file = ".env"
+    lines = []
+    if os.path.exists(env_file):
+        with open(env_file, 'r') as f:
+            lines = f.readlines()
+    for key, value in pairs.items():
+        updated = False
+        new_lines = []
+        for line in lines:
+            if line.startswith(f'{key}='):
+                new_lines.append(f'{key}={value}\n')
+                updated = True
+            else:
+                new_lines.append(line)
+        if not updated:
+            new_lines.append(f'{key}={value}\n')
+        lines = new_lines
+    with open(env_file, 'w') as f:
+        f.writelines(lines)
+    load_dotenv(override=True)
+
+
+def process_pdf(pdf_bytes, pdf_name, doc_key):
+    """Extract text, parse order data, and store results in session state."""
+    st.session_state.file_id = doc_key
+    st.session_state.pdf_bytes = pdf_bytes
+    st.session_state.pdf_name = pdf_name
+    st.session_state.pdf_images = render_pdf_images(pdf_bytes)
+    st.success(f"Loaded: {pdf_name}")
+
+    # Get Google credentials from environment
+    google_credentials = os.getenv('GOOGLE_CREDENTIALS')
+
+    if not google_credentials:
+        st.warning("Google Cloud credentials not configured. Please add them in Settings.")
+        st.info("Using placeholder mode for demo purposes")
+        extracted_text = "Sample extracted text from PDF\nItem 1: Widget A - $10.00\nItem 2: Widget B - $20.00"
+    else:
+        with st.spinner("Processing PDF with Google Vision API..."):
+            try:
+                processor = VisionProcessor(credentials_json=google_credentials)
+                extracted_text = processor.extract_text_from_bytes(pdf_bytes, file_type='pdf')
+                st.success("Text extraction completed!")
+            except Exception as e:
+                st.error(f"Error processing PDF: {str(e)}")
+                st.info("Using placeholder mode for demo purposes")
+                extracted_text = "Sample extracted text from PDF\nItem 1: Widget A - $10.00\nItem 2: Widget B - $20.00"
+
+    st.session_state.extracted_text = extracted_text
+
+    # Parse order data
+    with st.spinner("Parsing order data..."):
+        gemini_key = os.getenv('GEMINI_API_KEY')
+
+        if gemini_key:
+            st.info("🤖 Using Gemini AI for parsing")
+        else:
+            st.warning("⚠️ No Gemini API key found - using regex fallback")
+
+        order_items = parse_order_text(extracted_text, gemini_api_key=gemini_key)
+
+        if order_items:
+            df = pd.DataFrame(order_items)
+            # Reorder columns for better display
+            cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments', 'Inventory Item', 'Description', 'Quantity', 'Unit Price', 'Total']
+            cols = [col for col in cols if col in df.columns]
+            df = df[cols]
+            st.success(f"✅ Successfully parsed {len(order_items)} item(s)")
+        else:
+            st.warning("⚠️ Could not automatically parse order items.")
+            st.info("📝 Please enter data manually using the editable table below.")
+            df = pd.DataFrame(columns=["Purchase Order Number", "Date of Order", "Ship By Date", "Ship To", "Invoice Address", "Vendor", "Shipping Instructions", "Comments", "Inventory Item", "Description", "Quantity", "Unit Price", "Total"])
+            df.loc[0] = [""] * len(df.columns)
+
+    st.session_state.processed_df = df
+
 # Sidebar navigation
 st.sidebar.title("Navigation")
 page = st.sidebar.radio("Select Page", ["Order Processing", "Inventory Management", "Settings"])
@@ -52,75 +132,81 @@ if page == "Order Processing":
         st.session_state.pdf_images = []
     if 'file_id' not in st.session_state:
         st.session_state.file_id = None
+    if 'inbox_items' not in st.session_state:
+        st.session_state.inbox_items = []
+    if 'loaded_uids' not in st.session_state:
+        st.session_state.loaded_uids = set()
+    if 'upload_version' not in st.session_state:
+        st.session_state.upload_version = 0
 
+    # --- Inbox orders (read-only IMAP - never marks mail as read) ---
+    st.subheader("📥 Inbox Orders")
+    email_host = os.getenv('EMAIL_HOST', 'imap.mail.yahoo.com')
+    email_port = os.getenv('EMAIL_PORT', '993')
+    email_user = os.getenv('EMAIL_USER')
+    email_pass = os.getenv('EMAIL_PASSWORD')
+
+    if st.button("Check Inbox for New Orders"):
+        if not email_user or not email_pass:
+            st.warning("Email credentials not configured. Add them in the Settings page.")
+        else:
+            with st.spinner("Checking inbox for unread emails..."):
+                try:
+                    items = list_unseen_orders(email_host, email_port, email_user, email_pass)
+                    items = [i for i in items if i['uid'] not in st.session_state.loaded_uids]
+                    st.session_state.inbox_items = items
+                    if items:
+                        st.success(f"Found {len(items)} unread email(s)")
+                    else:
+                        st.info("No unread emails in the inbox.")
+                except Exception as e:
+                    st.error(f"Inbox check failed: {e}")
+
+    for item in st.session_state.inbox_items:
+        item_cols = st.columns([5, 1])
+        with item_cols[0]:
+            st.write(f"**{item['subject']}**")
+            st.caption(f"{item['sender']} • {item['date']}")
+        with item_cols[1]:
+            if st.button("Load", key=f"load_{item['uid']}"):
+                if not email_user or not email_pass:
+                    st.warning("Email credentials not configured.")
+                else:
+                    with st.spinner("Loading PDF attachment..."):
+                        try:
+                            pdfs = fetch_pdf_from_message(email_host, email_port, email_user, email_pass, item['uid'])
+                        except Exception as e:
+                            st.error(f"Failed to load attachment: {e}")
+                            pdfs = []
+                    if not pdfs:
+                        st.warning("No PDF attachment found in this email.")
+                    else:
+                        if len(pdfs) > 1:
+                            st.warning(f"{len(pdfs)} PDF attachments found - loading '{pdfs[0]['filename']}'")
+                        # Reset uploader widget so a previously uploaded file
+                        # doesn't re-process over this email's order
+                        st.session_state.upload_version += 1
+                        st.session_state.loaded_uids.add(item['uid'])
+                        st.session_state.inbox_items = [i for i in st.session_state.inbox_items if i['uid'] != item['uid']]
+                        process_pdf(pdfs[0]['bytes'], pdfs[0]['filename'],
+                                    ('inbox', item['uid'], pdfs[0]['filename']))
+                        st.rerun()
+
+    st.divider()
     st.subheader("Upload PDF Order")
     uploaded_file = st.file_uploader(
         "Choose a PDF file",
         type=['pdf'],
+        key=f"pdf_uploader_{st.session_state.upload_version}",
         help="Upload a PDF order document for processing"
     )
 
     if uploaded_file:
-        file_id = (uploaded_file.name, uploaded_file.size)
-
+        file_key = ('upload', uploaded_file.name, uploaded_file.size)
         # Only process when a new file is uploaded (avoids re-calling
         # Vision/Gemini on every table edit rerun)
-        if st.session_state.file_id != file_id:
-            st.session_state.file_id = file_id
-            st.session_state.pdf_bytes = bytes(uploaded_file.getbuffer())
-            st.session_state.pdf_name = uploaded_file.name
-            st.session_state.pdf_images = render_pdf_images(st.session_state.pdf_bytes)
-            st.success(f"File uploaded: {uploaded_file.name}")
-
-            # Get Google credentials from session state or environment
-            google_credentials = os.getenv('GOOGLE_CREDENTIALS')
-
-            if not google_credentials:
-                st.warning("Google Cloud credentials not configured. Please add them in Settings.")
-                st.info("Using placeholder mode for demo purposes")
-                extracted_text = "Sample extracted text from PDF\nItem 1: Widget A - $10.00\nItem 2: Widget B - $20.00"
-            else:
-                with st.spinner("Processing PDF with Google Vision API..."):
-                    try:
-                        processor = VisionProcessor(credentials_json=google_credentials)
-                        extracted_text = processor.extract_text_from_bytes(st.session_state.pdf_bytes, file_type='pdf')
-                        st.success("Text extraction completed!")
-                    except Exception as e:
-                        st.error(f"Error processing PDF: {str(e)}")
-                        st.info("Using placeholder mode for demo purposes")
-                        extracted_text = "Sample extracted text from PDF\nItem 1: Widget A - $10.00\nItem 2: Widget B - $20.00"
-
-            st.session_state.extracted_text = extracted_text
-
-            # Parse order data
-            with st.spinner("Parsing order data..."):
-                # Get Gemini API key for LLM-based parsing
-                gemini_key = os.getenv('GEMINI_API_KEY')
-
-                # Show which parsing method is being used
-                if gemini_key:
-                    st.info("🤖 Using Gemini AI for parsing")
-                else:
-                    st.warning("⚠️ No Gemini API key found - using regex fallback")
-
-                order_items = parse_order_text(extracted_text, gemini_api_key=gemini_key)
-
-                if order_items:
-                    df = pd.DataFrame(order_items)
-                    # Reorder columns for better display
-                    cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments', 'Inventory Item', 'Description', 'Quantity', 'Unit Price', 'Total']
-                    # Only include columns that exist
-                    cols = [col for col in cols if col in df.columns]
-                    df = df[cols]
-                    st.success(f"✅ Successfully parsed {len(order_items)} item(s)")
-                else:
-                    st.warning("⚠️ Could not automatically parse order items.")
-                    st.info("📝 Please enter data manually using the editable table below.")
-                    df = pd.DataFrame(columns=["Purchase Order Number", "Date of Order", "Ship By Date", "Ship To", "Invoice Address", "Vendor", "Shipping Instructions", "Comments", "Inventory Item", "Description", "Quantity", "Unit Price", "Total"])
-                    # Add one empty row for manual entry
-                    df.loc[0] = [""] * len(df.columns)
-
-            st.session_state.processed_df = df
+        if st.session_state.file_id != file_key:
+            process_pdf(bytes(uploaded_file.getbuffer()), uploaded_file.name, file_key)
 
     # Split view: PDF on the left, editable output on the right
     if st.session_state.processed_df is not None:
@@ -487,15 +573,36 @@ elif page == "Settings":
     
     st.divider()
     
-    st.subheader("Email Integration")
-    st.info("Email integration will be added in a future update to automatically fetch PDF orders from your inbox.")
-    st.markdown("""
-    **Planned features:**
-    - Gmail/Outlook integration
-    - Automatic PDF attachment detection
-    - Scheduled order processing
-    - Email notifications for processed orders
-    """)
+    st.subheader("Email Inbox (IMAP)")
+    st.info("Read-only inbox check: the app never marks emails as read, moves, or deletes anything. "
+            "For Yahoo, use an **app password** (Yahoo Account Security → Generate app password) — "
+            "your regular password will be rejected.")
+
+    cur_host = os.getenv('EMAIL_HOST', 'imap.mail.yahoo.com')
+    cur_port = os.getenv('EMAIL_PORT', '993')
+    cur_user = os.getenv('EMAIL_USER', '')
+    cur_pass = os.getenv('EMAIL_PASSWORD', '')
+
+    if cur_user and cur_pass:
+        st.success(f"✅ Email configured for {cur_user}")
+    else:
+        st.warning("⚠️ Email credentials not configured")
+
+    email_host = st.text_input("IMAP Host", value=cur_host)
+    email_port = st.text_input("IMAP Port", value=cur_port)
+    email_user = st.text_input("Email Address", value=cur_user)
+    email_pass = st.text_input("Email App Password", value=cur_pass, type='password',
+                               help="Yahoo: generate at Account Security → Generate app password")
+
+    if st.button("Save Email Settings"):
+        save_env_vars({
+            'EMAIL_HOST': email_host,
+            'EMAIL_PORT': email_port,
+            'EMAIL_USER': email_user,
+            'EMAIL_PASSWORD': email_pass,
+        })
+        st.success("Email settings saved")
+        st.rerun()
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### Quick Links")
