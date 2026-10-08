@@ -16,6 +16,22 @@ st.set_page_config(
 st.title("📦 Ratech Order Management System")
 st.markdown("Upload PDF orders, validate them, and export to Sage 50 2019 CSV format")
 
+
+def render_pdf_images(pdf_bytes):
+    """Render PDF pages to PNG images using PyMuPDF (already used for OCR)."""
+    try:
+        import fitz
+        doc = fitz.open(stream=pdf_bytes, filetype='pdf')
+        imgs = []
+        for page in doc:
+            pix = page.get_pixmap(dpi=150)
+            imgs.append(pix.tobytes('png'))
+        doc.close()
+        return imgs
+    except Exception as e:
+        print(f"PDF preview render failed: {e}")
+        return []
+
 # Sidebar navigation
 st.sidebar.title("Navigation")
 page = st.sidebar.radio("Select Page", ["Order Processing", "Inventory Management", "Settings"])
@@ -32,6 +48,8 @@ if page == "Order Processing":
         st.session_state.pdf_bytes = None
     if 'pdf_name' not in st.session_state:
         st.session_state.pdf_name = None
+    if 'pdf_images' not in st.session_state:
+        st.session_state.pdf_images = []
     if 'file_id' not in st.session_state:
         st.session_state.file_id = None
 
@@ -51,6 +69,7 @@ if page == "Order Processing":
             st.session_state.file_id = file_id
             st.session_state.pdf_bytes = bytes(uploaded_file.getbuffer())
             st.session_state.pdf_name = uploaded_file.name
+            st.session_state.pdf_images = render_pdf_images(st.session_state.pdf_bytes)
             st.success(f"File uploaded: {uploaded_file.name}")
 
             # Get Google credentials from session state or environment
@@ -109,13 +128,20 @@ if page == "Order Processing":
 
         with col_pdf:
             st.subheader(f"📄 {st.session_state.pdf_name or 'Order PDF'}")
-            if st.session_state.pdf_bytes:
+            if st.session_state.pdf_images:
+                for page_num, img in enumerate(st.session_state.pdf_images):
+                    try:
+                        st.image(img, width='stretch',
+                                 caption=f"Page {page_num + 1} of {len(st.session_state.pdf_images)}")
+                    except TypeError:
+                        st.image(img, use_container_width=True,
+                                 caption=f"Page {page_num + 1} of {len(st.session_state.pdf_images)}")
+            elif st.session_state.pdf_bytes:
                 try:
                     st.pdf(st.session_state.pdf_bytes, height=700)
                 except TypeError:
                     st.pdf(st.session_state.pdf_bytes)
                 except Exception:
-                    # Chrome blocks data: URI PDFs in iframes - offer download instead
                     st.info("Inline PDF preview unavailable in this browser.")
                     st.download_button(
                         label="📥 Download PDF to view",
@@ -177,6 +203,7 @@ if page == "Order Processing":
                     st.session_state.extracted_text = None
                     st.session_state.pdf_bytes = None
                     st.session_state.pdf_name = None
+                    st.session_state.pdf_images = []
                     st.rerun()
 
             with col3:
@@ -285,6 +312,7 @@ if page == "Order Processing":
                     st.session_state.extracted_text = None
                     st.session_state.pdf_bytes = None
                     st.session_state.pdf_name = None
+                    st.session_state.pdf_images = []
                     st.rerun()
 
 elif page == "Inventory Management":
