@@ -451,10 +451,10 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
         if need_match:
             order_info['Ship By Date'] = need_match.group(1)
 
-        # Vendor account number for Ratech
-        acct_match = re.search(r'Account:\s*(\d+)', extracted_text)
-        if acct_match:
-            order_info['Vendor'] = acct_match.group(1)
+        # Vendor = Vendor SO # column (4th |-separated field on the PO# line)
+        so_match = re.search(r'PO #:.*\|.*\|.*\|\s*([A-Za-z0-9]+)\s*\|', extracted_text)
+        if so_match:
+            order_info['Vendor'] = so_match.group(1)
 
         # Shipping instruction is the last |-separated field on the PO# line
         ship_match = re.search(r'PO #:.*\|.*\|.*\|.*\|\s*([^|_\n]+)', extracted_text)
@@ -480,9 +480,6 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
         terms_match = re.search(r'(Net\s+\d+\s+Days)', extracted_text)
         if terms_match:
             comments.append('Terms: ' + terms_match.group(1))
-        so_match = re.search(r'PO #:.*\|.*\|.*\|\s*([A-Za-z0-9]+)\s*\|', extracted_text)
-        if so_match:
-            comments.append('Vendor SO #: ' + so_match.group(1))
         tax_match = re.search(r'\b(\d{2}-\d{6,})\b', extracted_text)
         if tax_match:
             comments.append('Tax Exempt: ' + tax_match.group(1))
