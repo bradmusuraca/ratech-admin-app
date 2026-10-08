@@ -28,225 +28,262 @@ if page == "Order Processing":
         st.session_state.processed_df = None
     if 'extracted_text' not in st.session_state:
         st.session_state.extracted_text = None
-    
+    if 'pdf_bytes' not in st.session_state:
+        st.session_state.pdf_bytes = None
+    if 'pdf_name' not in st.session_state:
+        st.session_state.pdf_name = None
+    if 'file_id' not in st.session_state:
+        st.session_state.file_id = None
+
     st.subheader("Upload PDF Order")
     uploaded_file = st.file_uploader(
         "Choose a PDF file",
         type=['pdf'],
         help="Upload a PDF order document for processing"
     )
-    
+
     if uploaded_file:
-        st.success(f"File uploaded: {uploaded_file.name}")
-        
-        # Get Google credentials from session state or environment
-        google_credentials = os.getenv('GOOGLE_CREDENTIALS')
-        
-        if not google_credentials:
-            st.warning("Google Cloud credentials not configured. Please add them in Settings.")
-            st.info("Using placeholder mode for demo purposes")
-            extracted_text = "Sample extracted text from PDF\nItem 1: Widget A - $10.00\nItem 2: Widget B - $20.00"
-        else:
-            with st.spinner("Processing PDF with Google Vision API..."):
-                try:
-                    processor = VisionProcessor(credentials_json=google_credentials)
-                    file_bytes = uploaded_file.getbuffer()
-                    extracted_text = processor.extract_text_from_bytes(file_bytes, file_type='pdf')
-                    st.success("Text extraction completed!")
-                except Exception as e:
-                    st.error(f"Error processing PDF: {str(e)}")
-                    st.info("Using placeholder mode for demo purposes")
-                    extracted_text = "Sample extracted text from PDF\nItem 1: Widget A - $10.00\nItem 2: Widget B - $20.00"
-        
-        st.session_state.extracted_text = extracted_text
-        
-        st.subheader("Extracted Order Data")
-        st.text_area("Raw Extracted Text", extracted_text, height=200)
-        
-        # Parse order data
-        with st.spinner("Parsing order data..."):
-            # Get Gemini API key for LLM-based parsing
-            gemini_key = os.getenv('GEMINI_API_KEY')
-            
-            # Show which parsing method is being used
-            if gemini_key:
-                st.info("🤖 Using Gemini AI for parsing")
+        file_id = (uploaded_file.name, uploaded_file.size)
+
+        # Only process when a new file is uploaded (avoids re-calling
+        # Vision/Gemini on every table edit rerun)
+        if st.session_state.file_id != file_id:
+            st.session_state.file_id = file_id
+            st.session_state.pdf_bytes = bytes(uploaded_file.getbuffer())
+            st.session_state.pdf_name = uploaded_file.name
+            st.success(f"File uploaded: {uploaded_file.name}")
+
+            # Get Google credentials from session state or environment
+            google_credentials = os.getenv('GOOGLE_CREDENTIALS')
+
+            if not google_credentials:
+                st.warning("Google Cloud credentials not configured. Please add them in Settings.")
+                st.info("Using placeholder mode for demo purposes")
+                extracted_text = "Sample extracted text from PDF\nItem 1: Widget A - $10.00\nItem 2: Widget B - $20.00"
             else:
-                st.warning("⚠️ No Gemini API key found - using regex fallback")
-            
-            order_items = parse_order_text(extracted_text, gemini_api_key=gemini_key)
-            
-            if order_items:
-                df = pd.DataFrame(order_items)
-                # Reorder columns for better display
-                cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments', 'Inventory Item', 'Description', 'Quantity', 'Unit Price', 'Total']
-                # Only include columns that exist
-                cols = [col for col in cols if col in df.columns]
-                df = df[cols]
-                st.success(f"✅ Successfully parsed {len(order_items)} item(s)")
-            else:
-                st.warning("⚠️ Could not automatically parse order items.")
-                st.info("📝 Please enter data manually using the editable table below.")
-                df = pd.DataFrame(columns=["Purchase Order Number", "Date of Order", "Ship By Date", "Ship To", "Invoice Address", "Vendor", "Shipping Instructions", "Comments", "Inventory Item", "Description", "Quantity", "Unit Price", "Total"])
-                # Add one empty row for manual entry
-                df.loc[0] = [""] * len(df.columns)
-        
-        st.session_state.processed_df = df
-        
-        st.subheader("Parsed Order Data")
-        st.dataframe(df, use_container_width=True)
-    
-    # Show processed data if available
-    if st.session_state.processed_df is not None:
-        st.subheader("Validate and Edit Order")
-        
-        # Add helpful tips
-        with st.expander("💡 Tips for Manual Entry"):
-            st.markdown("""
-            - **Click any cell** to edit its value
-            - **Click "+ Add row"** at the bottom to add new items
-            - **Click the "×"** button to delete a row
-            - **Common fields** (PO number, dates, addresses) are automatically copied to all rows when parsing
-            - **Hover over column headers** to see what information goes there
-            """)
-        
-        edited_df = st.data_editor(
-            st.session_state.processed_df,
-            num_rows="dynamic",
-            use_container_width=True,
-            key="order_editor"
-        )
-        
-        # Quick actions for manual entry
-        st.subheader("Quick Actions")
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            if st.button("Copy Header Info to All Rows"):
-                # Copy header fields (PO number, dates, addresses) to all rows
-                if not edited_df.empty:
-                    header_cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments']
-                    for col in header_cols:
-                        if col in edited_df.columns:
-                            # Get the first non-empty value
-                            first_value = edited_df[col].dropna().iloc[0] if not edited_df[col].dropna().empty else ""
-                            if first_value:
-                                edited_df[col] = first_value
-                    st.session_state.processed_df = edited_df
-                    st.success("✅ Header info copied to all rows")
-                    st.rerun()
-        
-        with col2:
-            if st.button("Clear All Data"):
-                st.session_state.processed_df = None
-                st.session_state.extracted_text = None
-                st.rerun()
-        
-        with col3:
-            if st.button("Add New Row"):
-                if not edited_df.empty:
-                    new_row = {col: "" for col in edited_df.columns}
-                    # Copy header fields to new row
-                    header_cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments']
-                    for col in header_cols:
-                        if col in edited_df.columns:
-                            first_value = edited_df[col].dropna().iloc[0] if not edited_df[col].dropna().empty else ""
-                            if first_value:
-                                new_row[col] = first_value
-                    edited_df = pd.concat([edited_df, pd.DataFrame([new_row])], ignore_index=True)
-                    st.session_state.processed_df = edited_df
-                    st.rerun()
-        
-        # Validation: Check for calculation errors
-        if not edited_df.empty:
-            errors = []
-            price_col = 'Unit Price' if 'Unit Price' in edited_df.columns else ('Price' if 'Price' in edited_df.columns else None)
-            
-            if price_col and 'Quantity' in edited_df.columns and 'Total' in edited_df.columns:
-                for idx, row in edited_df.iterrows():
+                with st.spinner("Processing PDF with Google Vision API..."):
                     try:
-                        qty = float(row['Quantity']) if pd.notna(row['Quantity']) else 0
-                        price = float(row[price_col]) if pd.notna(row[price_col]) else 0
-                        total = float(row['Total']) if pd.notna(row['Total']) else 0
-                        calculated_total = qty * price
-                        
-                        # Allow small floating point differences
-                        if abs(calculated_total - total) > 0.01:
-                            errors.append({
-                                'Row': idx,
-                                'Item': row.get('Description', 'Unknown'),
-                                'Quantity': qty,
-                                'Price': price,
-                                'Total Listed': total,
-                                'Total Calculated': calculated_total,
-                                'Difference': calculated_total - total
-                            })
-                    except (ValueError, TypeError):
-                        continue
-            
-            if errors:
-                st.error(f"⚠️ Found {len(errors)} calculation error(s):")
-                error_df = pd.DataFrame(errors)
-                st.dataframe(error_df, use_container_width=True)
-                
-                st.subheader("Correction Options")
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    if st.button("Auto-Calculate Totals", type="primary"):
-                        if price_col and 'Quantity' in edited_df.columns:
-                            edited_df['Total'] = edited_df['Quantity'] * edited_df[price_col]
+                        processor = VisionProcessor(credentials_json=google_credentials)
+                        extracted_text = processor.extract_text_from_bytes(st.session_state.pdf_bytes, file_type='pdf')
+                        st.success("Text extraction completed!")
+                    except Exception as e:
+                        st.error(f"Error processing PDF: {str(e)}")
+                        st.info("Using placeholder mode for demo purposes")
+                        extracted_text = "Sample extracted text from PDF\nItem 1: Widget A - $10.00\nItem 2: Widget B - $20.00"
+
+            st.session_state.extracted_text = extracted_text
+
+            # Parse order data
+            with st.spinner("Parsing order data..."):
+                # Get Gemini API key for LLM-based parsing
+                gemini_key = os.getenv('GEMINI_API_KEY')
+
+                # Show which parsing method is being used
+                if gemini_key:
+                    st.info("🤖 Using Gemini AI for parsing")
+                else:
+                    st.warning("⚠️ No Gemini API key found - using regex fallback")
+
+                order_items = parse_order_text(extracted_text, gemini_api_key=gemini_key)
+
+                if order_items:
+                    df = pd.DataFrame(order_items)
+                    # Reorder columns for better display
+                    cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments', 'Inventory Item', 'Description', 'Quantity', 'Unit Price', 'Total']
+                    # Only include columns that exist
+                    cols = [col for col in cols if col in df.columns]
+                    df = df[cols]
+                    st.success(f"✅ Successfully parsed {len(order_items)} item(s)")
+                else:
+                    st.warning("⚠️ Could not automatically parse order items.")
+                    st.info("📝 Please enter data manually using the editable table below.")
+                    df = pd.DataFrame(columns=["Purchase Order Number", "Date of Order", "Ship By Date", "Ship To", "Invoice Address", "Vendor", "Shipping Instructions", "Comments", "Inventory Item", "Description", "Quantity", "Unit Price", "Total"])
+                    # Add one empty row for manual entry
+                    df.loc[0] = [""] * len(df.columns)
+
+            st.session_state.processed_df = df
+
+    # Split view: PDF on the left, editable output on the right
+    if st.session_state.processed_df is not None:
+        col_pdf, col_data = st.columns([1, 1])
+
+        with col_pdf:
+            st.subheader(f"📄 {st.session_state.pdf_name or 'Order PDF'}")
+            if st.session_state.pdf_bytes:
+                try:
+                    st.pdf(st.session_state.pdf_bytes, height=700)
+                except TypeError:
+                    st.pdf(st.session_state.pdf_bytes)
+                except Exception:
+                    import base64
+                    pdf_b64 = base64.b64encode(st.session_state.pdf_bytes).decode()
+                    st.markdown(
+                        f'<iframe src="data:application/pdf;base64,{pdf_b64}" width="100%" height="800"></iframe>',
+                        unsafe_allow_html=True
+                    )
+            if st.session_state.extracted_text:
+                with st.expander("Raw Extracted Text"):
+                    st.text_area(
+                        "Raw Extracted Text",
+                        st.session_state.extracted_text,
+                        height=300,
+                        label_visibility="collapsed"
+                    )
+
+        with col_data:
+            st.subheader("Validate and Edit Order")
+
+            # Add helpful tips
+            with st.expander("💡 Tips for Manual Entry"):
+                st.markdown("""
+                - **Click any cell** to edit its value
+                - **Click "+ Add row"** at the bottom to add new items
+                - **Click the "×"** button to delete a row
+                - **Common fields** (PO number, dates, addresses) are automatically copied to all rows when parsing
+                - **Hover over column headers** to see what information goes there
+                """)
+
+            edited_df = st.data_editor(
+                st.session_state.processed_df,
+                num_rows="dynamic",
+                use_container_width=True,
+                key="order_editor"
+            )
+        
+            # Quick actions for manual entry
+            st.subheader("Quick Actions")
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                if st.button("Copy Header Info to All Rows"):
+                    # Copy header fields (PO number, dates, addresses) to all rows
+                    if not edited_df.empty:
+                        header_cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments']
+                        for col in header_cols:
+                            if col in edited_df.columns:
+                                # Get the first non-empty value
+                                first_value = edited_df[col].dropna().iloc[0] if not edited_df[col].dropna().empty else ""
+                                if first_value:
+                                    edited_df[col] = first_value
                         st.session_state.processed_df = edited_df
-                        st.success("✅ Totals have been recalculated")
+                        st.success("✅ Header info copied to all rows")
                         st.rerun()
-                
-                with col2:
-                    if st.button("Keep Original Totals"):
-                        st.info("Original totals will be kept. Please review manually.")
-            else:
-                st.success("✅ All calculations are correct!")
-        
-        # Calculate totals (for new entries)
-        if not edited_df.empty:
-            # Convert numeric columns to proper types first
-            if 'Quantity' in edited_df.columns:
-                edited_df['Quantity'] = pd.to_numeric(edited_df['Quantity'], errors='coerce').fillna(0)
-            if 'Unit Price' in edited_df.columns:
-                edited_df['Unit Price'] = pd.to_numeric(edited_df['Unit Price'], errors='coerce').fillna(0)
-            if 'Price' in edited_df.columns:
-                edited_df['Price'] = pd.to_numeric(edited_df['Price'], errors='coerce').fillna(0)
-            if 'Total' in edited_df.columns:
-                edited_df['Total'] = pd.to_numeric(edited_df['Total'], errors='coerce').fillna(0)
-            
-            if 'Unit Price' in edited_df.columns and 'Quantity' in edited_df.columns:
-                # Only calculate for rows where Total is empty or zero
-                mask = (edited_df['Total'].isna()) | (edited_df['Total'] == 0)
-                edited_df.loc[mask, 'Total'] = edited_df.loc[mask, 'Quantity'] * edited_df.loc[mask, 'Unit Price']
-            elif 'Price' in edited_df.columns and 'Quantity' in edited_df.columns:
-                mask = (edited_df['Total'].isna()) | (edited_df['Total'] == 0)
-                edited_df.loc[mask, 'Total'] = edited_df.loc[mask, 'Quantity'] * edited_df.loc[mask, 'Price']
-        
-        # Update session state with edited data
-        st.session_state.processed_df = edited_df
-        
-        # Export options
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if st.button("Export to CSV", type="primary"):
-                csv = edited_df.to_csv(index=False)
-                st.download_button(
-                    label="Download CSV for Sage 50",
-                    data=csv,
-                    file_name="sage50_order.csv",
-                    mime="text/csv"
-                )
-        
-        with col2:
-            if st.button("Clear All"):
-                st.session_state.processed_df = None
-                st.session_state.extracted_text = None
-                st.rerun()
+
+            with col2:
+                if st.button("Clear All Data"):
+                    st.session_state.processed_df = None
+                    st.session_state.extracted_text = None
+                    st.session_state.pdf_bytes = None
+                    st.session_state.pdf_name = None
+                    st.rerun()
+
+            with col3:
+                if st.button("Add New Row"):
+                    if not edited_df.empty:
+                        new_row = {col: "" for col in edited_df.columns}
+                        # Copy header fields to new row
+                        header_cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments']
+                        for col in header_cols:
+                            if col in edited_df.columns:
+                                first_value = edited_df[col].dropna().iloc[0] if not edited_df[col].dropna().empty else ""
+                                if first_value:
+                                    new_row[col] = first_value
+                        edited_df = pd.concat([edited_df, pd.DataFrame([new_row])], ignore_index=True)
+                        st.session_state.processed_df = edited_df
+                        st.rerun()
+
+            # Validation: Check for calculation errors
+            if not edited_df.empty:
+                errors = []
+                price_col = 'Unit Price' if 'Unit Price' in edited_df.columns else ('Price' if 'Price' in edited_df.columns else None)
+
+                if price_col and 'Quantity' in edited_df.columns and 'Total' in edited_df.columns:
+                    for idx, row in edited_df.iterrows():
+                        try:
+                            qty = float(row['Quantity']) if pd.notna(row['Quantity']) else 0
+                            price = float(row[price_col]) if pd.notna(row[price_col]) else 0
+                            total = float(row['Total']) if pd.notna(row['Total']) else 0
+                            calculated_total = qty * price
+
+                            # Allow small floating point differences
+                            if abs(calculated_total - total) > 0.01:
+                                errors.append({
+                                    'Row': idx,
+                                    'Item': row.get('Description', 'Unknown'),
+                                    'Quantity': qty,
+                                    'Price': price,
+                                    'Total Listed': total,
+                                    'Total Calculated': calculated_total,
+                                    'Difference': calculated_total - total
+                                })
+                        except (ValueError, TypeError):
+                            continue
+
+                if errors:
+                    st.error(f"⚠️ Found {len(errors)} calculation error(s):")
+                    error_df = pd.DataFrame(errors)
+                    st.dataframe(error_df, use_container_width=True)
+
+                    st.subheader("Correction Options")
+                    col1, col2 = st.columns(2)
+
+                    with col1:
+                        if st.button("Auto-Calculate Totals", type="primary"):
+                            if price_col and 'Quantity' in edited_df.columns:
+                                edited_df['Total'] = edited_df['Quantity'] * edited_df[price_col]
+                            st.session_state.processed_df = edited_df
+                            st.success("✅ Totals have been recalculated")
+                            st.rerun()
+
+                    with col2:
+                        if st.button("Keep Original Totals"):
+                            st.info("Original totals will be kept. Please review manually.")
+                else:
+                    st.success("✅ All calculations are correct!")
+
+            # Calculate totals (for new entries)
+            if not edited_df.empty:
+                # Convert numeric columns to proper types first
+                if 'Quantity' in edited_df.columns:
+                    edited_df['Quantity'] = pd.to_numeric(edited_df['Quantity'], errors='coerce').fillna(0)
+                if 'Unit Price' in edited_df.columns:
+                    edited_df['Unit Price'] = pd.to_numeric(edited_df['Unit Price'], errors='coerce').fillna(0)
+                if 'Price' in edited_df.columns:
+                    edited_df['Price'] = pd.to_numeric(edited_df['Price'], errors='coerce').fillna(0)
+                if 'Total' in edited_df.columns:
+                    edited_df['Total'] = pd.to_numeric(edited_df['Total'], errors='coerce').fillna(0)
+
+                if 'Unit Price' in edited_df.columns and 'Quantity' in edited_df.columns:
+                    # Only calculate for rows where Total is empty or zero
+                    mask = (edited_df['Total'].isna()) | (edited_df['Total'] == 0)
+                    edited_df.loc[mask, 'Total'] = edited_df.loc[mask, 'Quantity'] * edited_df.loc[mask, 'Unit Price']
+                elif 'Price' in edited_df.columns and 'Quantity' in edited_df.columns:
+                    mask = (edited_df['Total'].isna()) | (edited_df['Total'] == 0)
+                    edited_df.loc[mask, 'Total'] = edited_df.loc[mask, 'Quantity'] * edited_df.loc[mask, 'Price']
+
+            # Update session state with edited data
+            st.session_state.processed_df = edited_df
+
+            # Export options
+            col1, col2 = st.columns(2)
+
+            with col1:
+                if st.button("Export to CSV", type="primary"):
+                    csv = edited_df.to_csv(index=False)
+                    st.download_button(
+                        label="Download CSV for Sage 50",
+                        data=csv,
+                        file_name="sage50_order.csv",
+                        mime="text/csv"
+                    )
+
+            with col2:
+                if st.button("Clear All"):
+                    st.session_state.processed_df = None
+                    st.session_state.extracted_text = None
+                    st.session_state.pdf_bytes = None
+                    st.session_state.pdf_name = None
+                    st.rerun()
 
 elif page == "Inventory Management":
     st.header("Inventory Management")
