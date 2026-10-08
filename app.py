@@ -115,11 +115,13 @@ if page == "Order Processing":
                 except TypeError:
                     st.pdf(st.session_state.pdf_bytes)
                 except Exception:
-                    import base64
-                    pdf_b64 = base64.b64encode(st.session_state.pdf_bytes).decode()
-                    st.markdown(
-                        f'<iframe src="data:application/pdf;base64,{pdf_b64}" width="100%" height="800"></iframe>',
-                        unsafe_allow_html=True
+                    # Chrome blocks data: URI PDFs in iframes - offer download instead
+                    st.info("Inline PDF preview unavailable in this browser.")
+                    st.download_button(
+                        label="📥 Download PDF to view",
+                        data=st.session_state.pdf_bytes,
+                        file_name=st.session_state.pdf_name or "order.pdf",
+                        mime="application/pdf"
                     )
             if st.session_state.extracted_text:
                 with st.expander("Raw Extracted Text"):
