@@ -33,6 +33,7 @@ wheels/
 temp_uploads/
 *.pdf
 *.csv
+!customers.csv
 
 # IDE
 .vscode/

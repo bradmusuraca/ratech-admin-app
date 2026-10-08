@@ -1,5 +1,6 @@
 import streamlit as st
 import os
+import re
 from dotenv import load_dotenv
 import pandas as pd
 from io import StringIO
@@ -15,7 +16,7 @@ st.set_page_config(
 )
 
 st.title("📦 Ratech Order Management System")
-st.markdown("Upload PDF orders, validate them, and export to Sage 50 2019 CSV format")
+st.markdown("Upload PDF orders or ShipStation exports, validate them, and export sales orders to Sage 50 2019 CSV format")
 
 
 def render_pdf_images(pdf_bytes):
@@ -32,6 +33,36 @@ def render_pdf_images(pdf_bytes):
     except Exception as e:
         print(f"PDF preview render failed: {e}")
         return []
+
+
+CUSTOMERS_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'customers.csv')
+CUSTOMER_COLS = ['Customer Number', 'Customer Name', 'Aliases']
+
+
+def load_customers():
+    """Load the customer-name -> Sage customer number mapping table."""
+    if os.path.exists(CUSTOMERS_CSV):
+        try:
+            df = pd.read_csv(CUSTOMERS_CSV, dtype=str).fillna('')
+            for c in CUSTOMER_COLS:
+                if c not in df.columns:
+                    df[c] = ''
+            return df[CUSTOMER_COLS]
+        except Exception:
+            pass
+    return pd.DataFrame(columns=CUSTOMER_COLS)
+
+
+def guess_customer(text):
+    """Return the Sage customer number whose alias appears in the given
+    text (extracted document text, filename, channel name, etc.)."""
+    tl = (text or '').lower()
+    for _, row in load_customers().iterrows():
+        for alias in str(row.get('Aliases', '')).split(';'):
+            alias = alias.strip().lower()
+            if alias and alias in tl:
+                return str(row.get('Customer Number', '')).strip()
+    return ''
 
 
 def save_env_vars(pairs):
@@ -65,8 +96,10 @@ def build_invoice(pdf_bytes, pdf_name, doc_key):
         'name': pdf_name,
         'pdf_bytes': pdf_bytes,
         'pdf_images': render_pdf_images(pdf_bytes),
+        'raw_csv_df': None,
         'extracted_text': None,
         'df': None,
+        'customer': '',
     }
     st.success(f"Loaded: {pdf_name}")
 
@@ -105,11 +138,76 @@ def build_invoice(pdf_bytes, pdf_name, doc_key):
             df.loc[0] = [""] * len(df.columns)
 
     inv['df'] = df
+    # Auto-assign Sage customer number when a known customer is detected
+    gc = guess_customer(f"{pdf_name}\n{extracted_text}")
+    if gc and 'Vendor' in inv['df'].columns:
+        inv['df']['Vendor'] = gc
+        inv['customer'] = gc
+    return inv
+
+
+def parse_shipstation_csv(raw_bytes):
+    """Map a ShipStation order-items CSV export to Sage 50 sales order rows."""
+    src = pd.read_csv(StringIO(raw_bytes.decode('utf-8-sig', errors='replace')),
+                      dtype=str).fillna('')
+    rows = []
+    for _, r in src.iterrows():
+        order_num = str(r.get('Order #', '')).strip()
+        # Amazon order IDs look like 114-3315411-3045845; eBay like 17-15192-30111
+        if re.match(r'^\d{3}-\d{7}-\d{7}$', order_num):
+            channel = 'Amazon'
+        elif re.match(r'^\d{2}-\d{5}-\d{5}$', order_num):
+            channel = 'eBay'
+        else:
+            channel = 'ShipStation'
+        rows.append({
+            'Purchase Order Number': order_num,
+            'Date of Order': str(r.get('Order Date', '')).strip(),
+            'Ship By Date': str(r.get('Ship Date', '')).strip(),
+            'Ship To': str(r.get('Recipient', '')).strip(),
+            'Invoice Address': '',
+            'Vendor': guess_customer(channel),
+            'Shipping Instructions': str(r.get('Service', '')).strip(),
+            'Comments': f"{channel} order via ShipStation | Order Total: {r.get('Order Total', '')} | Batch: {r.get('Batch', '')}",
+            'Inventory Item': str(r.get('Item SKU', '')).strip(),
+            'Description': str(r.get('Item Name', '')).strip(),
+            'Quantity': str(r.get('Quantity', '')).strip(),
+            'Unit Price': '',
+            'Total': '',
+        })
+    return pd.DataFrame(rows), src
+
+
+def build_csv_invoice(file_bytes, file_name, doc_key):
+    """Build a queue entry from a ShipStation (or other) CSV export."""
+    inv = {
+        'key': doc_key,
+        'name': file_name,
+        'pdf_bytes': None,
+        'pdf_images': [],
+        'raw_csv_df': None,
+        'extracted_text': file_bytes.decode('utf-8-sig', errors='replace'),
+        'df': None,
+        'customer': '',
+    }
+    with st.spinner(f"Parsing {file_name}..."):
+        try:
+            df, src = parse_shipstation_csv(file_bytes)
+            inv['raw_csv_df'] = src
+            inv['df'] = df
+            # If every row resolved to the same Sage customer, show it in the selector
+            vendors = [v for v in df.get('Vendor', pd.Series(dtype=str)).unique() if str(v).strip()]
+            if len(vendors) == 1:
+                inv['customer'] = vendors[0]
+            st.success(f"✅ {file_name}: {len(df)} line item(s) imported")
+        except Exception as e:
+            st.error(f"Error parsing {file_name}: {e}")
+            inv['df'] = pd.DataFrame(columns=["Purchase Order Number", "Date of Order", "Ship By Date", "Ship To", "Invoice Address", "Vendor", "Shipping Instructions", "Comments", "Inventory Item", "Description", "Quantity", "Unit Price", "Total"])
     return inv
 
 # Sidebar navigation
 st.sidebar.title("Navigation")
-page = st.sidebar.radio("Select Page", ["Order Processing", "Inventory Management", "Settings"])
+page = st.sidebar.radio("Select Page", ["Order Processing", "Customers", "Inventory Management", "Settings"])
 
 if page == "Order Processing":
     st.header("Order Processing")
@@ -182,13 +280,13 @@ if page == "Order Processing":
                             st.rerun()
 
     st.divider()
-    st.subheader("Upload PDF Order(s)")
+    st.subheader("Upload Order File(s)")
     uploaded_files = st.file_uploader(
-        "Choose PDF file(s)",
-        type=['pdf'],
+        "Choose PDF order(s) or ShipStation CSV export(s)",
+        type=['pdf', 'csv'],
         accept_multiple_files=True,
         key=f"pdf_uploader_{st.session_state.upload_version}",
-        help="Upload one or more PDF orders - each becomes a card below, all export to one CSV"
+        help="Upload PDF order documents or ShipStation CSV exports - each becomes a card below, all export to one CSV"
     )
 
     if uploaded_files:
@@ -196,8 +294,12 @@ if page == "Order Processing":
         for uf in uploaded_files:
             file_key = ('upload', uf.name, uf.size)
             if file_key not in existing:
-                st.session_state.invoices.append(
-                    build_invoice(bytes(uf.getbuffer()), uf.name, file_key))
+                raw = bytes(uf.getbuffer())
+                if uf.name.lower().endswith('.csv'):
+                    inv = build_csv_invoice(raw, uf.name, file_key)
+                else:
+                    inv = build_invoice(raw, uf.name, file_key)
+                st.session_state.invoices.append(inv)
                 existing.add(file_key)
 
     # --- Invoice queue: one card per order, PDF left / data right ---
@@ -205,12 +307,20 @@ if page == "Order Processing":
         st.divider()
         st.subheader(f"Orders in Queue ({len(st.session_state.invoices)})")
 
+        # Sage customer list for the per-card selector
+        customers_df = load_customers()
+        cust_numbers = [n for n in customers_df['Customer Number'] if str(n).strip()]
+        cust_names = dict(zip(customers_df['Customer Number'], customers_df['Customer Name']))
+
         for idx, inv in enumerate(st.session_state.invoices):
+            wkey = str(inv['key'])
             title_cols = st.columns([6, 1])
             with title_cols[0]:
-                st.subheader(f"📄 {inv['name']}")
+                cust_label = cust_names.get(inv.get('customer', ''), '')
+                st.subheader(f"📄 {inv['name']}"
+                             + (f"  ·  👤 {inv['customer']} {cust_label}" if inv.get('customer') else ""))
             with title_cols[1]:
-                if st.button("Remove", key=f"remove_{idx}"):
+                if st.button("Remove", key=f"remove_{wkey}"):
                     st.session_state.invoices.pop(idx)
                     st.session_state.upload_version += 1
                     st.rerun()
@@ -218,7 +328,16 @@ if page == "Order Processing":
             col_pdf, col_data = st.columns([1, 1])
 
             with col_pdf:
-                if inv['pdf_images']:
+                if inv.get('raw_csv_df') is not None:
+                    # Source CSV shown in a scrollable table for verification
+                    try:
+                        src_container = st.container(height=600)
+                    except TypeError:
+                        src_container = st.container()
+                    with src_container:
+                        st.caption("Source CSV data")
+                        st.dataframe(inv['raw_csv_df'], use_container_width=True)
+                elif inv['pdf_images']:
                     # Scrollable container - PDF scrolls independently
                     try:
                         pdf_container = st.container(height=600)
@@ -243,7 +362,7 @@ if page == "Order Processing":
                             data=inv['pdf_bytes'],
                             file_name=inv['name'],
                             mime="application/pdf",
-                            key=f"dl_{idx}"
+                            key=f"dl_{wkey}"
                         )
                 if inv.get('extracted_text'):
                     with st.expander("Raw Extracted Text"):
@@ -252,21 +371,38 @@ if page == "Order Processing":
                             inv['extracted_text'],
                             height=250,
                             label_visibility="collapsed",
-                            key=f"raw_{idx}"
+                            key=f"raw_{wkey}"
                         )
 
             with col_data:
+                # Sage customer selector - applies the customer number to the
+                # Vendor column of every row in this order
+                cust_opts = [''] + cust_numbers
+                sel_idx = cust_opts.index(inv['customer']) if inv.get('customer', '') in cust_opts else 0
+                sel_cust = st.selectbox(
+                    "Sage Customer #",
+                    options=cust_opts,
+                    index=sel_idx,
+                    format_func=lambda n: f"{n} — {cust_names.get(n, '')}" if n else "Select customer...",
+                    key=f"custsel_{wkey}"
+                )
+                if sel_cust and sel_cust != inv.get('customer', ''):
+                    inv['customer'] = sel_cust
+                    if 'Vendor' in inv['df'].columns:
+                        inv['df']['Vendor'] = sel_cust
+                    st.rerun()
+
                 edited_df = st.data_editor(
                     inv['df'],
                     num_rows="dynamic",
                     use_container_width=True,
-                    key=f"editor_{idx}_{inv['name']}"
+                    key=f"editor_{wkey}"
                 )
                 inv['df'] = edited_df
 
                 qc1, qc2 = st.columns(2)
                 with qc1:
-                    if st.button("Copy Header to All Rows", key=f"copyhdr_{idx}"):
+                    if st.button("Copy Header to All Rows", key=f"copyhdr_{wkey}"):
                         if not edited_df.empty:
                             header_cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments']
                             for col in header_cols:
@@ -277,7 +413,7 @@ if page == "Order Processing":
                             inv['df'] = edited_df
                             st.rerun()
                 with qc2:
-                    if st.button("Add Row", key=f"addrow_{idx}"):
+                    if st.button("Add Row", key=f"addrow_{wkey}"):
                         if not edited_df.empty:
                             new_row = {col: "" for col in edited_df.columns}
                             header_cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments']
@@ -352,7 +488,7 @@ if page == "Order Processing":
                 st.download_button(
                     label="📥 Download CSV for Sage 50",
                     data=combined.to_csv(index=False),
-                    file_name="sage50_order.csv",
+                    file_name="sage50_sales_orders.csv",
                     mime="text/csv",
                     type="primary"
                 )
@@ -361,6 +497,48 @@ if page == "Order Processing":
                     st.session_state.invoices = []
                     st.session_state.upload_version += 1
                     st.rerun()
+
+elif page == "Customers":
+    st.header("Customers")
+    st.markdown("""
+    Map order sources to their **Sage 50 customer numbers**. The selected customer
+    number is written into the `Vendor` column of the exported CSV.
+
+    - **Customer Number** — the customer ID in Sage 50 (this is what gets exported)
+    - **Customer Name** — display name
+    - **Aliases** — semicolon-separated keywords used to auto-match orders
+      (e.g. `summitracing` matches any document containing that text; `amazon`/`ebay`
+      match ShipStation order channels)
+    """)
+
+    cust_df = load_customers()
+    edited_cust = st.data_editor(
+        cust_df,
+        num_rows="dynamic",
+        use_container_width=True,
+        key="customers_editor"
+    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Save Customers", type="primary"):
+            try:
+                edited_cust.to_csv(CUSTOMERS_CSV, index=False)
+                st.success("✅ Customers saved")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Could not save: {e}")
+    with c2:
+        st.download_button(
+            label="Download customers.csv",
+            data=edited_cust.to_csv(index=False),
+            file_name="customers.csv",
+            mime="text/csv"
+        )
+
+    st.caption("Saved to `customers.csv` in the app folder. On Streamlit Cloud this file is "
+               "restored from the repository on each redeploy — to make changes permanent, "
+               "commit the updated `customers.csv` to GitHub (or download it here and commit it).")
 
 elif page == "Inventory Management":
     st.header("Inventory Management")
