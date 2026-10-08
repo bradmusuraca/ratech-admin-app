@@ -666,41 +666,52 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
                     break
     
     else:
-        # Generic parsing for other formats
-        # Look for lines with prices and try to extract items
+        # Generic parsing for unknown formats - conservative: only create a
+        # row when the line has BOTH a quantity token and a price, and the
+        # leading text looks like a description rather than a label
         for line in lines:
             line = line.strip()
             if not line:
                 continue
-            
-            # Look for lines that might contain items (have prices)
+
+            # Skip obvious non-item lines
+            low = line.lower()
+            if any(k in low for k in ('total', 'subtotal', 'tax', 'balance',
+                                      'amount due', 'payment', 'phone', 'fax')):
+                continue
+
             if re.search(r'\d+\.\d{2}', line):
                 try:
-                    # Try to extract price
                     price_match = re.search(r'(\d+\.\d{2})', line)
-                    if price_match:
-                        price = safe_float(price_match.group(1))
-                        
-                        # Try to extract quantity (look for pattern like "5 x" or "5 EA")
-                        qty_match = re.search(r'(\d+)\s*(?:x|ea|pcs|units)', line, re.IGNORECASE)
-                        quantity = safe_int(qty_match.group(1)) if qty_match else 1
-                        
-                        # Extract item name (everything before price)
-                        item_name = re.sub(r'\d+\.\d{2}.*', '', line).strip()
-                        
-                        if item_name and len(item_name) > 2:
-                            item = {
-                                'Code': '',
-                                'Item': item_name,
-                                'Quantity': quantity,
-                                'Unit Price': price,
-                                'Total': price * quantity
-                            }
-                            item.update(order_info)
-                            items.append(item)
+                    if not price_match:
+                        continue
+                    price = safe_float(price_match.group(1))
+
+                    # Require a quantity token like "5 x", "5 EA", "Qty 5"
+                    qty_match = re.search(r'(?:qty\s*:?\s*|\b)(\d+)\s*(?:x|ea|pcs|units|each)\b', line, re.IGNORECASE)
+                    if not qty_match:
+                        continue
+                    quantity = safe_int(qty_match.group(1))
+                    if quantity <= 0:
+                        continue
+
+                    # Extract item name (everything before the first price)
+                    item_name = re.sub(r'\d+\.\d{2}.*', '', line).strip()
+                    item_name = re.sub(r'^\d+\s*(?:x|ea|pcs|units|each)\b[:\-]?', '', item_name, flags=re.IGNORECASE).strip(' :-')
+
+                    if item_name and len(item_name) > 2:
+                        item = {
+                            'Inventory Item': '',
+                            'Description': item_name,
+                            'Quantity': quantity,
+                            'Unit Price': price,
+                            'Total': price * quantity
+                        }
+                        item.update(order_info)
+                        items.append(item)
                 except (ValueError, IndexError):
                     continue
-    
+
     return items
 
 
@@ -727,7 +738,6 @@ def parse_order_with_gemini(text: str, api_key: str) -> List[Dict]:
         
         # Configure Gemini
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
         
         # Create prompt for structured extraction
         prompt = f"""Extract order information from this text and return it as JSON. The text may be from an email printout, so ignore email headers and formatting.
@@ -779,9 +789,21 @@ Text to parse:
 
 JSON Output:"""
 
-        # Generate response
+        # Generate response - try current models first, fall back if retired
         print("DEBUG: Calling Gemini API...")
-        response = model.generate_content(prompt)
+        response = None
+        last_err = None
+        for model_name in ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']:
+            try:
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content(prompt)
+                print(f"DEBUG: Success with model {model_name}")
+                break
+            except Exception as model_err:
+                print(f"DEBUG: Model {model_name} failed: {model_err}")
+                last_err = model_err
+        if response is None:
+            raise last_err or Exception("All Gemini models failed")
         response_text = response.text.strip()
         
         print(f"DEBUG: Gemini response: {response_text[:200]}...")
