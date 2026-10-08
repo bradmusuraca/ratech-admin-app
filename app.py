@@ -36,7 +36,7 @@ def render_pdf_images(pdf_bytes):
 
 
 CUSTOMERS_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'customers.csv')
-CUSTOMER_COLS = ['Customer Number', 'Customer Name', 'Aliases']
+CUSTOMER_COLS = ['Customer Number', 'Customer Name', 'Aliases', 'Their Code For Us']
 
 
 def load_customers():
@@ -501,14 +501,17 @@ if page == "Order Processing":
 elif page == "Customers":
     st.header("Customers")
     st.markdown("""
-    Map order sources to their **Sage 50 customer numbers**. The selected customer
-    number is written into the `Vendor` column of the exported CSV.
+    Map customers to their **Sage 50 customer numbers** — *your* number for them,
+    which is what the exported sales order needs. This is written into the
+    `Vendor` column of the exported CSV.
 
-    - **Customer Number** — the customer ID in Sage 50 (this is what gets exported)
+    - **Customer Number** — YOUR Sage 50 customer ID for them (exported)
     - **Customer Name** — display name
     - **Aliases** — semicolon-separated keywords used to auto-match orders
       (e.g. `summitracing` matches any document containing that text; `amazon`/`ebay`
       match ShipStation order channels)
+    - **Their Code For Us** — reference only: the number/code THEY use for Ratech
+      on their documents (e.g. Ford's `DBYBA`). Not exported.
     """)
 
     cust_df = load_customers()
