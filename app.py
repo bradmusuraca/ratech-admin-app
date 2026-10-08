@@ -150,9 +150,12 @@ def parse_shipstation_csv(raw_bytes):
     """Map a ShipStation order-items CSV export to Sage 50 sales order rows."""
     src = pd.read_csv(StringIO(raw_bytes.decode('utf-8-sig', errors='replace')),
                       dtype=str).fillna('')
+    order_col = 'Order #' if 'Order #' in src.columns else src.columns[0]
+    order_counts = src[order_col].astype(str).str.strip().value_counts()
     rows = []
     for _, r in src.iterrows():
-        order_num = str(r.get('Order #', '')).strip()
+        order_num = str(r.get(order_col, '')).strip()
+        multi_line = order_counts.get(order_num, 0) > 1
         # Amazon order IDs look like 114-3315411-3045845; eBay like 17-15192-30111
         if re.match(r'^\d{3}-\d{7}-\d{7}$', order_num):
             channel = 'Amazon'
@@ -160,6 +163,18 @@ def parse_shipstation_csv(raw_bytes):
             channel = 'eBay'
         else:
             channel = 'ShipStation'
+        qty_str = str(r.get('Quantity', '')).strip()
+        total_str = str(r.get('Order Total', '')).strip()
+        # Column H (Order Total) is the line amount; derive unit price so
+        # Quantity x Unit Price = Total stays consistent
+        unit_price = ''
+        try:
+            q = float(qty_str)
+            t = float(total_str)
+            if q:
+                unit_price = round(t / q, 4)
+        except (ValueError, TypeError):
+            pass
         rows.append({
             'Purchase Order Number': order_num,
             'Date of Order': str(r.get('Order Date', '')).strip(),
@@ -168,12 +183,14 @@ def parse_shipstation_csv(raw_bytes):
             'Invoice Address': '',
             'Vendor': guess_customer(channel),
             'Shipping Instructions': str(r.get('Service', '')).strip(),
-            'Comments': f"{channel} order via ShipStation | Order Total: {r.get('Order Total', '')} | Batch: {r.get('Batch', '')}",
+            'Comments': (f"{channel} order via ShipStation | Batch: {r.get('Batch', '')}"
+                         + (" | NOTE: multi-line order - Order Total may be the order's grand total, verify line pricing"
+                            if multi_line else "")),
             'Inventory Item': str(r.get('Item SKU', '')).strip(),
             'Description': str(r.get('Item Name', '')).strip(),
-            'Quantity': str(r.get('Quantity', '')).strip(),
-            'Unit Price': '',
-            'Total': '',
+            'Quantity': qty_str,
+            'Unit Price': unit_price,
+            'Total': total_str,
         })
     return pd.DataFrame(rows), src
 
