@@ -269,6 +269,19 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
     is_ford = ('ford motor company' in full_text.lower()
                or 'purchase notification' in full_text.lower())
 
+    def summit_dates(text):
+        """Summit's 'Order Details' block lists labels then values, and
+        text extraction can interleave them two ways:
+            Order Date:\\n10/6/2026          Order Date:\\nArrive On/Before:
+            Arrive On/Before:\\n10/22/2026   10/6/2026\\n10/22/2026
+        In both, the first date in the block is the order date and the
+        second is the arrive-on/before (ship-by) date."""
+        m = re.search(r'Order Details(.*?)Shipping Information', text, re.DOTALL)
+        if not m:
+            return (None, None)
+        ds = re.findall(r'\d{1,2}/\d{1,2}/\d{2,4}', m.group(1))
+        return (ds[0] if ds else None, ds[1] if len(ds) > 1 else None)
+
     def items_look_valid(items_list):
         """Validate parsed items: no empty descriptions,
         Total must equal Quantity x Unit Price,
@@ -291,12 +304,10 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
                 return False
         # Summit-specific: verify dates against the raw text
         if is_summit:
-            d = re.search(r'Order Date\D*?(\d{1,2}/\d{1,2}/\d{2,4})', extracted_text)
-            if d and str(first.get('Date of Order', '')).strip() != d.group(1):
+            od, sb = summit_dates(extracted_text)
+            if od and str(first.get('Date of Order', '')).strip() != od:
                 return False
-            a = re.search(r'Arrive\s*On[/\s]*Before\D*?(\d{1,2}/\d{1,2}/\d{2,4})',
-                          extracted_text, re.IGNORECASE)
-            if a and str(first.get('Ship By Date', '')).strip() != a.group(1):
+            if sb and str(first.get('Ship By Date', '')).strip() != sb:
                 return False
         return True
 
@@ -323,19 +334,23 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
         if po_match:
             order_info['Purchase Order Number'] = po_match.group(1)
         
-        # Look for Order Date - label and date may be on the same or
-        # separate lines, and the year may be 2 or 4 digits
-        date_match = re.search(r'Order Date\D*?(\d{1,2}/\d{1,2}/\d{2,4})', extracted_text)
-        if date_match:
-            order_info['Date of Order'] = date_match.group(1)
-
-        # Look for Arrive On/Before date
-        delivery_match = (re.search(r'Arrive\s*On[/\s]*Before\D*?(\d{1,2}/\d{1,2}/\d{2,4})',
-                                    extracted_text, re.IGNORECASE)
-                          or re.search(r'(?:Ship|Deliver(?:y)?)\s*(?:By|Date)\D*?(\d{1,2}/\d{1,2}/\d{2,4})',
-                                       extracted_text, re.IGNORECASE))
-        if delivery_match:
-            order_info['Ship By Date'] = delivery_match.group(1)
+        # Order Details block: first date = order date, second = ship-by.
+        # (Text extraction stacks labels and values in either order.)
+        od, sb = summit_dates(extracted_text)
+        if od:
+            order_info['Date of Order'] = od
+        if sb:
+            order_info['Ship By Date'] = sb
+        # Label-anchored fallbacks if the Order Details block wasn't found
+        if not order_info['Date of Order']:
+            date_match = re.search(r'Order Date\D*?(\d{1,2}/\d{1,2}/\d{2,4})', extracted_text)
+            if date_match:
+                order_info['Date of Order'] = date_match.group(1)
+        if not order_info['Ship By Date']:
+            delivery_match = re.search(r'Arrive\s*On[/\s]*Before\D*?(\d{1,2}/\d{1,2}/\d{2,4})',
+                                       extracted_text, re.IGNORECASE)
+            if delivery_match:
+                order_info['Ship By Date'] = delivery_match.group(1)
         
         # Look for Ship To address
         ship_to_match = re.search(r'Ship To:\s*\n\s*(.*?)\s*\n\s*(?:PH|FX)\s*:', extracted_text, re.DOTALL)
