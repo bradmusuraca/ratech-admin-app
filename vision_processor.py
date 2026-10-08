@@ -265,6 +265,10 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
     # Check if it's Drive Train Specialists format
     is_dts = 'DRIVE TRAIN SPECIALISTS' in full_text.upper()
 
+    # Check if it's Ford Motor Company format ("Purchase Notification")
+    is_ford = ('ford motor company' in full_text.lower()
+               or 'purchase notification' in full_text.lower())
+
     def items_look_valid(items_list):
         """Validate parsed items: no empty descriptions,
         and Total must equal Quantity x Unit Price."""
@@ -285,7 +289,7 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
         print("DEBUG: Using Gemini API for parsing")
         gemini_items = parse_order_with_gemini(extracted_text, gemini_api_key)
         if gemini_items:
-            if (is_summit or is_dts or is_ss_truck) and not items_look_valid(gemini_items):
+            if (is_summit or is_dts or is_ss_truck or is_ford) and not items_look_valid(gemini_items):
                 print("DEBUG: Gemini output failed validation, using deterministic parser")
             else:
                 print(f"DEBUG: Gemini returned {len(gemini_items)} items")
@@ -533,6 +537,73 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
             }
             item.update(order_info)
             items.append(item)
+
+    elif is_ford:
+        # Ford Motor Company "Purchase Notification" format
+        # PO number: "No - 837150-1"
+        po_match = re.search(r'\bNo\s*-\s*([\d]+-[\d]+|\d+)\b', extracted_text)
+        if po_match:
+            order_info['Purchase Order Number'] = po_match.group(1)
+
+        # "Date of order:\n9/10/2026"
+        date_match = re.search(r'Date of order:\s*\n?\s*(\d{1,2}/\d{1,2}/\d{4})', extracted_text)
+        if date_match:
+            order_info['Date of Order'] = date_match.group(1)
+
+        # "Ship No Later Than\n11/09/2026"
+        ship_date_match = re.search(r'Ship No Later Than\s*\n?\s*(\d{1,2}/\d{1,2}/\d{4})', extracted_text)
+        if ship_date_match:
+            order_info['Ship By Date'] = ship_date_match.group(1)
+
+        # Ship To block (includes location code like J7XPB)
+        ship_to_match = re.search(r'\*SHIP TO:\s*\n(.*?)(?:Phone:|E-mail:|FAILURE)', extracted_text, re.DOTALL)
+        if ship_to_match:
+            order_info['Ship To'] = ship_to_match.group(1).strip()
+
+        # Invoice address block
+        inv_match = re.search(r'\*INVOICE:\s*\n(.*?)(?:Submit Invoices|Payment terms)', extracted_text, re.DOTALL)
+        if inv_match:
+            order_info['Invoice Address'] = inv_match.group(1).strip()
+
+        # Supplier's Code = Ford's code for Ratech
+        sup_match = re.search(r"Supplier's Code:\s*(\S+)", extracted_text)
+        if sup_match:
+            order_info['Vendor'] = sup_match.group(1)
+
+        # Shipping point (e.g. FCA)
+        sp_match = re.search(r'Shipping point:\s*\n?\s*(\S+)', extracted_text)
+        if sp_match:
+            order_info['Shipping Instructions'] = sp_match.group(1)
+
+        comments = []
+        pt_match = re.search(r'Payment terms:\s*\n?\s*([^\n]+)', extracted_text)
+        if pt_match:
+            comments.append('Payment Terms: ' + pt_match.group(1).strip())
+        buyer_match = re.search(r'([A-Za-z]+\s+[A-Za-z]+),?\s*buyer', extracted_text, re.IGNORECASE)
+        if buyer_match:
+            comments.append('Buyer: ' + buyer_match.group(1))
+        if comments:
+            order_info['Comments'] = ' | '.join(comments)
+
+        # Items: "873 M-1225-B 8.8" AXLE BEARING AND SEAL KIT (PAIR) 1 12.5500 USD 10,956.15 USD"
+        # units | code | description | units/buy pack | unit price USD | total USD
+        ford_item_re = re.compile(
+            r'^\s*(\d+)\s+(\S+)\s+(.+?)\s+(\d+)\s+([\d.]+)\s*USD\s+([\d,]+\.\d+)\s*USD\s*$'
+        )
+        for line in lines:
+            m = ford_item_re.match(line.strip())
+            if m:
+                qty = safe_int(m.group(1))
+                desc = html.unescape(html.unescape(m.group(3))).strip()
+                item = {
+                    'Inventory Item': m.group(2),
+                    'Description': desc,
+                    'Quantity': qty,
+                    'Unit Price': safe_float(m.group(5)),
+                    'Total': safe_float(m.group(6))
+                }
+                item.update(order_info)
+                items.append(item)
 
     elif is_ss_truck:
         # S&S Truck Parts specific parsing
