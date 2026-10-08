@@ -24,7 +24,8 @@ wheels/
 *.egg
 
 # Streamlit
-.streamlit/
+.streamlit/*
+!.streamlit/config.toml
 
 # Environment variables
 .env

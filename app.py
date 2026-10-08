@@ -12,11 +12,45 @@ load_dotenv()
 st.set_page_config(
     page_title="Ratech Order Management",
     page_icon="📦",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-st.title("📦 Ratech Order Management System")
-st.markdown("Upload PDF orders or ShipStation exports, validate them, and export sales orders to Sage 50 2019 CSV format")
+# ---- App-wide styling ----
+st.markdown("""
+<style>
+    .block-container { padding-top: 1.5rem; }
+    .ratech-header {
+        padding: 1.1rem 1.5rem;
+        background: linear-gradient(135deg, #16324F 0%, #2460A7 100%);
+        border-radius: 12px;
+        margin-bottom: 1.25rem;
+    }
+    .ratech-header h1 {
+        color: #ffffff; margin: 0; font-size: 1.8rem; font-weight: 700;
+    }
+    .ratech-header p {
+        color: #bcd4ea; margin: 0.2rem 0 0 0; font-size: 0.95rem;
+    }
+    .stMetric {
+        background: #F5F7FA;
+        border-radius: 10px;
+        padding: 0.6rem 1rem;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<div class="ratech-header">
+    <h1>📦 Ratech Order Management</h1>
+    <p>PDF &amp; ShipStation orders &rarr; validate &rarr; Sage 50 sales orders</p>
+</div>
+""", unsafe_allow_html=True)
+
+# Session state defaults
+for _k, _v in (('invoices', []), ('inbox_items', []), ('loaded_uids', set()), ('upload_version', 0)):
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
 
 
 def render_pdf_images(pdf_bytes):
@@ -223,22 +257,35 @@ def build_csv_invoice(file_bytes, file_name, doc_key):
     return inv
 
 # Sidebar navigation
-st.sidebar.title("Navigation")
+st.sidebar.markdown("""
+<div style="padding: 0.2rem 0.2rem 0.4rem;">
+    <div style="font-size:1.5rem; font-weight:700; color:#2460A7;">📦 Ratech</div>
+    <div style="font-size:0.8rem; color:#8a93a0;">Order Management</div>
+</div>
+""", unsafe_allow_html=True)
 page = st.sidebar.radio("Select Page", ["Order Processing", "Customers", "Inventory Management", "Settings"])
 
+st.sidebar.divider()
+st.sidebar.caption("Connections")
+for _label, _ok in [
+    ("Vision OCR", os.getenv('GOOGLE_CREDENTIALS')),
+    ("Gemini parser", os.getenv('GEMINI_API_KEY')),
+    ("Email inbox", os.getenv('EMAIL_USER') and os.getenv('EMAIL_PASSWORD')),
+]:
+    st.sidebar.markdown(f"{'🟢' if _ok else '⚪'} {_label}")
+st.sidebar.caption(f"🗂 {len(st.session_state.invoices)} order(s) in queue")
+
 if page == "Order Processing":
-    st.header("Order Processing")
-    
-    # Initialize session state - a queue of invoices, each with its own
-    # PDF images, extracted text, and editable dataframe
-    if 'invoices' not in st.session_state:
-        st.session_state.invoices = []
-    if 'inbox_items' not in st.session_state:
-        st.session_state.inbox_items = []
-    if 'loaded_uids' not in st.session_state:
-        st.session_state.loaded_uids = set()
-    if 'upload_version' not in st.session_state:
-        st.session_state.upload_version = 0
+    st.header("📥 Order Processing")
+
+    # Queue metrics
+    _n_lines = sum(len(inv['df']) for inv in st.session_state.invoices
+                   if inv.get('df') is not None)
+    _n_matched = sum(1 for inv in st.session_state.invoices if inv.get('customer'))
+    _m1, _m2, _m3 = st.columns(3)
+    _m1.metric("Orders in queue", len(st.session_state.invoices))
+    _m2.metric("Line items", _n_lines)
+    _m3.metric("Customers assigned", _n_matched)
 
     # --- Inbox orders (read-only IMAP - never marks mail as read) ---
     st.subheader("📥 Inbox Orders")
@@ -247,7 +294,7 @@ if page == "Order Processing":
     email_user = os.getenv('EMAIL_USER')
     email_pass = os.getenv('EMAIL_PASSWORD')
 
-    if st.button("Check Inbox for New Orders"):
+    if st.button("🔍 Check Inbox for New Orders"):
         if not email_user or not email_pass:
             st.warning("Email credentials not configured. Add them in the Settings page.")
         else:
@@ -264,37 +311,42 @@ if page == "Order Processing":
                     st.error(f"Inbox check failed: {e}")
 
     for item in st.session_state.inbox_items:
-        item_cols = st.columns([5, 1])
-        with item_cols[0]:
-            st.write(f"**{item['subject']}**")
-            st.caption(f"{item['sender']} • {item['date']}")
-        with item_cols[1]:
-            if st.button("Load", key=f"load_{item['uid']}"):
-                if not email_user or not email_pass:
-                    st.warning("Email credentials not configured.")
-                else:
-                    with st.spinner("Loading PDF attachment(s)..."):
-                        try:
-                            pdfs = fetch_pdf_from_message(email_host, email_port, email_user, email_pass, item['uid'])
-                        except Exception as e:
-                            st.error(f"Failed to load attachment: {e}")
-                            pdfs = []
-                    if not pdfs:
-                        st.warning("No PDF attachment found in this email.")
+        try:
+            item_card = st.container(border=True)
+        except TypeError:
+            item_card = st.container()
+        with item_card:
+            item_cols = st.columns([5, 1])
+            with item_cols[0]:
+                st.write(f"**{item['subject']}**")
+                st.caption(f"{item['sender']} • {item['date']}")
+            with item_cols[1]:
+                if st.button("Load", key=f"load_{item['uid']}"):
+                    if not email_user or not email_pass:
+                        st.warning("Email credentials not configured.")
                     else:
-                        existing = {inv['key'] for inv in st.session_state.invoices}
-                        loaded = 0
-                        for pdf in pdfs:
-                            inv_key = ('inbox', item['uid'], pdf['filename'])
-                            if inv_key not in existing:
-                                st.session_state.invoices.append(
-                                    build_invoice(pdf['bytes'], pdf['filename'], inv_key))
-                                existing.add(inv_key)
-                                loaded += 1
-                        st.session_state.loaded_uids.add(item['uid'])
-                        st.session_state.inbox_items = [i for i in st.session_state.inbox_items if i['uid'] != item['uid']]
-                        if loaded:
-                            st.rerun()
+                        with st.spinner("Loading PDF attachment(s)..."):
+                            try:
+                                pdfs = fetch_pdf_from_message(email_host, email_port, email_user, email_pass, item['uid'])
+                            except Exception as e:
+                                st.error(f"Failed to load attachment: {e}")
+                                pdfs = []
+                        if not pdfs:
+                            st.warning("No PDF attachment found in this email.")
+                        else:
+                            existing = {inv['key'] for inv in st.session_state.invoices}
+                            loaded = 0
+                            for pdf in pdfs:
+                                inv_key = ('inbox', item['uid'], pdf['filename'])
+                                if inv_key not in existing:
+                                    st.session_state.invoices.append(
+                                        build_invoice(pdf['bytes'], pdf['filename'], inv_key))
+                                    existing.add(inv_key)
+                                    loaded += 1
+                            st.session_state.loaded_uids.add(item['uid'])
+                            st.session_state.inbox_items = [i for i in st.session_state.inbox_items if i['uid'] != item['uid']]
+                            if loaded:
+                                st.rerun()
 
     st.divider()
     st.subheader("Upload Order File(s)")
@@ -331,118 +383,122 @@ if page == "Order Processing":
 
         for idx, inv in enumerate(st.session_state.invoices):
             wkey = str(inv['key'])
-            title_cols = st.columns([6, 1])
-            with title_cols[0]:
-                cust_label = cust_names.get(inv.get('customer', ''), '')
-                st.subheader(f"📄 {inv['name']}"
-                             + (f"  ·  👤 {inv['customer']} {cust_label}" if inv.get('customer') else ""))
-            with title_cols[1]:
-                if st.button("Remove", key=f"remove_{wkey}"):
-                    st.session_state.invoices.pop(idx)
-                    st.session_state.upload_version += 1
-                    st.rerun()
+            try:
+                card = st.container(border=True)
+            except TypeError:
+                card = st.container()
+            with card:
+                title_cols = st.columns([6, 1])
+                with title_cols[0]:
+                    cust_label = cust_names.get(inv.get('customer', ''), '')
+                    st.subheader(f"📄 {inv['name']}"
+                                 + (f"  ·  👤 {inv['customer']} {cust_label}" if inv.get('customer') else ""))
+                with title_cols[1]:
+                    if st.button("🗑 Remove", key=f"remove_{wkey}"):
+                        st.session_state.invoices.pop(idx)
+                        st.session_state.upload_version += 1
+                        st.rerun()
 
-            col_pdf, col_data = st.columns([1, 1])
+                col_pdf, col_data = st.columns([1, 1])
 
-            with col_pdf:
-                if inv.get('raw_csv_df') is not None:
-                    # Source CSV shown in a scrollable table for verification
-                    try:
-                        src_container = st.container(height=600)
-                    except TypeError:
-                        src_container = st.container()
-                    with src_container:
-                        st.caption("Source CSV data")
-                        st.dataframe(inv['raw_csv_df'], use_container_width=True)
-                elif inv['pdf_images']:
-                    # Scrollable container - PDF scrolls independently
-                    try:
-                        pdf_container = st.container(height=600)
-                    except TypeError:
-                        pdf_container = st.container()
-                    with pdf_container:
-                        for page_num, img in enumerate(inv['pdf_images']):
-                            try:
-                                st.image(img, width='stretch',
-                                         caption=f"Page {page_num + 1} of {len(inv['pdf_images'])}")
-                            except TypeError:
-                                st.image(img, use_container_width=True,
-                                         caption=f"Page {page_num + 1} of {len(inv['pdf_images'])}")
-                elif inv['pdf_bytes']:
-                    try:
-                        st.pdf(inv['pdf_bytes'], height=600)
-                    except TypeError:
-                        st.pdf(inv['pdf_bytes'])
-                    except Exception:
-                        st.download_button(
-                            label="📥 Download PDF to view",
-                            data=inv['pdf_bytes'],
-                            file_name=inv['name'],
-                            mime="application/pdf",
-                            key=f"dl_{wkey}"
-                        )
-                if inv.get('extracted_text'):
-                    with st.expander("Raw Extracted Text"):
-                        st.text_area(
-                            "Raw Extracted Text",
-                            inv['extracted_text'],
-                            height=250,
-                            label_visibility="collapsed",
-                            key=f"raw_{wkey}"
-                        )
+                with col_pdf:
+                    if inv.get('raw_csv_df') is not None:
+                        # Source CSV shown in a scrollable table for verification
+                        try:
+                            src_container = st.container(height=600)
+                        except TypeError:
+                            src_container = st.container()
+                        with src_container:
+                            st.caption("Source CSV data")
+                            st.dataframe(inv['raw_csv_df'], use_container_width=True)
+                    elif inv['pdf_images']:
+                        # Scrollable container - PDF scrolls independently
+                        try:
+                            pdf_container = st.container(height=600)
+                        except TypeError:
+                            pdf_container = st.container()
+                        with pdf_container:
+                            for page_num, img in enumerate(inv['pdf_images']):
+                                try:
+                                    st.image(img, width='stretch',
+                                             caption=f"Page {page_num + 1} of {len(inv['pdf_images'])}")
+                                except TypeError:
+                                    st.image(img, use_container_width=True,
+                                             caption=f"Page {page_num + 1} of {len(inv['pdf_images'])}")
+                    elif inv['pdf_bytes']:
+                        try:
+                            st.pdf(inv['pdf_bytes'], height=600)
+                        except TypeError:
+                            st.pdf(inv['pdf_bytes'])
+                        except Exception:
+                            st.download_button(
+                                label="📥 Download PDF to view",
+                                data=inv['pdf_bytes'],
+                                file_name=inv['name'],
+                                mime="application/pdf",
+                                key=f"dl_{wkey}"
+                            )
+                    if inv.get('extracted_text'):
+                        with st.expander("Raw Extracted Text"):
+                            st.text_area(
+                                "Raw Extracted Text",
+                                inv['extracted_text'],
+                                height=250,
+                                label_visibility="collapsed",
+                                key=f"raw_{wkey}"
+                            )
 
-            with col_data:
-                # Sage customer selector - applies the customer number to the
-                # Vendor column of every row in this order
-                cust_opts = [''] + cust_numbers
-                sel_idx = cust_opts.index(inv['customer']) if inv.get('customer', '') in cust_opts else 0
-                sel_cust = st.selectbox(
-                    "Sage Customer #",
-                    options=cust_opts,
-                    index=sel_idx,
-                    format_func=lambda n: f"{n} — {cust_names.get(n, '')}" if n else "Select customer...",
-                    key=f"custsel_{wkey}"
-                )
-                if sel_cust and sel_cust != inv.get('customer', ''):
-                    inv['customer'] = sel_cust
-                    if 'Vendor' in inv['df'].columns:
-                        inv['df']['Vendor'] = sel_cust
-                    st.rerun()
+                with col_data:
+                    # Sage customer selector - applies the customer number to the
+                    # Vendor column of every row in this order
+                    cust_opts = [''] + cust_numbers
+                    sel_idx = cust_opts.index(inv['customer']) if inv.get('customer', '') in cust_opts else 0
+                    sel_cust = st.selectbox(
+                        "Sage Customer #",
+                        options=cust_opts,
+                        index=sel_idx,
+                        format_func=lambda n: f"{n} — {cust_names.get(n, '')}" if n else "Select customer...",
+                        key=f"custsel_{wkey}"
+                    )
+                    if sel_cust and sel_cust != inv.get('customer', ''):
+                        inv['customer'] = sel_cust
+                        if 'Vendor' in inv['df'].columns:
+                            inv['df']['Vendor'] = sel_cust
+                        st.rerun()
 
-                edited_df = st.data_editor(
-                    inv['df'],
-                    num_rows="dynamic",
-                    use_container_width=True,
-                    key=f"editor_{wkey}"
-                )
-                inv['df'] = edited_df
+                    edited_df = st.data_editor(
+                        inv['df'],
+                        num_rows="dynamic",
+                        use_container_width=True,
+                        key=f"editor_{wkey}"
+                    )
+                    inv['df'] = edited_df
 
-                qc1, qc2 = st.columns(2)
-                with qc1:
-                    if st.button("Copy Header to All Rows", key=f"copyhdr_{wkey}"):
-                        if not edited_df.empty:
-                            header_cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments']
-                            for col in header_cols:
-                                if col in edited_df.columns:
-                                    first_value = edited_df[col].dropna().iloc[0] if not edited_df[col].dropna().empty else ""
-                                    if first_value:
-                                        edited_df[col] = first_value
-                            inv['df'] = edited_df
-                            st.rerun()
-                with qc2:
-                    if st.button("Add Row", key=f"addrow_{wkey}"):
-                        if not edited_df.empty:
-                            new_row = {col: "" for col in edited_df.columns}
-                            header_cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments']
-                            for col in header_cols:
-                                if col in edited_df.columns:
-                                    first_value = edited_df[col].dropna().iloc[0] if not edited_df[col].dropna().empty else ""
-                                    if first_value:
-                                        new_row[col] = first_value
-                            inv['df'] = pd.concat([edited_df, pd.DataFrame([new_row])], ignore_index=True)
-                            st.rerun()
-
-            st.divider()
+                    qc1, qc2 = st.columns(2)
+                    with qc1:
+                        if st.button("📋 Copy Header to All Rows", key=f"copyhdr_{wkey}"):
+                            if not edited_df.empty:
+                                header_cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments']
+                                for col in header_cols:
+                                    if col in edited_df.columns:
+                                        first_value = edited_df[col].dropna().iloc[0] if not edited_df[col].dropna().empty else ""
+                                        if first_value:
+                                            edited_df[col] = first_value
+                                inv['df'] = edited_df
+                                st.rerun()
+                    with qc2:
+                        if st.button("➕ Add Row", key=f"addrow_{wkey}"):
+                            if not edited_df.empty:
+                                new_row = {col: "" for col in edited_df.columns}
+                                header_cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments']
+                                for col in header_cols:
+                                    if col in edited_df.columns:
+                                        first_value = edited_df[col].dropna().iloc[0] if not edited_df[col].dropna().empty else ""
+                                        if first_value:
+                                            new_row[col] = first_value
+                                inv['df'] = pd.concat([edited_df, pd.DataFrame([new_row])], ignore_index=True)
+                                st.rerun()
+            st.markdown("")
 
         # --- Combined validation & export ---
         all_dfs = [inv['df'] for inv in st.session_state.invoices
@@ -481,42 +537,48 @@ if page == "Order Processing":
                     except (ValueError, TypeError):
                         continue
 
-            if errors:
-                st.error(f"⚠️ Found {len(errors)} calculation error(s):")
-                st.dataframe(pd.DataFrame(errors), use_container_width=True)
-                if st.button("Auto-Calculate All Totals", type="primary"):
-                    for inv in st.session_state.invoices:
-                        df2 = inv['df']
-                        if df2 is not None and not df2.empty and price_col and 'Quantity' in df2.columns:
-                            df2['Quantity'] = pd.to_numeric(df2['Quantity'], errors='coerce').fillna(0)
-                            df2[price_col] = pd.to_numeric(df2[price_col], errors='coerce').fillna(0)
-                            df2['Total'] = df2['Quantity'] * df2[price_col]
-                            inv['df'] = df2
-                    st.rerun()
-            else:
-                st.success(f"✅ All calculations correct across {len(all_dfs)} order(s), {len(combined)} line item(s)")
+            try:
+                export_card = st.container(border=True)
+            except TypeError:
+                export_card = st.container()
+            with export_card:
+                if errors:
+                    st.error(f"⚠️ Found {len(errors)} calculation error(s):")
+                    st.dataframe(pd.DataFrame(errors), use_container_width=True)
+                    if st.button("🧮 Auto-Calculate All Totals", type="primary"):
+                        for inv in st.session_state.invoices:
+                            df2 = inv['df']
+                            if df2 is not None and not df2.empty and price_col and 'Quantity' in df2.columns:
+                                df2['Quantity'] = pd.to_numeric(df2['Quantity'], errors='coerce').fillna(0)
+                                df2[price_col] = pd.to_numeric(df2[price_col], errors='coerce').fillna(0)
+                                df2['Total'] = df2['Quantity'] * df2[price_col]
+                                inv['df'] = df2
+                        st.rerun()
+                else:
+                    st.success(f"✅ All calculations correct across {len(all_dfs)} order(s), {len(combined)} line item(s)")
 
-            st.subheader("Export Combined CSV")
-            st.caption(f"{len(combined)} line item(s) from {len(all_dfs)} order(s) will be exported to one file")
-            with st.expander("Preview combined CSV data", expanded=True):
-                st.dataframe(combined, use_container_width=True)
-            ec1, ec2 = st.columns(2)
-            with ec1:
-                st.download_button(
-                    label="📥 Download CSV for Sage 50",
-                    data=combined.to_csv(index=False),
-                    file_name="sage50_sales_orders.csv",
-                    mime="text/csv",
-                    type="primary"
-                )
-            with ec2:
-                if st.button("Clear All Orders"):
-                    st.session_state.invoices = []
-                    st.session_state.upload_version += 1
-                    st.rerun()
+                st.subheader("Export Combined CSV")
+                st.caption(f"{len(combined)} line item(s) from {len(all_dfs)} order(s) will be exported to one file")
+                with st.expander("Preview combined CSV data", expanded=True):
+                    st.dataframe(combined, use_container_width=True)
+                ec1, ec2 = st.columns(2)
+                with ec1:
+                    st.download_button(
+                        label="📥 Download CSV for Sage 50",
+                        data=combined.to_csv(index=False),
+                        file_name="sage50_sales_orders.csv",
+                        mime="text/csv",
+                        type="primary",
+                        use_container_width=True
+                    )
+                with ec2:
+                    if st.button("🧹 Clear All Orders", use_container_width=True):
+                        st.session_state.invoices = []
+                        st.session_state.upload_version += 1
+                        st.rerun()
 
 elif page == "Customers":
-    st.header("Customers")
+    st.header("👥 Customers")
     st.markdown("""
     Map customers to their **Sage 50 customer numbers** — *your* number for them,
     which is what the exported sales order needs. This is written into the
@@ -561,7 +623,7 @@ elif page == "Customers":
                "commit the updated `customers.csv` to GitHub (or download it here and commit it).")
 
 elif page == "Inventory Management":
-    st.header("Inventory Management")
+    st.header("📋 Inventory Management")
     st.info("This feature will be implemented in Phase 2. It will allow workers to:")
     st.markdown("""
     - Take photos of packing slips
@@ -572,7 +634,7 @@ elif page == "Inventory Management":
     """)
 
 elif page == "Settings":
-    st.header("Settings")
+    st.header("⚙️ Settings")
     
     st.subheader("Google Cloud Vision API")
     
