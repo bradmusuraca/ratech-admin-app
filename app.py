@@ -129,13 +129,20 @@ if page == "Order Processing":
         with col_pdf:
             st.subheader(f"📄 {st.session_state.pdf_name or 'Order PDF'}")
             if st.session_state.pdf_images:
-                for page_num, img in enumerate(st.session_state.pdf_images):
-                    try:
-                        st.image(img, width='stretch',
-                                 caption=f"Page {page_num + 1} of {len(st.session_state.pdf_images)}")
-                    except TypeError:
-                        st.image(img, use_container_width=True,
-                                 caption=f"Page {page_num + 1} of {len(st.session_state.pdf_images)}")
+                # Fixed-height scrollable container so the PDF scrolls
+                # independently of the data table
+                try:
+                    pdf_container = st.container(height=800)
+                except TypeError:
+                    pdf_container = st.container()
+                with pdf_container:
+                    for page_num, img in enumerate(st.session_state.pdf_images):
+                        try:
+                            st.image(img, width='stretch',
+                                     caption=f"Page {page_num + 1} of {len(st.session_state.pdf_images)}")
+                        except TypeError:
+                            st.image(img, use_container_width=True,
+                                     caption=f"Page {page_num + 1} of {len(st.session_state.pdf_images)}")
             elif st.session_state.pdf_bytes:
                 try:
                     st.pdf(st.session_state.pdf_bytes, height=700)
