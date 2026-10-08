@@ -291,10 +291,11 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
                 return False
         # Summit-specific: verify dates against the raw text
         if is_summit:
-            d = re.search(r'Order Date:\s*(\d{1,2}/\d{1,2}/\d{4})', extracted_text)
+            d = re.search(r'Order Date\D*?(\d{1,2}/\d{1,2}/\d{2,4})', extracted_text)
             if d and str(first.get('Date of Order', '')).strip() != d.group(1):
                 return False
-            a = re.search(r'Arrive On/Before:\s*(\d{1,2}/\d{1,2}/\d{4})', extracted_text)
+            a = re.search(r'Arrive\s*On[/\s]*Before\D*?(\d{1,2}/\d{1,2}/\d{2,4})',
+                          extracted_text, re.IGNORECASE)
             if a and str(first.get('Ship By Date', '')).strip() != a.group(1):
                 return False
         return True
@@ -322,16 +323,17 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
         if po_match:
             order_info['Purchase Order Number'] = po_match.group(1)
         
-        # Look for Order Date - handle both formats
-        date_match = re.search(r'Order Date:\s*(\d{1,2}/\d{1,2}/\d{4})', extracted_text)
-        if not date_match:
-            # Try alternate format
-            date_match = re.search(r'Order Date\s*(\d{1,2}/\d{1,2}/\d{4})', extracted_text)
+        # Look for Order Date - label and date may be on the same or
+        # separate lines, and the year may be 2 or 4 digits
+        date_match = re.search(r'Order Date\D*?(\d{1,2}/\d{1,2}/\d{2,4})', extracted_text)
         if date_match:
             order_info['Date of Order'] = date_match.group(1)
-        
+
         # Look for Arrive On/Before date
-        delivery_match = re.search(r'Arrive On/Before:\s*(\d{1,2}/\d{1,2}/\d{4})', extracted_text)
+        delivery_match = (re.search(r'Arrive\s*On[/\s]*Before\D*?(\d{1,2}/\d{1,2}/\d{2,4})',
+                                    extracted_text, re.IGNORECASE)
+                          or re.search(r'(?:Ship|Deliver(?:y)?)\s*(?:By|Date)\D*?(\d{1,2}/\d{1,2}/\d{2,4})',
+                                       extracted_text, re.IGNORECASE))
         if delivery_match:
             order_info['Ship By Date'] = delivery_match.group(1)
         
