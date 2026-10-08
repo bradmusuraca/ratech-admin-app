@@ -283,8 +283,11 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
         if po_match:
             order_info['Purchase Order Number'] = po_match.group(1)
         
-        # Look for Order Date
+        # Look for Order Date - handle both formats
         date_match = re.search(r'Order Date:\s*(\d{1,2}/\d{1,2}/\d{4})', extracted_text)
+        if not date_match:
+            # Try alternate format
+            date_match = re.search(r'Order Date\s*(\d{1,2}/\d{1,2}/\d{4})', extracted_text)
         if date_match:
             order_info['Date of Order'] = date_match.group(1)
         
@@ -318,7 +321,7 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
         lines_text = extracted_text.split('\n')
         
         for i, line in enumerate(lines_text):
-            # Look for lines that are just numbers (line numbers like "0001", "0002", etc.)
+            # Look for lines that are just 4-digit numbers (line numbers like "0001", "0002")
             if re.match(r'^\s*\d{4}\s*$', line):
                 try:
                     # Get the part number (next line with RAT- prefix)
@@ -334,35 +337,51 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
                                 if re.match(r'^\d+$', qty_line):
                                     quantity = safe_int(qty_line)
                                     
-                                    # Get description (next few lines until price)
+                                    # Get description (collect lines until we hit price or next item)
                                     description_lines = []
                                     j = i + 3
                                     while j < len(lines_text) and j < i + 10:
                                         desc_line = lines_text[j].strip()
-                                        # Stop if we hit a price or the next item
-                                        if '$' in desc_line or re.match(r'^\d{4}', desc_line):
+                                        
+                                        # Stop if we hit a price line (contains $)
+                                        if '$' in desc_line:
                                             break
-                                        if desc_line and not re.match(r'^\d+%$', desc_line):
-                                            description_lines.append(desc_line)
+                                        # Stop if we hit the next item (4-digit number)
+                                        if re.match(r'^\s*\d{4}\s*$', desc_line):
+                                            break
+                                        # Skip discount percentage lines
+                                        if re.match(r'^\d+%$', desc_line):
+                                            break
+                                        # Skip empty lines
+                                        if not desc_line:
+                                            j += 1
+                                            continue
+                                        
+                                        description_lines.append(desc_line)
                                         j += 1
                                     
                                     description = ' '.join(description_lines)
                                     
-                                    # Get price (next line with $)
+                                    # Get price (look for $ in current line or next line)
                                     unit_price = 0.0
                                     total = 0.0
-                                    if j < len(lines_text):
-                                        price_line = lines_text[j].strip()
+                                    
+                                    # Look for price in current line or next line
+                                    for k in range(j, min(j + 2, len(lines_text))):
+                                        price_line = lines_text[k].strip()
                                         price_match = re.search(r'\$([\d.]+)', price_line)
                                         if price_match:
                                             unit_price = safe_float(price_match.group(1))
-                                        
-                                        # Get total (next line with $ after discount)
-                                        if j + 2 < len(lines_text):
-                                            total_line = lines_text[j + 2].strip()
-                                            total_match = re.search(r'\$([\d.]+)', total_line)
-                                            if total_match:
-                                                total = safe_float(total_match.group(1))
+                                            
+                                            # Look for total (next $ value after discount)
+                                            for m in range(k + 1, min(k + 3, len(lines_text))):
+                                                total_line = lines_text[m].strip()
+                                                total_match = re.search(r'\$([\d,]+\.\d{2})', total_line)
+                                                if total_match:
+                                                    total_str = total_match.group(1).replace(',', '')
+                                                    total = safe_float(total_str)
+                                                    break
+                                            break
                                     
                                     # Clean up part number (remove RAT- prefix)
                                     inventory_item = re.sub(r'^RAT-', '', part_num)
