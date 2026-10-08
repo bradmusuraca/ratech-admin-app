@@ -58,12 +58,16 @@ def save_env_vars(pairs):
     load_dotenv(override=True)
 
 
-def process_pdf(pdf_bytes, pdf_name, doc_key):
-    """Extract text, parse order data, and store results in session state."""
-    st.session_state.file_id = doc_key
-    st.session_state.pdf_bytes = pdf_bytes
-    st.session_state.pdf_name = pdf_name
-    st.session_state.pdf_images = render_pdf_images(pdf_bytes)
+def build_invoice(pdf_bytes, pdf_name, doc_key):
+    """Extract text and parse a PDF into an invoice dict for the queue."""
+    inv = {
+        'key': doc_key,
+        'name': pdf_name,
+        'pdf_bytes': pdf_bytes,
+        'pdf_images': render_pdf_images(pdf_bytes),
+        'extracted_text': None,
+        'df': None,
+    }
     st.success(f"Loaded: {pdf_name}")
 
     # Get Google credentials from environment
@@ -74,27 +78,18 @@ def process_pdf(pdf_bytes, pdf_name, doc_key):
         st.info("Using placeholder mode for demo purposes")
         extracted_text = "Sample extracted text from PDF\nItem 1: Widget A - $10.00\nItem 2: Widget B - $20.00"
     else:
-        with st.spinner("Processing PDF with Google Vision API..."):
+        with st.spinner(f"Extracting text from {pdf_name}..."):
             try:
                 processor = VisionProcessor(credentials_json=google_credentials)
                 extracted_text = processor.extract_text_from_bytes(pdf_bytes, file_type='pdf')
-                st.success("Text extraction completed!")
             except Exception as e:
-                st.error(f"Error processing PDF: {str(e)}")
-                st.info("Using placeholder mode for demo purposes")
-                extracted_text = "Sample extracted text from PDF\nItem 1: Widget A - $10.00\nItem 2: Widget B - $20.00"
-
-    st.session_state.extracted_text = extracted_text
+                st.error(f"Error processing {pdf_name}: {str(e)}")
+                extracted_text = ""
+    inv['extracted_text'] = extracted_text
 
     # Parse order data
-    with st.spinner("Parsing order data..."):
+    with st.spinner(f"Parsing {pdf_name}..."):
         gemini_key = os.getenv('GEMINI_API_KEY')
-
-        if gemini_key:
-            st.info("🤖 Using Gemini AI for parsing")
-        else:
-            st.warning("⚠️ No Gemini API key found - using regex fallback")
-
         order_items = parse_order_text(extracted_text, gemini_api_key=gemini_key)
 
         if order_items:
@@ -103,14 +98,14 @@ def process_pdf(pdf_bytes, pdf_name, doc_key):
             cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments', 'Inventory Item', 'Description', 'Quantity', 'Unit Price', 'Total']
             cols = [col for col in cols if col in df.columns]
             df = df[cols]
-            st.success(f"✅ Successfully parsed {len(order_items)} item(s)")
+            st.success(f"✅ {pdf_name}: parsed {len(order_items)} item(s)")
         else:
-            st.warning("⚠️ Could not automatically parse order items.")
-            st.info("📝 Please enter data manually using the editable table below.")
+            st.warning(f"⚠️ {pdf_name}: could not automatically parse - enter data manually below.")
             df = pd.DataFrame(columns=["Purchase Order Number", "Date of Order", "Ship By Date", "Ship To", "Invoice Address", "Vendor", "Shipping Instructions", "Comments", "Inventory Item", "Description", "Quantity", "Unit Price", "Total"])
             df.loc[0] = [""] * len(df.columns)
 
-    st.session_state.processed_df = df
+    inv['df'] = df
+    return inv
 
 # Sidebar navigation
 st.sidebar.title("Navigation")
@@ -119,19 +114,10 @@ page = st.sidebar.radio("Select Page", ["Order Processing", "Inventory Managemen
 if page == "Order Processing":
     st.header("Order Processing")
     
-    # Initialize session state for storing processed data
-    if 'processed_df' not in st.session_state:
-        st.session_state.processed_df = None
-    if 'extracted_text' not in st.session_state:
-        st.session_state.extracted_text = None
-    if 'pdf_bytes' not in st.session_state:
-        st.session_state.pdf_bytes = None
-    if 'pdf_name' not in st.session_state:
-        st.session_state.pdf_name = None
-    if 'pdf_images' not in st.session_state:
-        st.session_state.pdf_images = []
-    if 'file_id' not in st.session_state:
-        st.session_state.file_id = None
+    # Initialize session state - a queue of invoices, each with its own
+    # PDF images, extracted text, and editable dataframe
+    if 'invoices' not in st.session_state:
+        st.session_state.invoices = []
     if 'inbox_items' not in st.session_state:
         st.session_state.inbox_items = []
     if 'loaded_uids' not in st.session_state:
@@ -172,7 +158,7 @@ if page == "Order Processing":
                 if not email_user or not email_pass:
                     st.warning("Email credentials not configured.")
                 else:
-                    with st.spinner("Loading PDF attachment..."):
+                    with st.spinner("Loading PDF attachment(s)..."):
                         try:
                             pdfs = fetch_pdf_from_message(email_host, email_port, email_user, email_pass, item['uid'])
                         except Exception as e:
@@ -181,231 +167,197 @@ if page == "Order Processing":
                     if not pdfs:
                         st.warning("No PDF attachment found in this email.")
                     else:
-                        if len(pdfs) > 1:
-                            st.warning(f"{len(pdfs)} PDF attachments found - loading '{pdfs[0]['filename']}'")
-                        # Reset uploader widget so a previously uploaded file
-                        # doesn't re-process over this email's order
-                        st.session_state.upload_version += 1
+                        existing = {inv['key'] for inv in st.session_state.invoices}
+                        loaded = 0
+                        for pdf in pdfs:
+                            inv_key = ('inbox', item['uid'], pdf['filename'])
+                            if inv_key not in existing:
+                                st.session_state.invoices.append(
+                                    build_invoice(pdf['bytes'], pdf['filename'], inv_key))
+                                existing.add(inv_key)
+                                loaded += 1
                         st.session_state.loaded_uids.add(item['uid'])
                         st.session_state.inbox_items = [i for i in st.session_state.inbox_items if i['uid'] != item['uid']]
-                        process_pdf(pdfs[0]['bytes'], pdfs[0]['filename'],
-                                    ('inbox', item['uid'], pdfs[0]['filename']))
-                        st.rerun()
-
-    st.divider()
-    st.subheader("Upload PDF Order")
-    uploaded_file = st.file_uploader(
-        "Choose a PDF file",
-        type=['pdf'],
-        key=f"pdf_uploader_{st.session_state.upload_version}",
-        help="Upload a PDF order document for processing"
-    )
-
-    if uploaded_file:
-        file_key = ('upload', uploaded_file.name, uploaded_file.size)
-        # Only process when a new file is uploaded (avoids re-calling
-        # Vision/Gemini on every table edit rerun)
-        if st.session_state.file_id != file_key:
-            process_pdf(bytes(uploaded_file.getbuffer()), uploaded_file.name, file_key)
-
-    # Split view: PDF on the left, editable output on the right
-    if st.session_state.processed_df is not None:
-        col_pdf, col_data = st.columns([1, 1])
-
-        with col_pdf:
-            st.subheader(f"📄 {st.session_state.pdf_name or 'Order PDF'}")
-            if st.session_state.pdf_images:
-                # Fixed-height scrollable container so the PDF scrolls
-                # independently of the data table
-                try:
-                    pdf_container = st.container(height=800)
-                except TypeError:
-                    pdf_container = st.container()
-                with pdf_container:
-                    for page_num, img in enumerate(st.session_state.pdf_images):
-                        try:
-                            st.image(img, width='stretch',
-                                     caption=f"Page {page_num + 1} of {len(st.session_state.pdf_images)}")
-                        except TypeError:
-                            st.image(img, use_container_width=True,
-                                     caption=f"Page {page_num + 1} of {len(st.session_state.pdf_images)}")
-            elif st.session_state.pdf_bytes:
-                try:
-                    st.pdf(st.session_state.pdf_bytes, height=700)
-                except TypeError:
-                    st.pdf(st.session_state.pdf_bytes)
-                except Exception:
-                    st.info("Inline PDF preview unavailable in this browser.")
-                    st.download_button(
-                        label="📥 Download PDF to view",
-                        data=st.session_state.pdf_bytes,
-                        file_name=st.session_state.pdf_name or "order.pdf",
-                        mime="application/pdf"
-                    )
-            if st.session_state.extracted_text:
-                with st.expander("Raw Extracted Text"):
-                    st.text_area(
-                        "Raw Extracted Text",
-                        st.session_state.extracted_text,
-                        height=300,
-                        label_visibility="collapsed"
-                    )
-
-        with col_data:
-            st.subheader("Validate and Edit Order")
-
-            # Add helpful tips
-            with st.expander("💡 Tips for Manual Entry"):
-                st.markdown("""
-                - **Click any cell** to edit its value
-                - **Click "+ Add row"** at the bottom to add new items
-                - **Click the "×"** button to delete a row
-                - **Common fields** (PO number, dates, addresses) are automatically copied to all rows when parsing
-                - **Hover over column headers** to see what information goes there
-                """)
-
-            edited_df = st.data_editor(
-                st.session_state.processed_df,
-                num_rows="dynamic",
-                use_container_width=True,
-                key="order_editor"
-            )
-        
-            # Quick actions for manual entry
-            st.subheader("Quick Actions")
-            col1, col2, col3 = st.columns(3)
-
-            with col1:
-                if st.button("Copy Header Info to All Rows"):
-                    # Copy header fields (PO number, dates, addresses) to all rows
-                    if not edited_df.empty:
-                        header_cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments']
-                        for col in header_cols:
-                            if col in edited_df.columns:
-                                # Get the first non-empty value
-                                first_value = edited_df[col].dropna().iloc[0] if not edited_df[col].dropna().empty else ""
-                                if first_value:
-                                    edited_df[col] = first_value
-                        st.session_state.processed_df = edited_df
-                        st.success("✅ Header info copied to all rows")
-                        st.rerun()
-
-            with col2:
-                if st.button("Clear All Data"):
-                    st.session_state.processed_df = None
-                    st.session_state.extracted_text = None
-                    st.session_state.pdf_bytes = None
-                    st.session_state.pdf_name = None
-                    st.session_state.pdf_images = []
-                    st.rerun()
-
-            with col3:
-                if st.button("Add New Row"):
-                    if not edited_df.empty:
-                        new_row = {col: "" for col in edited_df.columns}
-                        # Copy header fields to new row
-                        header_cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments']
-                        for col in header_cols:
-                            if col in edited_df.columns:
-                                first_value = edited_df[col].dropna().iloc[0] if not edited_df[col].dropna().empty else ""
-                                if first_value:
-                                    new_row[col] = first_value
-                        edited_df = pd.concat([edited_df, pd.DataFrame([new_row])], ignore_index=True)
-                        st.session_state.processed_df = edited_df
-                        st.rerun()
-
-            # Validation: Check for calculation errors
-            if not edited_df.empty:
-                errors = []
-                price_col = 'Unit Price' if 'Unit Price' in edited_df.columns else ('Price' if 'Price' in edited_df.columns else None)
-
-                if price_col and 'Quantity' in edited_df.columns and 'Total' in edited_df.columns:
-                    for idx, row in edited_df.iterrows():
-                        try:
-                            qty = float(row['Quantity']) if pd.notna(row['Quantity']) else 0
-                            price = float(row[price_col]) if pd.notna(row[price_col]) else 0
-                            total = float(row['Total']) if pd.notna(row['Total']) else 0
-                            calculated_total = qty * price
-
-                            # Allow small floating point differences
-                            if abs(calculated_total - total) > 0.01:
-                                errors.append({
-                                    'Row': idx,
-                                    'Item': row.get('Description', 'Unknown'),
-                                    'Quantity': qty,
-                                    'Price': price,
-                                    'Total Listed': total,
-                                    'Total Calculated': calculated_total,
-                                    'Difference': calculated_total - total
-                                })
-                        except (ValueError, TypeError):
-                            continue
-
-                if errors:
-                    st.error(f"⚠️ Found {len(errors)} calculation error(s):")
-                    error_df = pd.DataFrame(errors)
-                    st.dataframe(error_df, use_container_width=True)
-
-                    st.subheader("Correction Options")
-                    col1, col2 = st.columns(2)
-
-                    with col1:
-                        if st.button("Auto-Calculate Totals", type="primary"):
-                            if price_col and 'Quantity' in edited_df.columns:
-                                edited_df['Total'] = edited_df['Quantity'] * edited_df[price_col]
-                            st.session_state.processed_df = edited_df
-                            st.success("✅ Totals have been recalculated")
+                        if loaded:
                             st.rerun()
 
-                    with col2:
-                        if st.button("Keep Original Totals"):
-                            st.info("Original totals will be kept. Please review manually.")
-                else:
-                    st.success("✅ All calculations are correct!")
+    st.divider()
+    st.subheader("Upload PDF Order(s)")
+    uploaded_files = st.file_uploader(
+        "Choose PDF file(s)",
+        type=['pdf'],
+        accept_multiple_files=True,
+        key=f"pdf_uploader_{st.session_state.upload_version}",
+        help="Upload one or more PDF orders - each becomes a card below, all export to one CSV"
+    )
 
-            # Calculate totals (for new entries)
-            if not edited_df.empty:
-                # Convert numeric columns to proper types first
-                if 'Quantity' in edited_df.columns:
-                    edited_df['Quantity'] = pd.to_numeric(edited_df['Quantity'], errors='coerce').fillna(0)
-                if 'Unit Price' in edited_df.columns:
-                    edited_df['Unit Price'] = pd.to_numeric(edited_df['Unit Price'], errors='coerce').fillna(0)
-                if 'Price' in edited_df.columns:
-                    edited_df['Price'] = pd.to_numeric(edited_df['Price'], errors='coerce').fillna(0)
-                if 'Total' in edited_df.columns:
-                    edited_df['Total'] = pd.to_numeric(edited_df['Total'], errors='coerce').fillna(0)
+    if uploaded_files:
+        existing = {inv['key'] for inv in st.session_state.invoices}
+        for uf in uploaded_files:
+            file_key = ('upload', uf.name, uf.size)
+            if file_key not in existing:
+                st.session_state.invoices.append(
+                    build_invoice(bytes(uf.getbuffer()), uf.name, file_key))
+                existing.add(file_key)
 
-                if 'Unit Price' in edited_df.columns and 'Quantity' in edited_df.columns:
-                    # Only calculate for rows where Total is empty or zero
-                    mask = (edited_df['Total'].isna()) | (edited_df['Total'] == 0)
-                    edited_df.loc[mask, 'Total'] = edited_df.loc[mask, 'Quantity'] * edited_df.loc[mask, 'Unit Price']
-                elif 'Price' in edited_df.columns and 'Quantity' in edited_df.columns:
-                    mask = (edited_df['Total'].isna()) | (edited_df['Total'] == 0)
-                    edited_df.loc[mask, 'Total'] = edited_df.loc[mask, 'Quantity'] * edited_df.loc[mask, 'Price']
+    # --- Invoice queue: one card per order, PDF left / data right ---
+    if st.session_state.invoices:
+        st.divider()
+        st.subheader(f"Orders in Queue ({len(st.session_state.invoices)})")
 
-            # Update session state with edited data
-            st.session_state.processed_df = edited_df
+        for idx, inv in enumerate(st.session_state.invoices):
+            title_cols = st.columns([6, 1])
+            with title_cols[0]:
+                st.subheader(f"📄 {inv['name']}")
+            with title_cols[1]:
+                if st.button("Remove", key=f"remove_{idx}"):
+                    st.session_state.invoices.pop(idx)
+                    st.session_state.upload_version += 1
+                    st.rerun()
 
-            # Export options
-            col1, col2 = st.columns(2)
+            col_pdf, col_data = st.columns([1, 1])
 
-            with col1:
-                if st.button("Export to CSV", type="primary"):
-                    csv = edited_df.to_csv(index=False)
-                    st.download_button(
-                        label="Download CSV for Sage 50",
-                        data=csv,
-                        file_name="sage50_order.csv",
-                        mime="text/csv"
-                    )
+            with col_pdf:
+                if inv['pdf_images']:
+                    # Scrollable container - PDF scrolls independently
+                    try:
+                        pdf_container = st.container(height=600)
+                    except TypeError:
+                        pdf_container = st.container()
+                    with pdf_container:
+                        for page_num, img in enumerate(inv['pdf_images']):
+                            try:
+                                st.image(img, width='stretch',
+                                         caption=f"Page {page_num + 1} of {len(inv['pdf_images'])}")
+                            except TypeError:
+                                st.image(img, use_container_width=True,
+                                         caption=f"Page {page_num + 1} of {len(inv['pdf_images'])}")
+                elif inv['pdf_bytes']:
+                    try:
+                        st.pdf(inv['pdf_bytes'], height=600)
+                    except TypeError:
+                        st.pdf(inv['pdf_bytes'])
+                    except Exception:
+                        st.download_button(
+                            label="📥 Download PDF to view",
+                            data=inv['pdf_bytes'],
+                            file_name=inv['name'],
+                            mime="application/pdf",
+                            key=f"dl_{idx}"
+                        )
+                if inv.get('extracted_text'):
+                    with st.expander("Raw Extracted Text"):
+                        st.text_area(
+                            "Raw Extracted Text",
+                            inv['extracted_text'],
+                            height=250,
+                            label_visibility="collapsed",
+                            key=f"raw_{idx}"
+                        )
 
-            with col2:
-                if st.button("Clear All"):
-                    st.session_state.processed_df = None
-                    st.session_state.extracted_text = None
-                    st.session_state.pdf_bytes = None
-                    st.session_state.pdf_name = None
-                    st.session_state.pdf_images = []
+            with col_data:
+                edited_df = st.data_editor(
+                    inv['df'],
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    key=f"editor_{idx}_{inv['name']}"
+                )
+                inv['df'] = edited_df
+
+                qc1, qc2 = st.columns(2)
+                with qc1:
+                    if st.button("Copy Header to All Rows", key=f"copyhdr_{idx}"):
+                        if not edited_df.empty:
+                            header_cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments']
+                            for col in header_cols:
+                                if col in edited_df.columns:
+                                    first_value = edited_df[col].dropna().iloc[0] if not edited_df[col].dropna().empty else ""
+                                    if first_value:
+                                        edited_df[col] = first_value
+                            inv['df'] = edited_df
+                            st.rerun()
+                with qc2:
+                    if st.button("Add Row", key=f"addrow_{idx}"):
+                        if not edited_df.empty:
+                            new_row = {col: "" for col in edited_df.columns}
+                            header_cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments']
+                            for col in header_cols:
+                                if col in edited_df.columns:
+                                    first_value = edited_df[col].dropna().iloc[0] if not edited_df[col].dropna().empty else ""
+                                    if first_value:
+                                        new_row[col] = first_value
+                            inv['df'] = pd.concat([edited_df, pd.DataFrame([new_row])], ignore_index=True)
+                            st.rerun()
+
+            st.divider()
+
+        # --- Combined validation & export ---
+        all_dfs = [inv['df'] for inv in st.session_state.invoices
+                   if inv['df'] is not None and not inv['df'].empty]
+        if all_dfs:
+            combined = pd.concat(all_dfs, ignore_index=True)
+
+            # Numeric coercion + fill missing totals
+            for col in ['Quantity', 'Unit Price', 'Price', 'Total']:
+                if col in combined.columns:
+                    combined[col] = pd.to_numeric(combined[col], errors='coerce').fillna(0)
+            price_col = 'Unit Price' if 'Unit Price' in combined.columns else ('Price' if 'Price' in combined.columns else None)
+            if price_col and 'Quantity' in combined.columns and 'Total' in combined.columns:
+                mask = (combined['Total'].isna()) | (combined['Total'] == 0)
+                combined.loc[mask, 'Total'] = combined.loc[mask, 'Quantity'] * combined.loc[mask, price_col]
+
+            # Calculation error check across all invoices
+            errors = []
+            if price_col and 'Quantity' in combined.columns and 'Total' in combined.columns:
+                for ridx, row in combined.iterrows():
+                    try:
+                        qty = float(row['Quantity']) if pd.notna(row['Quantity']) else 0
+                        price = float(row[price_col]) if pd.notna(row[price_col]) else 0
+                        total = float(row['Total']) if pd.notna(row['Total']) else 0
+                        calculated_total = qty * price
+                        if abs(calculated_total - total) > 0.01:
+                            errors.append({
+                                'Row': ridx,
+                                'Item': row.get('Description', 'Unknown'),
+                                'Quantity': qty,
+                                'Price': price,
+                                'Total Listed': total,
+                                'Total Calculated': calculated_total,
+                                'Difference': calculated_total - total
+                            })
+                    except (ValueError, TypeError):
+                        continue
+
+            if errors:
+                st.error(f"⚠️ Found {len(errors)} calculation error(s):")
+                st.dataframe(pd.DataFrame(errors), use_container_width=True)
+                if st.button("Auto-Calculate All Totals", type="primary"):
+                    for inv in st.session_state.invoices:
+                        df2 = inv['df']
+                        if df2 is not None and not df2.empty and price_col and 'Quantity' in df2.columns:
+                            df2['Quantity'] = pd.to_numeric(df2['Quantity'], errors='coerce').fillna(0)
+                            df2[price_col] = pd.to_numeric(df2[price_col], errors='coerce').fillna(0)
+                            df2['Total'] = df2['Quantity'] * df2[price_col]
+                            inv['df'] = df2
+                    st.rerun()
+            else:
+                st.success(f"✅ All calculations correct across {len(all_dfs)} order(s), {len(combined)} line item(s)")
+
+            st.subheader("Export Combined CSV")
+            st.caption(f"{len(combined)} line item(s) from {len(all_dfs)} order(s) will be exported to one file")
+            ec1, ec2 = st.columns(2)
+            with ec1:
+                st.download_button(
+                    label="📥 Download CSV for Sage 50",
+                    data=combined.to_csv(index=False),
+                    file_name="sage50_order.csv",
+                    mime="text/csv",
+                    type="primary"
+                )
+            with ec2:
+                if st.button("Clear All Orders"):
+                    st.session_state.invoices = []
+                    st.session_state.upload_version += 1
                     st.rerun()
 
 elif page == "Inventory Management":
