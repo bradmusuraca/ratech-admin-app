@@ -345,6 +345,8 @@ if page == "Order Processing":
 
             st.subheader("Export Combined CSV")
             st.caption(f"{len(combined)} line item(s) from {len(all_dfs)} order(s) will be exported to one file")
+            with st.expander("Preview combined CSV data", expanded=True):
+                st.dataframe(combined, use_container_width=True)
             ec1, ec2 = st.columns(2)
             with ec1:
                 st.download_button(

@@ -271,7 +271,8 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
 
     def items_look_valid(items_list):
         """Validate parsed items: no empty descriptions,
-        and Total must equal Quantity x Unit Price."""
+        Total must equal Quantity x Unit Price,
+        and required header fields must be populated."""
         if not items_list:
             return False
         for it in items_list:
@@ -281,6 +282,20 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
             p = safe_float(it.get('Unit Price', it.get('Price', 0)))
             t = safe_float(it.get('Total', 0))
             if t and abs(q * p - t) > 0.05:
+                return False
+        # Header fields - Gemini sometimes leaves these blank or swaps dates
+        first = items_list[0]
+        for field in ('Purchase Order Number', 'Date of Order', 'Ship By Date',
+                      'Ship To', 'Invoice Address', 'Vendor'):
+            if not str(first.get(field, '')).strip():
+                return False
+        # Summit-specific: verify dates against the raw text
+        if is_summit:
+            d = re.search(r'Order Date:\s*(\d{1,2}/\d{1,2}/\d{4})', extracted_text)
+            if d and str(first.get('Date of Order', '')).strip() != d.group(1):
+                return False
+            a = re.search(r'Arrive On/Before:\s*(\d{1,2}/\d{1,2}/\d{4})', extracted_text)
+            if a and str(first.get('Ship By Date', '')).strip() != a.group(1):
                 return False
         return True
 
@@ -321,9 +336,16 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
             order_info['Ship By Date'] = delivery_match.group(1)
         
         # Look for Ship To address
-        ship_to_match = re.search(r'Ship To:\s*\n\s*(.*?)\s*\n\s*PH:', extracted_text, re.DOTALL)
+        ship_to_match = re.search(r'Ship To:\s*\n\s*(.*?)\s*\n\s*(?:PH|FX)\s*:', extracted_text, re.DOTALL)
         if ship_to_match:
-            order_info['Ship To'] = 'SUMMIT RACING\n' + ship_to_match.group(1).strip()
+            ship_to = ship_to_match.group(1).strip()
+            # Drop any FX:/PH: lines that were captured, and avoid
+            # duplicating the SUMMIT RACING header line
+            ship_to = '\n'.join(l for l in ship_to.split('\n')
+                                if not re.match(r'\s*(?:PH|FX)\s*[:]', l))
+            if 'SUMMIT' not in ship_to.upper():
+                ship_to = 'SUMMIT RACING\n' + ship_to
+            order_info['Ship To'] = ship_to
         
         # Look for Bill To address
         bill_to_match = re.search(r'Bill To:\s*\n\s*(.*?)\s*\n\s*PH:', extracted_text, re.DOTALL)
