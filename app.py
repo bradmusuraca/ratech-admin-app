@@ -71,7 +71,14 @@ def get_users():
     try:
         users = st.secrets.get('users')
         if users:
-            return {u: dict(v) for u, v in dict(users).items()}
+            result = {}
+            for u, v in dict(users).items():
+                # Support both [users.name] tables and `name = "password"` shorthand
+                if isinstance(v, str):
+                    result[u] = {'password': v}
+                else:
+                    result[u] = dict(v)
+            return result
     except Exception:
         pass
     raw = os.getenv('USERS_JSON')
@@ -375,6 +382,7 @@ if _users and st.session_state.user is None:
                 st.rerun()
             else:
                 st.error("Invalid username or password")
+                st.caption(f"Configured users: {', '.join(get_users()) or 'none found'}")
         st.stop()
 
 _allowed_pages = st.session_state.user['pages'] if (_users and st.session_state.user) else ALL_PAGES
