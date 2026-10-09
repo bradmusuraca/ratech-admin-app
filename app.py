@@ -1,6 +1,8 @@
 import streamlit as st
 import os
 import re
+import json
+import hashlib
 from dotenv import load_dotenv
 import pandas as pd
 from io import StringIO
@@ -50,9 +52,55 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Session state defaults
-for _k, _v in (('invoices', []), ('inbox_items', []), ('loaded_uids', set()), ('upload_version', 0)):
+for _k, _v in (('invoices', []), ('inbox_items', []), ('loaded_uids', set()),
+               ('upload_version', 0), ('user', None)):
     if _k not in st.session_state:
         st.session_state[_k] = _v
+
+ALL_PAGES = ["Order Processing", "Customers", "Inventory Management", "Settings"]
+
+
+def get_users():
+    """Configured user accounts: {username: {password|password_hash, name, pages}}.
+
+    Sources (first match wins):
+      - Streamlit secrets: [users.username] table
+      - USERS_JSON env var (local dev)
+    If none configured, the app runs open (no login screen).
+    """
+    try:
+        users = st.secrets.get('users')
+        if users:
+            return {u: dict(v) for u, v in dict(users).items()}
+    except Exception:
+        pass
+    raw = os.getenv('USERS_JSON')
+    if raw:
+        try:
+            return json.loads(raw)
+        except Exception:
+            pass
+    return {}
+
+
+def check_login(username, password):
+    """Return a user dict on success, else None. Supports plaintext
+    'password' or sha256 'password_hash' in the user record."""
+    u = get_users().get(username)
+    if not u:
+        return None
+    stored_hash = str(u.get('password_hash', '')).strip().lower()
+    if stored_hash:
+        ok = hashlib.sha256(password.encode()).hexdigest() == stored_hash
+    else:
+        ok = str(u.get('password', '')) == password and password != ''
+    if not ok:
+        return None
+    return {
+        'username': username,
+        'name': u.get('name', username),
+        'pages': [p for p in u.get('pages', ALL_PAGES) if p in ALL_PAGES] or ALL_PAGES,
+    }
 
 
 def render_pdf_images(pdf_bytes):
@@ -311,6 +359,26 @@ def build_csv_invoice(file_bytes, file_name, doc_key):
             inv['df'] = pd.DataFrame(columns=["Purchase Order Number", "Date of Order", "Ship By Date", "Ship To", "Invoice Address", "Vendor", "Shipping Instructions", "Comments", "Inventory Item", "Description", "Quantity", "Unit Price", "Total"])
     return inv
 
+# ---- Login gate (only active when users are configured) ----
+_users = get_users()
+if _users and st.session_state.user is None:
+    _c1, _c2, _c3 = st.columns([1, 1.1, 1])
+    with _c2:
+        st.markdown("### 🔐 Sign In")
+        st.caption("Enter your credentials to continue")
+        _uname = st.text_input("Username", key="login_user")
+        _pw = st.text_input("Password", type="password", key="login_pass")
+        if st.button("Sign In", type="primary", use_container_width=True):
+            _u = check_login(_uname.strip(), _pw)
+            if _u:
+                st.session_state.user = _u
+                st.rerun()
+            else:
+                st.error("Invalid username or password")
+        st.stop()
+
+_allowed_pages = st.session_state.user['pages'] if (_users and st.session_state.user) else ALL_PAGES
+
 # Sidebar navigation
 st.sidebar.markdown("""
 <div style="padding: 0.2rem 0.2rem 0.4rem;">
@@ -318,7 +386,7 @@ st.sidebar.markdown("""
     <div style="font-size:0.8rem; color:#8a93a0;">Order Management</div>
 </div>
 """, unsafe_allow_html=True)
-page = st.sidebar.radio("Select Page", ["Order Processing", "Customers", "Inventory Management", "Settings"])
+page = st.sidebar.radio("Select Page", _allowed_pages)
 
 st.sidebar.divider()
 st.sidebar.caption("Connections")
@@ -329,6 +397,13 @@ for _label, _ok in [
 ]:
     st.sidebar.markdown(f"{'🟢' if _ok else '⚪'} {_label}")
 st.sidebar.caption(f"🗂 {len(st.session_state.invoices)} order(s) in queue")
+
+if _users and st.session_state.user:
+    st.sidebar.divider()
+    st.sidebar.caption(f"Signed in as **{st.session_state.user['name']}**")
+    if st.sidebar.button("🚪 Sign Out", use_container_width=True):
+        st.session_state.user = None
+        st.rerun()
 
 if page == "Order Processing":
     st.header("📥 Order Processing")
