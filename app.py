@@ -5,7 +5,8 @@ from dotenv import load_dotenv
 import pandas as pd
 from io import StringIO
 from vision_processor import VisionProcessor, parse_order_text
-from email_inbox import list_unseen_orders, fetch_pdf_from_message
+from email_inbox import (list_unseen_orders, fetch_pdf_from_message,
+                         send_email, extract_email_address)
 
 load_dotenv()
 
@@ -123,7 +124,7 @@ def save_env_vars(pairs):
     load_dotenv(override=True)
 
 
-def build_invoice(pdf_bytes, pdf_name, doc_key):
+def build_invoice(pdf_bytes, pdf_name, doc_key, email_meta=None):
     """Extract text and parse a PDF into an invoice dict for the queue."""
     inv = {
         'key': doc_key,
@@ -134,6 +135,8 @@ def build_invoice(pdf_bytes, pdf_name, doc_key):
         'extracted_text': None,
         'df': None,
         'customer': '',
+        'email': email_meta,      # {'uid','subject','sender','date'} when loaded from inbox
+        'confirmed': False,
     }
     st.success(f"Loaded: {pdf_name}")
 
@@ -240,6 +243,8 @@ def build_csv_invoice(file_bytes, file_name, doc_key):
         'extracted_text': file_bytes.decode('utf-8-sig', errors='replace'),
         'df': None,
         'customer': '',
+        'email': None,
+        'confirmed': False,
     }
     with st.spinner(f"Parsing {file_name}..."):
         try:
@@ -339,8 +344,11 @@ if page == "Order Processing":
                             for pdf in pdfs:
                                 inv_key = ('inbox', item['uid'], pdf['filename'])
                                 if inv_key not in existing:
+                                    meta = {'uid': item['uid'], 'subject': item['subject'],
+                                            'sender': item['sender'], 'date': item['date']}
                                     st.session_state.invoices.append(
-                                        build_invoice(pdf['bytes'], pdf['filename'], inv_key))
+                                        build_invoice(pdf['bytes'], pdf['filename'], inv_key,
+                                                      email_meta=meta))
                                     existing.add(inv_key)
                                     loaded += 1
                             st.session_state.loaded_uids.add(item['uid'])
@@ -393,6 +401,9 @@ if page == "Order Processing":
                     cust_label = cust_names.get(inv.get('customer', ''), '')
                     st.subheader(f"📄 {inv['name']}"
                                  + (f"  ·  👤 {inv['customer']} {cust_label}" if inv.get('customer') else ""))
+                    if inv.get('email'):
+                        st.caption(f"✉️ Email: \"{inv['email']['subject']}\" — "
+                                   f"{inv['email']['sender']} • {inv['email']['date']}")
                 with title_cols[1]:
                     if st.button("🗑 Remove", key=f"remove_{wkey}"):
                         st.session_state.invoices.pop(idx)
@@ -498,6 +509,48 @@ if page == "Order Processing":
                                             new_row[col] = first_value
                                 inv['df'] = pd.concat([edited_df, pd.DataFrame([new_row])], ignore_index=True)
                                 st.rerun()
+
+                # Order confirmation - only for orders loaded from the inbox
+                if inv.get('email'):
+                    if inv.get('confirmed'):
+                        st.caption("✅ Order confirmation email sent")
+                    else:
+                        if st.button("✉️ Send Order Confirmation", key=f"confirm_{wkey}"):
+                            smtp_host = os.getenv('EMAIL_SMTP_HOST', 'smtp.mail.yahoo.com')
+                            smtp_port = os.getenv('EMAIL_SMTP_PORT', '465')
+                            to_addr = extract_email_address(inv['email']['sender'])
+                            if not email_user or not email_pass:
+                                st.warning("Email credentials not configured.")
+                            elif not to_addr:
+                                st.error(f"Could not determine sender address from '{inv['email']['sender']}'")
+                            else:
+                                po = ''
+                                if inv['df'] is not None and 'Purchase Order Number' in inv['df'].columns and not inv['df'].empty:
+                                    pos = inv['df']['Purchase Order Number'].dropna()
+                                    po = str(pos.iloc[0]) if not pos.empty else ''
+                                n = len(inv['df']) if inv['df'] is not None else 0
+                                total_str = ''
+                                if inv['df'] is not None and 'Total' in inv['df'].columns:
+                                    s = pd.to_numeric(inv['df']['Total'], errors='coerce').fillna(0).sum()
+                                    total_str = f"${s:,.2f}"
+                                body = (
+                                    "Hello,\n\n"
+                                    "Your purchase order has been received and entered into our system.\n\n"
+                                    f"PO Number: {po}\n"
+                                    f"Line Items: {n}\n"
+                                    f"Order Total: {total_str}\n\n"
+                                    "If anything looks incorrect, please reply to this email.\n\n"
+                                    "Thank you,\nRatech Manufacturing\n"
+                                    f"{email_user}"
+                                )
+                                with st.spinner("Sending confirmation..."):
+                                    try:
+                                        send_email(smtp_host, smtp_port, email_user, email_pass,
+                                                   to_addr, f"RE: {inv['email']['subject']}", body)
+                                        inv['confirmed'] = True
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Failed to send confirmation: {e}")
             st.markdown("")
 
         # --- Combined validation & export ---

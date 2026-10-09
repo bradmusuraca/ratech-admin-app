@@ -1,6 +1,9 @@
 import imaplib
+import smtplib
 import email
 from email.header import decode_header, make_header
+from email.message import EmailMessage
+from email.utils import parseaddr
 from typing import List, Dict
 
 
@@ -88,3 +91,20 @@ def fetch_pdf_from_message(host, port, user, password, uid) -> List[Dict]:
             mail.logout()
         except Exception:
             pass
+
+
+def extract_email_address(sender_header: str) -> str:
+    """Pull a bare email address out of a 'Name <addr>' From header."""
+    return parseaddr(sender_header or '')[1]
+
+
+def send_email(smtp_host, smtp_port, user, password, to_addr, subject, body):
+    """Send a plain-text email via SMTP SSL (e.g. Yahoo: smtp.mail.yahoo.com:465)."""
+    msg = EmailMessage()
+    msg['From'] = user
+    msg['To'] = to_addr
+    msg['Subject'] = subject
+    msg.set_content(body)
+    with smtplib.SMTP_SSL(smtp_host, int(smtp_port)) as smtp:
+        smtp.login(user, password)
+        smtp.send_message(msg)
