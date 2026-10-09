@@ -839,12 +839,10 @@ elif page == "Inventory Management":
         st.session_state.receipt_id = None
 
     st.subheader("📷 Capture Packing Slip")
-    photo = st.camera_input("Take a photo of the packing slip",
-                            help="On mobile this opens your camera directly - snap the slip straight into the app")
-    img_up = st.file_uploader("...or upload an image file",
-                              type=['png', 'jpg', 'jpeg', 'webp'],
-                              key='packing_uploader')
-    src = photo if photo is not None else img_up
+    src = st.file_uploader("Take or upload a photo of the packing slip",
+                           type=['png', 'jpg', 'jpeg', 'webp'],
+                           key='packing_uploader',
+                           help="On mobile, tap Browse and choose 'Take Photo' to use the camera directly")
 
     if src is not None:
         img_bytes = bytes(src.getbuffer())
