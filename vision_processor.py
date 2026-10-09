@@ -977,3 +977,109 @@ JSON Output:"""
         import traceback
         traceback.print_exc()
         return []
+
+
+def parse_packing_slip_with_gemini(text: str, api_key: str) -> Dict:
+    """Use Gemini to extract structured data from a packing slip / receiving document."""
+    import google.generativeai as genai
+    import json
+
+    genai.configure(api_key=api_key)
+
+    prompt = f"""You are a data extraction assistant. Extract structured data from this PACKING SLIP / receiving document text.
+
+The document lists items shipped. A worker may have hand-written the quantity actually received next to each line item.
+
+Extract:
+- po_number: the purchase order / order number
+- vendor: the vendor/supplier name
+- date: the document or ship date
+- items: array of line items with:
+  - "Inventory Item": part/item number or code (strip prefixes like RAT-)
+  - "Description": item description
+  - "Expected Quantity": printed quantity shipped/ordered (numeric)
+  - "Received Quantity": handwritten received count if visible next to the line (numeric, or null if none)
+
+Return ONLY valid JSON:
+{{
+  "po_number": "...",
+  "vendor": "...",
+  "date": "...",
+  "items": [
+    {{"Inventory Item": "...", "Description": "...", "Expected Quantity": 0, "Received Quantity": null}}
+  ]
+}}
+
+Text to parse:
+{text}
+
+JSON Output:"""
+
+    response = None
+    last_err = None
+    for model_name in ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt)
+            break
+        except Exception as model_err:
+            print(f"DEBUG: Model {model_name} failed: {model_err}")
+            last_err = model_err
+    if response is None:
+        raise last_err or Exception("All Gemini models failed")
+
+    response_text = response.text.strip()
+    if '```json' in response_text:
+        response_text = response_text.split('```json')[1].split('```')[0].strip()
+    elif '```' in response_text:
+        response_text = response_text.split('```')[1].split('```')[0].strip()
+
+    result = json.loads(response_text)
+    if not isinstance(result, dict):
+        return {}
+    return result
+
+
+def parse_packing_slip_text(extracted_text: str, gemini_api_key: Optional[str] = None) -> Dict:
+    """Parse packing slip text into receiving data.
+
+    Returns {'po_number': str, 'vendor': str, 'date': str,
+             'items': [{Inventory Item, Description, Expected Quantity, Received Quantity}]}
+    """
+    import re
+    result = {'po_number': '', 'vendor': '', 'date': '', 'items': []}
+
+    if gemini_api_key:
+        try:
+            gem = parse_packing_slip_with_gemini(extracted_text, gemini_api_key)
+            if gem.get('items'):
+                result['po_number'] = str(gem.get('po_number') or '')
+                result['vendor'] = str(gem.get('vendor') or '')
+                result['date'] = str(gem.get('date') or '')
+                result['items'] = gem['items']
+        except Exception as e:
+            print(f"Gemini packing slip parse failed: {e}")
+
+    if not result['items']:
+        # Heuristic fallback: lines like "PARTNUM  description  qty"
+        po = re.search(r'(?:P\.?\s*O\.?|Purchase Order|Order)\s*#?\s*:?\s*([A-Za-z0-9\-]{3,})',
+                       extracted_text)
+        if po:
+            result['po_number'] = po.group(1)
+        d = re.search(r'\d{1,2}/\d{1,2}/\d{2,4}', extracted_text)
+        if d:
+            result['date'] = d.group(0)
+        for line in extracted_text.split('\n'):
+            line = line.strip()
+            m = re.match(r'^([A-Za-z0-9][A-Za-z0-9\-_./]{2,})\s+(.+?)\s+(\d{1,5})\s*$', line)
+            if m:
+                desc = m.group(2)
+                if any(k in desc.lower() for k in ('total', 'page', 'phone', 'fax', 'order')):
+                    continue
+                result['items'].append({
+                    'Inventory Item': m.group(1),
+                    'Description': desc,
+                    'Expected Quantity': int(m.group(3)),
+                    'Received Quantity': None,
+                })
+    return result

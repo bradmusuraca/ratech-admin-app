@@ -6,7 +6,7 @@ import hashlib
 from dotenv import load_dotenv
 import pandas as pd
 from io import StringIO
-from vision_processor import VisionProcessor, parse_order_text
+from vision_processor import VisionProcessor, parse_order_text, parse_packing_slip_text
 from email_inbox import (list_unseen_orders, fetch_pdf_from_message,
                          fetch_body_from_message, send_email, extract_email_address)
 from email.utils import parsedate_to_datetime
@@ -831,14 +831,172 @@ elif page == "Customers":
 
 elif page == "Inventory Management":
     st.header("📋 Inventory Management")
-    st.info("This feature will be implemented in Phase 2. It will allow workers to:")
-    st.markdown("""
-    - Take photos of packing slips
-    - Read inventory counts from images
-    - Compare received vs expected quantities
-    - Generate alerts for discrepancies
-    - Create approval emails for exceptions
-    """)
+    st.markdown("Photograph a packing slip, verify expected vs received counts, and export the inventory update.")
+
+    if 'receipt' not in st.session_state:
+        st.session_state.receipt = None
+    if 'receipt_id' not in st.session_state:
+        st.session_state.receipt_id = None
+
+    st.subheader("📷 Capture Packing Slip")
+    photo = st.camera_input("Take a photo of the packing slip",
+                            help="On mobile this opens your camera directly - snap the slip straight into the app")
+    img_up = st.file_uploader("...or upload an image file",
+                              type=['png', 'jpg', 'jpeg', 'webp'],
+                              key='packing_uploader')
+    src = photo if photo is not None else img_up
+
+    if src is not None:
+        img_bytes = bytes(src.getbuffer())
+        rid = hashlib.sha256(img_bytes).hexdigest()
+        if st.session_state.receipt_id != rid:
+            google_credentials = os.getenv('GOOGLE_CREDENTIALS')
+            if not google_credentials:
+                st.warning("Google Cloud credentials not configured - needed to read photos. Add them in Settings.")
+            else:
+                with st.spinner("Reading packing slip..."):
+                    try:
+                        processor = VisionProcessor(credentials_json=google_credentials)
+                        text = processor.extract_text_from_bytes(img_bytes, file_type='image')
+                        parsed = parse_packing_slip_text(text, gemini_api_key=os.getenv('GEMINI_API_KEY'))
+
+                        cols = ['PO Number', 'Vendor', 'Date', 'Inventory Item', 'Description',
+                                'Expected Qty', 'Received Qty', 'Notes']
+                        items = parsed.get('items') or []
+                        df = pd.DataFrame(items)
+                        df = df.rename(columns={'Expected Quantity': 'Expected Qty',
+                                                'Received Quantity': 'Received Qty'})
+                        for c in cols:
+                            if c not in df.columns:
+                                df[c] = ''
+                        df = df[cols]
+                        # Apply slip-level header fields to all rows
+                        for c, v in (('PO Number', parsed.get('po_number', '')),
+                                     ('Vendor', parsed.get('vendor', '')),
+                                     ('Date', parsed.get('date', ''))):
+                            if v and (df[c].astype(str).str.strip() == '').all():
+                                df[c] = v
+                        st.session_state.receipt = {'image': img_bytes, 'text': text, 'df': df}
+                        st.session_state.receipt_id = rid
+                        st.success(f"✅ Read {len(df)} line item(s) from the packing slip")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Could not read packing slip: {e}")
+
+    rec = st.session_state.receipt
+    if rec:
+        st.divider()
+        col_img, col_tbl = st.columns([1, 1])
+
+        with col_img:
+            st.caption("Packing slip photo")
+            try:
+                img_container = st.container(height=600)
+            except TypeError:
+                img_container = st.container()
+            with img_container:
+                try:
+                    st.image(rec['image'], width='stretch')
+                except TypeError:
+                    st.image(rec['image'], use_container_width=True)
+            if rec.get('text'):
+                with st.expander("Raw Extracted Text"):
+                    st.text_area("Raw Extracted Text", rec['text'], height=250,
+                                 label_visibility="collapsed", key="receipt_raw")
+
+        with col_tbl:
+            edited = st.data_editor(
+                rec['df'],
+                num_rows="dynamic",
+                use_container_width=True,
+                key="receipt_editor"
+            )
+            rec['df'] = edited
+
+            if not edited.empty:
+                work = edited.copy()
+                work['Expected Qty'] = pd.to_numeric(work['Expected Qty'], errors='coerce')
+                work['Received Qty'] = pd.to_numeric(work['Received Qty'], errors='coerce')
+                work['Variance'] = work['Received Qty'] - work['Expected Qty']
+
+                pending = work[work['Received Qty'].isna()]
+                disc = work[work['Received Qty'].notna() & (work['Variance'] != 0)]
+
+                if len(pending):
+                    st.info(f"⏳ {len(pending)} line(s) awaiting received count")
+                if not disc.empty:
+                    st.error(f"⚠️ {len(disc)} discrepancy line(s):")
+                    st.dataframe(
+                        disc[['Inventory Item', 'Description', 'Expected Qty', 'Received Qty', 'Variance']],
+                        use_container_width=True
+                    )
+
+                    # Draft discrepancy email - requires explicit approval to send
+                    st.subheader("✉️ Draft Discrepancy Email")
+                    disc_to = st.text_input(
+                        "Send to",
+                        value=os.getenv('DISCREPANCY_EMAIL_TO', ''),
+                        key="disc_to"
+                    )
+                    hdr = work.iloc[0]
+                    lines_txt = "\n".join(
+                        f"- {r['Inventory Item']} {r['Description']}: expected "
+                        f"{r['Expected Qty']}, received {r['Received Qty']} "
+                        f"(variance {r['Variance']:+g})"
+                        for _, r in disc.iterrows()
+                    )
+                    default_body = (
+                        "A packing slip was received with quantity discrepancies.\n\n"
+                        f"PO Number: {hdr.get('PO Number', '')}\n"
+                        f"Vendor: {hdr.get('Vendor', '')}\n"
+                        f"Date: {hdr.get('Date', '')}\n\n"
+                        "Discrepancies:\n"
+                        f"{lines_txt}\n\n"
+                        "Please advise on how to proceed.\n\n"
+                        "Ratech Manufacturing"
+                    )
+                    body = st.text_area("Email body", value=default_body, height=230,
+                                        key="disc_email_body")
+                    if st.button("Approve & Send Discrepancy Email", type="primary",
+                                 key="send_disc"):
+                        smtp_host = os.getenv('EMAIL_SMTP_HOST', 'smtp.mail.yahoo.com')
+                        smtp_port = os.getenv('EMAIL_SMTP_PORT', '465')
+                        email_user = os.getenv('EMAIL_USER')
+                        email_pass = os.getenv('EMAIL_PASSWORD')
+                        if not email_user or not email_pass:
+                            st.warning("Email credentials not configured.")
+                        elif not disc_to.strip():
+                            st.warning("Enter a recipient address.")
+                        else:
+                            with st.spinner("Sending discrepancy email..."):
+                                try:
+                                    send_email(smtp_host, smtp_port, email_user, email_pass,
+                                               disc_to.strip(),
+                                               f"Inventory discrepancy - PO {hdr.get('PO Number', '')}",
+                                               body)
+                                    st.success(f"✅ Discrepancy email sent to {disc_to.strip()}")
+                                except Exception as e:
+                                    st.error(f"Failed to send: {e}")
+                elif not len(pending):
+                    st.success("✅ All counts match expected quantities")
+
+            st.divider()
+            ex1, ex2 = st.columns(2)
+            with ex1:
+                out = work if not edited.empty else edited
+                st.download_button(
+                    label="📥 Download Inventory CSV",
+                    data=out.to_csv(index=False),
+                    file_name="inventory_update.csv",
+                    mime="text/csv",
+                    type="primary",
+                    use_container_width=True
+                )
+            with ex2:
+                if st.button("🧹 Clear Receipt", use_container_width=True):
+                    st.session_state.receipt = None
+                    st.session_state.receipt_id = None
+                    st.rerun()
 
 elif page == "Settings":
     st.header("⚙️ Settings")
