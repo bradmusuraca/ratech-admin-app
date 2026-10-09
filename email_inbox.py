@@ -93,6 +93,52 @@ def fetch_pdf_from_message(host, port, user, password, uid) -> List[Dict]:
             pass
 
 
+def fetch_body_from_message(host, port, user, password, uid) -> str:
+    """Return the plain-text body of a message (read-only BODY.PEEK).
+
+    Prefers text/plain parts; falls back to stripped text/html.
+    """
+    mail = _connect(host, port, user, password)
+    try:
+        typ, data = mail.uid('fetch', str(uid), '(BODY.PEEK[])')
+        if typ != 'OK' or not data or not isinstance(data[0], tuple):
+            return ''
+
+        msg = email.message_from_bytes(data[0][1])
+        text_parts = []
+        html_parts = []
+        for part in msg.walk():
+            ctype = part.get_content_type()
+            disp = str(part.get('Content-Disposition') or '')
+            if 'attachment' in disp.lower():
+                continue
+            payload = part.get_payload(decode=True)
+            if not payload:
+                continue
+            charset = part.get_content_charset() or 'utf-8'
+            if ctype == 'text/plain':
+                text_parts.append(payload.decode(charset, errors='replace'))
+            elif ctype == 'text/html':
+                html_parts.append(payload.decode(charset, errors='replace'))
+
+        if text_parts:
+            return '\n'.join(text_parts)
+        if html_parts:
+            import re as _re
+            html = '\n'.join(html_parts)
+            html = _re.sub(r'(?i)<br\s*/?>', '\n', html)
+            html = _re.sub(r'(?i)</(?:p|div|tr|li)>', '\n', html)
+            html = _re.sub(r'<[^>]+>', '', html)
+            from html import unescape
+            return unescape(html)
+        return ''
+    finally:
+        try:
+            mail.logout()
+        except Exception:
+            pass
+
+
 def extract_email_address(sender_header: str) -> str:
     """Pull a bare email address out of a 'Name <addr>' From header."""
     return parseaddr(sender_header or '')[1]

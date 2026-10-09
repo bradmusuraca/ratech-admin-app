@@ -269,6 +269,11 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
     is_ford = ('ford motor company' in full_text.lower()
                or 'purchase notification' in full_text.lower())
 
+    # Check if it's a simple emailed order: "CUSTOMER ID: 208" header +
+    # lines like "26) 9132" (qty) part
+    is_simple_email = (bool(re.search(r'CUSTOMER\s*ID', extracted_text, re.IGNORECASE))
+                       and bool(re.search(r'^\s*\d+\s*\)\s*[A-Za-z0-9]', extracted_text, re.MULTILINE)))
+
     def summit_dates(text):
         """Summit's 'Order Details' block lists labels then values, and
         text extraction can interleave them two ways:
@@ -310,6 +315,29 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
             if sb and str(first.get('Ship By Date', '')).strip() != sb:
                 return False
         return True
+
+    # Simple emailed orders (e.g. "26) 9132") - trivially parseable,
+    # so skip Gemini entirely and parse directly
+    if is_simple_email:
+        cust_match = re.search(r'CUSTOMER\s*ID[:\s]*([A-Za-z0-9\-]+)', extracted_text, re.IGNORECASE)
+        if cust_match:
+            order_info['Vendor'] = cust_match.group(1)
+        name_match = re.search(r'ORDER\s+FOR\s+(.+?)\s+CUSTOMER\s*ID', extracted_text, re.IGNORECASE)
+        if name_match:
+            order_info['Ship To'] = ' '.join(name_match.group(1).split())
+        order_info['Comments'] = 'Emailed order (plain text)'
+        for m in re.finditer(r'^\s*(\d+)\s*\)\s*([A-Za-z0-9][A-Za-z0-9\-_.]*)',
+                             extracted_text, re.MULTILINE):
+            item = {
+                'Inventory Item': m.group(2),
+                'Description': '',
+                'Quantity': int(m.group(1)),
+                'Unit Price': '',
+                'Total': ''
+            }
+            item.update(order_info)
+            items.append(item)
+        return items
 
     # Always try Gemini first if API key is provided
     if gemini_api_key:

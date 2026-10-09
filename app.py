@@ -6,7 +6,8 @@ import pandas as pd
 from io import StringIO
 from vision_processor import VisionProcessor, parse_order_text
 from email_inbox import (list_unseen_orders, fetch_pdf_from_message,
-                         send_email, extract_email_address)
+                         fetch_body_from_message, send_email, extract_email_address)
+from email.utils import parsedate_to_datetime
 
 load_dotenv()
 
@@ -183,6 +184,55 @@ def build_invoice(pdf_bytes, pdf_name, doc_key, email_meta=None):
     return inv
 
 
+def _apply_email_date(df, email_meta):
+    """Fill empty Date of Order from the email's sent date."""
+    if not email_meta or not email_meta.get('date'):
+        return df
+    if 'Date of Order' not in df.columns:
+        return df
+    if not (df['Date of Order'].astype(str).str.strip() == '').all():
+        return df
+    try:
+        df['Date of Order'] = parsedate_to_datetime(email_meta['date']).strftime('%m/%d/%Y')
+    except Exception:
+        pass
+    return df
+
+
+def build_text_invoice(text, name, doc_key, email_meta=None):
+    """Build a queue entry from plain email body text (no PDF attachment)."""
+    inv = {
+        'key': doc_key,
+        'name': name,
+        'pdf_bytes': None,
+        'pdf_images': [],
+        'raw_csv_df': None,
+        'extracted_text': text,
+        'df': None,
+        'customer': '',
+        'email': email_meta,
+        'confirmed': False,
+    }
+    with st.spinner(f"Parsing {name}..."):
+        order_items = parse_order_text(text, gemini_api_key=os.getenv('GEMINI_API_KEY'))
+        if order_items:
+            df = pd.DataFrame(order_items)
+            cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments', 'Inventory Item', 'Description', 'Quantity', 'Unit Price', 'Total']
+            cols = [col for col in cols if col in df.columns]
+            df = df[cols]
+            st.success(f"✅ {name}: parsed {len(order_items)} item(s)")
+        else:
+            st.warning(f"⚠️ {name}: could not automatically parse - enter data manually below.")
+            df = pd.DataFrame(columns=["Purchase Order Number", "Date of Order", "Ship By Date", "Ship To", "Invoice Address", "Vendor", "Shipping Instructions", "Comments", "Inventory Item", "Description", "Quantity", "Unit Price", "Total"])
+            df.loc[0] = [""] * len(df.columns)
+    inv['df'] = _apply_email_date(df, email_meta)
+    gc = guess_customer(f"{name}\n{text}\n{(email_meta or {}).get('sender', '')}")
+    if gc and 'Vendor' in inv['df'].columns:
+        inv['df']['Vendor'] = gc
+        inv['customer'] = gc
+    return inv
+
+
 def parse_shipstation_csv(raw_bytes):
     """Map a ShipStation order-items CSV export to Sage 50 sales order rows."""
     src = pd.read_csv(StringIO(raw_bytes.decode('utf-8-sig', errors='replace')),
@@ -337,7 +387,26 @@ if page == "Order Processing":
                                 st.error(f"Failed to load attachment: {e}")
                                 pdfs = []
                         if not pdfs:
-                            st.warning("No PDF attachment found in this email.")
+                            # No PDF - the email body itself may be the order
+                            try:
+                                body = fetch_body_from_message(email_host, email_port,
+                                                               email_user, email_pass, item['uid'])
+                            except Exception as e:
+                                st.error(f"Failed to read email body: {e}")
+                                body = ''
+                            if body.strip():
+                                meta = {'uid': item['uid'], 'subject': item['subject'],
+                                        'sender': item['sender'], 'date': item['date']}
+                                inv_key = ('inbox', item['uid'], 'body')
+                                if inv_key not in {inv['key'] for inv in st.session_state.invoices}:
+                                    st.session_state.invoices.append(
+                                        build_text_invoice(body, f"Email: {item['subject']}",
+                                                           inv_key, email_meta=meta))
+                                st.session_state.loaded_uids.add(item['uid'])
+                                st.session_state.inbox_items = [i for i in st.session_state.inbox_items if i['uid'] != item['uid']]
+                                st.rerun()
+                            else:
+                                st.warning("No PDF attachment and no readable email body.")
                         else:
                             existing = {inv['key'] for inv in st.session_state.invoices}
                             loaded = 0
@@ -450,7 +519,9 @@ if page == "Order Processing":
                                 key=f"dl_{wkey}"
                             )
                     if inv.get('extracted_text'):
-                        with st.expander("Raw Extracted Text"):
+                        # Expand by default when there's no document preview to show
+                        no_preview = inv['pdf_bytes'] is None and inv.get('raw_csv_df') is None
+                        with st.expander("📧 Email / Raw Text", expanded=no_preview):
                             st.text_area(
                                 "Raw Extracted Text",
                                 inv['extracted_text'],
