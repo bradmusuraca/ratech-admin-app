@@ -27,14 +27,42 @@ def _connect(host, port, user, password):
     return mail
 
 
-def list_unseen_orders(host, port, user, password, limit=25) -> List[Dict]:
+def _connect_rw(host, port, user, password):
+    """Open a read-write IMAP connection (SELECT) for flag updates only."""
+    mail = imaplib.IMAP4_SSL(host, int(port))
+    mail.login(user, password)
+    mail.select('INBOX')
+    return mail
+
+
+def mark_as_read(host, port, user, password, uid) -> None:
+    """Set the \\Seen flag on a single message, by UID.
+
+    Called only after the app has processed (or consciously ignored) the
+    message - reads themselves never touch flags.
+    """
+    mail = _connect_rw(host, port, user, password)
+    try:
+        mail.uid('store', str(uid), '+FLAGS', '(\\Seen)')
+    finally:
+        try:
+            mail.logout()
+        except Exception:
+            pass
+
+
+def list_unseen_orders(host, port, user, password, limit=25, since=None) -> List[Dict]:
     """Return unread inbox messages, newest first.
 
     Read-only: BODY.PEEK fetches headers without setting the \\Seen flag.
+    'since' (e.g. '12-Oct-2026') filters out mail received before that date.
     """
     mail = _connect(host, port, user, password)
     try:
-        typ, data = mail.uid('search', None, 'UNSEEN')
+        criteria = ['UNSEEN']
+        if since:
+            criteria += ['SINCE', since]
+        typ, data = mail.uid('search', None, *criteria)
         if typ != 'OK' or not data or not data[0]:
             return []
 

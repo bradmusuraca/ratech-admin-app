@@ -35,6 +35,7 @@ temp_uploads/
 *.pdf
 *.csv
 !customers.csv
+!email_rules.csv
 
 # IDE
 .vscode/

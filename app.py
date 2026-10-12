@@ -8,7 +8,8 @@ import pandas as pd
 from io import StringIO
 from vision_processor import VisionProcessor, parse_order_text, parse_packing_slip_text
 from email_inbox import (list_unseen_orders, fetch_pdf_from_message,
-                         fetch_body_from_message, send_email, extract_email_address)
+                         fetch_body_from_message, send_email, extract_email_address,
+                         mark_as_read)
 from email.utils import parsedate_to_datetime
 
 load_dotenv()
@@ -154,6 +155,51 @@ def guess_customer(text):
             if alias and alias in tl:
                 return str(row.get('Customer Number', '')).strip()
     return ''
+
+
+EMAIL_RULES_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'email_rules.csv')
+
+
+def load_email_rules():
+    """Sender address/domain -> 'order' or 'ignore', learned from user triage."""
+    if os.path.exists(EMAIL_RULES_CSV):
+        try:
+            df = pd.read_csv(EMAIL_RULES_CSV, dtype=str).fillna('')
+            return {str(r['Sender']).strip().lower(): str(r['Classification']).strip().lower()
+                    for _, r in df.iterrows() if str(r.get('Sender', '')).strip()}
+        except Exception:
+            pass
+    return {}
+
+
+def save_email_rule(sender_header, classification):
+    """Remember how a sender was triaged so future mail is pre-classified."""
+    addr = extract_email_address(sender_header).lower()
+    if not addr:
+        return
+    rules = load_email_rules()
+    rules[addr] = classification
+    try:
+        pd.DataFrame([{'Sender': k, 'Classification': v}
+                      for k, v in sorted(rules.items())]).to_csv(EMAIL_RULES_CSV, index=False)
+    except Exception as e:
+        print(f"Could not save email rules: {e}")
+
+
+def classify_email(item, rules):
+    """Return 'order', 'ignore' or 'unknown' for an inbox item."""
+    addr = extract_email_address(item.get('sender', '')).lower()
+    domain = addr.split('@')[-1]
+    if addr in rules:
+        return rules[addr]
+    if domain in rules:
+        return rules[domain]
+    subj = item.get('subject', '')
+    if re.search(r'(?i)\border\b|purchase order|p\.?\s?o\.?\s*#', subj):
+        return 'order'
+    if guess_customer(item.get('sender', '') + ' ' + subj):
+        return 'order'
+    return 'unknown'
 
 
 def save_env_vars(pairs):
@@ -431,12 +477,18 @@ if page == "Order Processing":
     _m2.metric("Line items", _n_lines)
     _m3.metric("Customers assigned", _n_matched)
 
-    # --- Inbox orders (read-only IMAP - never marks mail as read) ---
+    # --- Inbox orders ---
+    # Reads stay read-only; an email is marked read only after it has been
+    # loaded into the queue or explicitly ignored. Emails received before
+    # EMAIL_START_DATE are never shown (go-live cutoff).
     st.subheader("📥 Inbox Orders")
     email_host = os.getenv('EMAIL_HOST', 'imap.mail.yahoo.com')
     email_port = os.getenv('EMAIL_PORT', '993')
     email_user = os.getenv('EMAIL_USER')
     email_pass = os.getenv('EMAIL_PASSWORD')
+    email_since = os.getenv('EMAIL_START_DATE', '12-Oct-2026')
+    st.caption(f"Showing unread emails received on/after {email_since}. "
+               "Load or Ignore marks an email read; untouched mail stays unread.")
 
     if st.button("🔍 Check Inbox for New Orders"):
         if not email_user or not email_pass:
@@ -444,7 +496,11 @@ if page == "Order Processing":
         else:
             with st.spinner("Checking inbox for unread emails..."):
                 try:
-                    items = list_unseen_orders(email_host, email_port, email_user, email_pass)
+                    items = list_unseen_orders(email_host, email_port, email_user,
+                                               email_pass, since=email_since)
+                    rules = load_email_rules()
+                    for i in items:
+                        i['classification'] = classify_email(i, rules)
                     items = [i for i in items if i['uid'] not in st.session_state.loaded_uids]
                     st.session_state.inbox_items = items
                     if items:
@@ -460,10 +516,12 @@ if page == "Order Processing":
         except TypeError:
             item_card = st.container()
         with item_card:
-            item_cols = st.columns([5, 1])
+            item_cols = st.columns([5, 1, 1])
             with item_cols[0]:
+                _cls = item.get('classification', 'unknown')
+                _badge = {'order': '📦 order', 'ignore': '🚫 ignore'}.get(_cls, '❓ unknown')
                 st.write(f"**{item['subject']}**")
-                st.caption(f"{item['sender']} • {item['date']}")
+                st.caption(f"{item['sender']} • {item['date']} • {_badge}")
             with item_cols[1]:
                 if st.button("Load", key=f"load_{item['uid']}"):
                     if not email_user or not email_pass:
@@ -491,6 +549,12 @@ if page == "Order Processing":
                                     st.session_state.invoices.append(
                                         build_text_invoice(body, f"Email: {item['subject']}",
                                                            inv_key, email_meta=meta))
+                                save_email_rule(item['sender'], 'order')
+                                try:
+                                    mark_as_read(email_host, email_port, email_user,
+                                                 email_pass, item['uid'])
+                                except Exception as e:
+                                    st.warning(f"Order loaded but could not mark email read: {e}")
                                 st.session_state.loaded_uids.add(item['uid'])
                                 st.session_state.inbox_items = [i for i in st.session_state.inbox_items if i['uid'] != item['uid']]
                                 st.rerun()
@@ -509,10 +573,28 @@ if page == "Order Processing":
                                                       email_meta=meta))
                                     existing.add(inv_key)
                                     loaded += 1
+                            save_email_rule(item['sender'], 'order')
+                            try:
+                                mark_as_read(email_host, email_port, email_user,
+                                             email_pass, item['uid'])
+                            except Exception as e:
+                                st.warning(f"Order loaded but could not mark email read: {e}")
                             st.session_state.loaded_uids.add(item['uid'])
                             st.session_state.inbox_items = [i for i in st.session_state.inbox_items if i['uid'] != item['uid']]
                             if loaded:
                                 st.rerun()
+            with item_cols[2]:
+                if st.button("Ignore", key=f"ignore_{item['uid']}"):
+                    save_email_rule(item['sender'], 'ignore')
+                    if email_user and email_pass:
+                        try:
+                            mark_as_read(email_host, email_port, email_user,
+                                         email_pass, item['uid'])
+                        except Exception as e:
+                            st.warning(f"Could not mark email read: {e}")
+                    st.session_state.loaded_uids.add(item['uid'])
+                    st.session_state.inbox_items = [i for i in st.session_state.inbox_items if i['uid'] != item['uid']]
+                    st.rerun()
 
     st.divider()
     st.subheader("Upload Order File(s)")
