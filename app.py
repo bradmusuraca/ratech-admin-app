@@ -394,7 +394,13 @@ st.sidebar.markdown("""
     <div style="font-size:0.8rem; color:#8a93a0;">Order Management</div>
 </div>
 """, unsafe_allow_html=True)
-page = st.sidebar.radio("Select Page", _allowed_pages)
+_nav_labels = [
+    f"Order Processing :red[({len(st.session_state.invoices)})]"
+    if p == "Order Processing" else p
+    for p in _allowed_pages
+]
+_choice = st.sidebar.radio("Select Page", _nav_labels)
+page = _allowed_pages[_nav_labels.index(_choice)]
 
 st.sidebar.divider()
 st.sidebar.caption("Connections")
