@@ -136,16 +136,24 @@ CUSTOMER_COLS = ['Customer Number', 'Customer Name', 'Aliases', 'Their Code For 
 
 
 def load_customers():
-    """Load the customer-name -> Sage customer number mapping table."""
-    if os.path.exists(CUSTOMERS_CSV):
-        try:
+    """Load the customer-name -> Sage customer number mapping table.
+
+    Prefers the CUSTOMERS_CSV secret (survives redeploys, not committed to
+    the repo); falls back to a local customers.csv file for development."""
+    text = os.getenv('CUSTOMERS_CSV')
+    try:
+        if text:
+            df = pd.read_csv(StringIO(text), dtype=str).fillna('')
+        elif os.path.exists(CUSTOMERS_CSV):
             df = pd.read_csv(CUSTOMERS_CSV, dtype=str).fillna('')
-            for c in CUSTOMER_COLS:
-                if c not in df.columns:
-                    df[c] = ''
-            return df[CUSTOMER_COLS]
-        except Exception:
-            pass
+        else:
+            return pd.DataFrame(columns=CUSTOMER_COLS)
+        for c in CUSTOMER_COLS:
+            if c not in df.columns:
+                df[c] = ''
+        return df[CUSTOMER_COLS]
+    except Exception:
+        pass
     return pd.DataFrame(columns=CUSTOMER_COLS)
 
 
@@ -165,14 +173,22 @@ EMAIL_RULES_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'emai
 
 
 def load_email_rules():
-    """Sender address/domain -> 'order' or 'ignore', learned from user triage."""
-    if os.path.exists(EMAIL_RULES_CSV):
-        try:
+    """Sender address/domain -> 'order' or 'ignore', learned from user triage.
+
+    Baseline rules can be seeded via the EMAIL_RULES_CSV secret; learned
+    rules are appended to a local file (not committed to the repo)."""
+    text = os.getenv('EMAIL_RULES_CSV')
+    try:
+        if text:
+            df = pd.read_csv(StringIO(text), dtype=str).fillna('')
+        elif os.path.exists(EMAIL_RULES_CSV):
             df = pd.read_csv(EMAIL_RULES_CSV, dtype=str).fillna('')
-            return {str(r['Sender']).strip().lower(): str(r['Classification']).strip().lower()
-                    for _, r in df.iterrows() if str(r.get('Sender', '')).strip()}
-        except Exception:
-            pass
+        else:
+            return {}
+        return {str(r['Sender']).strip().lower(): str(r['Classification']).strip().lower()
+                for _, r in df.iterrows() if str(r.get('Sender', '')).strip()}
+    except Exception:
+        pass
     return {}
 
 
@@ -1175,9 +1191,12 @@ elif page == "Customers":
             mime="text/csv"
         )
 
-    st.caption("Saved to `customers.csv` in the app folder. On Streamlit Cloud this file is "
-               "restored from the repository on each redeploy — to make changes permanent, "
-               "commit the updated `customers.csv` to GitHub (or download it here and commit it).")
+    st.caption("Customer data lives in the `CUSTOMERS_CSV` secret (not committed to the "
+               "repo). After editing, copy the block below into Streamlit Cloud "
+               "**Secrets** to make it permanent.")
+    with st.expander("Copy into Streamlit secrets"):
+        st.code('CUSTOMERS_CSV = """\n' + edited_cust.to_csv(index=False) + '"""',
+                language="toml")
 
 elif page == "Inventory Management":
     st.header("📋 Inventory Management")
