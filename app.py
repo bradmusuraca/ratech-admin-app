@@ -482,34 +482,39 @@ def build_shipstation_order_invoice(order, doc_key, store_map=None):
     }
 
 
-# Sage 50 2019 US "Sales Order Journal" import template (SO.CSV) - full field
-# list in documented order; export-only fields are emitted as empty columns.
+# Sage 50 2019 US "Sales Order Journal" import template - column layout matches
+# the company's own SO.CSV export exactly (verified against a real export).
 SAGE_SO_COLUMNS = [
-    'Customer ID', 'Customer Name', 'SO/Proposal Number', 'Date', 'Ship By',
-    'Proposal', 'Proposal Accepted', 'Closed', 'Quote #', 'Drop Ship',
-    'Ship to Name', 'Ship to Address-Line One', 'Ship to Address-Line Two',
-    'Ship to City', 'Ship to State', 'Ship to Zipcode', 'Ship to Country',
-    'Customer PO', 'Ship Via', 'Discount Amount', 'Displayed Terms',
-    'Sales Representative ID', 'Accounts Receivable Account',
-    'Accounts Receivable Amount', 'Sales Tax ID', 'Invoice Note',
+    'Customer ID', 'Sales Order/Proposal #', 'Date', 'Ship By', 'Proposal',
+    'Proposal Accepted', 'Closed', 'Quote #', 'Drop Ship', 'Ship to Name',
+    'Ship to Address-Line One', 'Ship to Address-Line Two', 'Ship to City',
+    'Ship to State', 'Ship to Zipcode', 'Ship to Country', 'Customer PO',
+    'Ship Via', 'Discount Amount', 'Displayed Terms', 'Sales Representative ID',
+    'Accounts Receivable Account', 'Sales Tax ID', 'Invoice Note',
     'Note Prints After Line Items', 'Statement Note',
     'Stmt Note Prints Before Ref', 'Internal Note', 'Number of Distributions',
-    'SO/Proposal Distribution', 'Quantity', 'Stocking Quantity', 'Item ID',
-    'U/M ID', 'U/M No. of Stocking Units', 'Description', 'G/L Account',
-    'Unit Price', 'Stocking Unit Price', 'Tax Type', 'UPC/SKU', 'Weight',
-    'Amount', 'Job ID', 'Sales Tax Agency', 'Transaction Period',
-    'Transaction Number',
+    'SO/Proposal Distribution', 'Quantity', 'Item ID', 'Description',
+    'G/L Account', 'Unit Price', 'Tax Type', 'UPC / SKU', 'Weight', 'U/M ID',
+    'U/M No. of Stocking Units', 'Stocking Quantity', 'Stocking Unit Price',
+    'Amount', 'Job ID', 'Sales Tax Agency ID',
 ]
 
 
 def build_sage_sales_orders(df):
     """Transform the internal order table into the Sage 50 Sales Order
-    Journal (SO.CSV) layout. Rows are grouped by order so each transaction's
-    distribution lines stay contiguous."""
-    ar_acct = os.getenv('SAGE_AR_ACCOUNT', '')
-    gl_acct = os.getenv('SAGE_GL_ACCOUNT', '')
+    Journal (SO.CSV) layout, matching the company's export template.
+
+    - SO/Proposal # is left blank so Sage auto-assigns order numbers;
+      the source order number goes in Customer PO
+    - Amount is negative (sales order lines credit income)
+    - Rows are grouped by order so each transaction's distribution
+      lines stay contiguous
+    """
+    ar_acct = os.getenv('SAGE_AR_ACCOUNT', '12000')
+    gl_acct = os.getenv('SAGE_GL_ACCOUNT', '30500')
     tax_id = os.getenv('SAGE_TAX_ID', '')
     tax_type = os.getenv('SAGE_TAX_TYPE', '1')
+    terms = os.getenv('SAGE_TERMS', 'Net Due')
 
     out = []
     for po, grp in df.groupby('Purchase Order Number', sort=False):
@@ -518,17 +523,22 @@ def build_sage_sales_orders(df):
             qty = pd.to_numeric(r.get('Quantity'), errors='coerce')
             price = pd.to_numeric(r.get('Unit Price'), errors='coerce')
             total = pd.to_numeric(r.get('Total'), errors='coerce')
-            amount = total if pd.notna(total) and total else (
-                qty * price if pd.notna(qty) and pd.notna(price) else '')
+            if pd.notna(total) and total:
+                amount = total
+            elif pd.notna(qty) and pd.notna(price):
+                amount = qty * price
+            else:
+                amount = ''
+            if amount != '':
+                amount = -abs(float(amount))  # sales order lines are credits
             out.append({
                 'Customer ID': r.get('Vendor', ''),
-                'Customer Name': '',
-                'SO/Proposal Number': po,
+                'Sales Order/Proposal #': '',
                 'Date': r.get('Date of Order', ''),
                 'Ship By': r.get('Ship By Date', ''),
                 'Proposal': 'FALSE',
                 'Proposal Accepted': 'FALSE',
-                'Closed': '',
+                'Closed': 'FALSE',
                 'Quote #': '',
                 'Drop Ship': 'FALSE',
                 'Ship to Name': str(r.get('Ship To', ''))[:30],
@@ -540,11 +550,10 @@ def build_sage_sales_orders(df):
                 'Ship to Country': '',
                 'Customer PO': po,
                 'Ship Via': str(r.get('Shipping Instructions', ''))[:12],
-                'Discount Amount': '',
-                'Displayed Terms': '',
+                'Discount Amount': '0',
+                'Displayed Terms': terms,
                 'Sales Representative ID': '',
                 'Accounts Receivable Account': ar_acct,
-                'Accounts Receivable Amount': '',
                 'Sales Tax ID': tax_id,
                 'Invoice Note': '',
                 'Note Prints After Line Items': 'FALSE',
@@ -554,22 +563,20 @@ def build_sage_sales_orders(df):
                 'Number of Distributions': n,
                 'SO/Proposal Distribution': i,
                 'Quantity': qty if pd.notna(qty) else r.get('Quantity', ''),
-                'Stocking Quantity': '',
                 'Item ID': str(r.get('Inventory Item', ''))[:20],
-                'U/M ID': '',
-                'U/M No. of Stocking Units': '',
                 'Description': str(r.get('Description', ''))[:160],
                 'G/L Account': gl_acct,
                 'Unit Price': price if pd.notna(price) else r.get('Unit Price', ''),
-                'Stocking Unit Price': '',
                 'Tax Type': tax_type,
-                'UPC/SKU': '',
+                'UPC / SKU': '',
                 'Weight': '',
+                'U/M ID': '',
+                'U/M No. of Stocking Units': '',
+                'Stocking Quantity': '',
+                'Stocking Unit Price': '',
                 'Amount': amount,
                 'Job ID': '',
-                'Sales Tax Agency': '',
-                'Transaction Period': '',
-                'Transaction Number': '',
+                'Sales Tax Agency ID': '',
             })
     return pd.DataFrame(out, columns=SAGE_SO_COLUMNS)
 
@@ -1087,13 +1094,9 @@ if page == "Order Processing":
                 st.subheader("Export Combined CSV")
                 sage_df = build_sage_sales_orders(combined)
                 st.caption(f"{len(sage_df)} line item(s) from {len(all_dfs)} order(s) - Sage 50 Sales Order Journal (SO.CSV) layout")
-                missing_accts = [k for k, v in (('AR Account', os.getenv('SAGE_AR_ACCOUNT')),
-                                              ('G/L Account', os.getenv('SAGE_GL_ACCOUNT')),
-                                              ('Sales Tax ID', os.getenv('SAGE_TAX_ID')))
-                                 if not v]
-                if missing_accts:
-                    st.warning(f"Sage defaults not set: {', '.join(missing_accts)} - "
-                               "configure them in Settings or the import will be rejected.")
+                if not os.getenv('SAGE_AR_ACCOUNT') or not os.getenv('SAGE_GL_ACCOUNT'):
+                    st.caption("Using built-in defaults: AR account 12000, G/L account 30500 "
+                               "- override in Settings if needed.")
                 with st.expander("Preview SO.CSV data (Sage format)", expanded=True):
                     st.dataframe(sage_df, use_container_width=True)
                 ec1, ec2 = st.columns(2)
@@ -1466,29 +1469,33 @@ elif page == "Settings":
     st.caption("Required by the Sales Order Journal (SO.CSV) import template. "
                "Get these from your Sage chart of accounts and sales tax codes.")
 
-    cur_ar = os.getenv('SAGE_AR_ACCOUNT', '')
-    cur_gl = os.getenv('SAGE_GL_ACCOUNT', '')
+    cur_ar = os.getenv('SAGE_AR_ACCOUNT', '12000')
+    cur_gl = os.getenv('SAGE_GL_ACCOUNT', '30500')
     cur_tax = os.getenv('SAGE_TAX_ID', '')
     cur_ttype = os.getenv('SAGE_TAX_TYPE', '1')
-    if cur_ar and cur_gl and cur_tax:
+    cur_terms = os.getenv('SAGE_TERMS', 'Net Due')
+    if cur_ar and cur_gl:
         st.success("✅ Sage defaults configured")
     else:
         st.warning("⚠️ Sage defaults incomplete - the SO.CSV import needs all three")
 
     sage_ar = st.text_input("Accounts Receivable Account", value=cur_ar,
-                            help="e.g. 11000-00 - your A/R G/L account number")
+                            help="Your A/R G/L account number (your export showed 12000)")
     sage_gl = st.text_input("Sales G/L Account", value=cur_gl,
-                            help="e.g. 40000-00 - the income account for line items")
+                            help="Income account for line items (your export showed 30500)")
     sage_tax = st.text_input("Sales Tax ID", value=cur_tax,
-                             help="Sales tax code from Sage (e.g. OHIO) - up to 8 chars")
+                             help="Sales tax code from Sage - your export left this blank")
     sage_ttype = st.text_input("Line Tax Type", value=cur_ttype,
-                               help="0-26; 1 is typically taxable - check a Sage export")
+                               help="0-26; your export used 1 and 2 per line")
+    sage_terms = st.text_input("Displayed Terms", value=cur_terms,
+                               help="Your export showed 'Net Due'")
     if st.button("Save Sage Defaults"):
         save_env_vars({
             'SAGE_AR_ACCOUNT': sage_ar,
             'SAGE_GL_ACCOUNT': sage_gl,
             'SAGE_TAX_ID': sage_tax,
             'SAGE_TAX_TYPE': sage_ttype or '1',
+            'SAGE_TERMS': sage_terms or 'Net Due',
         })
         st.success("Sage defaults saved")
         st.rerun()
