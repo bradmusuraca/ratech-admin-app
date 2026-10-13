@@ -13,6 +13,11 @@ from email_inbox import (list_unseen_orders, fetch_pdf_from_message,
 from email.utils import parsedate_to_datetime
 from shipstation import (list_orders as ss_list_orders,
                          list_stores as ss_list_stores,
+                         list_carriers as ss_list_carriers,
+                         list_services as ss_list_services,
+                         list_packages as ss_list_packages,
+                         create_label as ss_create_label,
+                         label_pdf_bytes,
                          order_channel as ss_order_channel)
 
 load_dotenv()
@@ -58,6 +63,7 @@ st.markdown("""
 # Session state defaults
 for _k, _v in (('invoices', []), ('inbox_items', []), ('loaded_uids', set()),
                ('ss_orders', []), ('loaded_ss', set()), ('ss_store_map', {}),
+               ('ss_carriers', []), ('ss_labels', {}), ('ss_opts_cache', {}),
                ('upload_version', 0), ('user', None)):
     if _k not in st.session_state:
         st.session_state[_k] = _v
@@ -866,6 +872,78 @@ if page == "Order Processing":
                                                             st.session_state.ss_store_map))
                         st.session_state.loaded_ss.add(oid)
                         st.rerun()
+
+                # --- Shipping label (billable: buys postage, marks shipped,
+                #     notifies the marketplace) ---
+                with st.expander("🏷️ Shipping label"):
+                    _lbl = st.session_state.ss_labels.get(oid)
+                    if _lbl:
+                        st.success(f"✅ Label created — tracking {_lbl['tracking']}")
+                        st.download_button(
+                            "📥 Download label PDF",
+                            _lbl['pdf'],
+                            file_name=f"label-{order.get('orderNumber', oid)}.pdf",
+                            mime="application/pdf",
+                            key=f"lbl_dl_{oid}")
+                    else:
+                        if not st.session_state.ss_carriers:
+                            try:
+                                st.session_state.ss_carriers = ss_list_carriers(ss_key, ss_secret)
+                            except Exception as e:
+                                st.error(f"Could not load carriers: {e}")
+                        _carriers = {c.get('name', c.get('code')): c.get('code')
+                                     for c in st.session_state.ss_carriers}
+                        if _carriers:
+                            lc1, lc2 = st.columns(2)
+                            with lc1:
+                                _cname = st.selectbox("Carrier", list(_carriers),
+                                                      key=f"lbl_car_{oid}")
+                                _ccode = _carriers[_cname]
+                            try:
+                                _svc = st.session_state.ss_opts_cache.get(_ccode + '_svc') or \
+                                    ss_list_services(ss_key, ss_secret, _ccode)
+                                st.session_state.ss_opts_cache[_ccode + '_svc'] = _svc
+                                _pkg = st.session_state.ss_opts_cache.get(_ccode + '_pkg') or \
+                                    ss_list_packages(ss_key, ss_secret, _ccode)
+                                st.session_state.ss_opts_cache[_ccode + '_pkg'] = _pkg
+                            except Exception as e:
+                                st.error(f"Carrier options failed: {e}")
+                                _svc, _pkg = [], []
+                            _svc_map = {s.get('name', s.get('code')): s.get('code') for s in _svc}
+                            _pkg_map = {p.get('name', p.get('code')): p.get('code') for p in _pkg}
+                            with lc2:
+                                _sname = st.selectbox("Service", list(_svc_map) or ['(none)'],
+                                                      key=f"lbl_svc_{oid}")
+                                _pname = st.selectbox("Package", list(_pkg_map) or ['(none)'],
+                                                      key=f"lbl_pkg_{oid}")
+                            _w = (order.get('weight') or {}).get('value') or 16
+                            lw1, lw2 = st.columns(2)
+                            with lw1:
+                                _wt = st.number_input("Weight (oz)", min_value=0.0,
+                                                      value=float(_w), key=f"lbl_w_{oid}")
+                            with lw2:
+                                _test = st.checkbox("Test label (no postage)",
+                                                    value=False, key=f"lbl_test_{oid}",
+                                                    help="USPS/Stamps.com supports free test labels")
+                            if st.button(f"Create label for {order.get('orderNumber', oid)}",
+                                         type="primary", key=f"lbl_go_{oid}"):
+                                if not _svc_map or not _pkg_map:
+                                    st.error("Pick a carrier that has services/packages available.")
+                                else:
+                                    with st.spinner("Purchasing label..."):
+                                        try:
+                                            resp = ss_create_label(
+                                                ss_key, ss_secret, oid,
+                                                carrier_code=_ccode,
+                                                service_code=_svc_map[_sname],
+                                                package_code=_pkg_map[_pname],
+                                                weight_oz=_wt, test=_test)
+                                            st.session_state.ss_labels[oid] = {
+                                                'tracking': resp.get('trackingNumber', ''),
+                                                'pdf': label_pdf_bytes(resp)}
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"Label failed: {e}")
 
     st.divider()
     st.subheader("Upload Order File(s)")

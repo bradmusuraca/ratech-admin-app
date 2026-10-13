@@ -46,6 +46,71 @@ def list_stores(api_key: str, api_secret: str) -> List[Dict]:
     return resp.json()
 
 
+def list_carriers(api_key: str, api_secret: str) -> List[Dict]:
+    """Return carriers connected to the account."""
+    resp = requests.get(f'{API_BASE}/carriers', auth=(api_key, api_secret),
+                        timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def list_services(api_key: str, api_secret: str, carrier_code: str) -> List[Dict]:
+    """Return service codes for a carrier."""
+    resp = requests.get(f'{API_BASE}/carriers/listservices',
+                        params={'carrierCode': carrier_code},
+                        auth=(api_key, api_secret), timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def list_packages(api_key: str, api_secret: str, carrier_code: str) -> List[Dict]:
+    """Return package codes for a carrier."""
+    resp = requests.get(f'{API_BASE}/carriers/listpackages',
+                        params={'carrierCode': carrier_code},
+                        auth=(api_key, api_secret), timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def create_label(api_key: str, api_secret: str, order_id,
+                 carrier_code: str, service_code: str, package_code: str,
+                 weight_oz: float, ship_date: Optional[str] = None,
+                 dimensions: Optional[Dict] = None,
+                 confirmation: str = 'delivery', test: bool = False) -> Dict:
+    """Purchase postage and create a shipping label for an existing order.
+
+    WARNING: this is a billable action - postage is charged, the order is
+    marked shipped, and the marketplace is notified with tracking.
+    test=True produces a non-billable test label where the carrier
+    supports it (e.g. USPS via Stamps.com).
+    Returns the API response dict (includes base64 'labelData' PDF/PNG).
+    """
+    body = {
+        'orderId': int(order_id),
+        'carrierCode': carrier_code,
+        'serviceCode': service_code,
+        'packageCode': package_code,
+        'confirmation': confirmation,
+        'weight': {'value': float(weight_oz), 'units': 'ounces'},
+        'testLabel': bool(test),
+    }
+    if ship_date:
+        body['shipDate'] = ship_date
+    if dimensions:
+        body['dimensions'] = dimensions
+    resp = requests.post(f'{API_BASE}/orders/createlabel', json=body,
+                         auth=(api_key, api_secret), timeout=60)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def label_pdf_bytes(label_response: Dict) -> bytes:
+    """Decode the base64 labelData field from a create_label response."""
+    import base64
+    data = label_response.get('labelData') or ''
+    return base64.b64decode(data) if data else b''
+
+
 def order_channel(order: Dict, store_map: Optional[Dict] = None) -> str:
     """Best-effort marketplace detection for a ShipStation order."""
     import re
