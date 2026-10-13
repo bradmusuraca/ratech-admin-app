@@ -17,7 +17,7 @@ from shipstation import (list_orders as ss_list_orders,
                          list_services as ss_list_services,
                          list_packages as ss_list_packages,
                          create_label as ss_create_label,
-                         label_pdf_bytes,
+                         label_pdf_bytes, label_error_message, order_web_url,
                          order_channel as ss_order_channel)
 
 load_dotenv()
@@ -64,7 +64,7 @@ st.markdown("""
 for _k, _v in (('invoices', []), ('inbox_items', []), ('loaded_uids', set()),
                ('ss_orders', []), ('loaded_ss', set()), ('ss_store_map', {}),
                ('ss_carriers', []), ('ss_labels', {}), ('ss_opts_cache', {}),
-               ('ss_selected', set()), ('ss_batch_pdf', None),
+               ('ss_selected', set()), ('ss_batch_pdf', None), ('ss_batch_results', []),
                ('upload_version', 0), ('user', None)):
     if _k not in st.session_state:
         st.session_state[_k] = _v
@@ -965,7 +965,11 @@ if page == "Order Processing":
                                                 'pdf': label_pdf_bytes(resp)}
                                             st.rerun()
                                         except Exception as e:
-                                            st.error(f"Label failed: {e}")
+                                            st.error(f"Label failed: {label_error_message(e)}")
+                                            st.markdown(
+                                                f"[🔧 Fix order in ShipStation]({order_web_url(oid)}) "
+                                                f"— search order **{order.get('orderNumber', oid)}** "
+                                                "and correct the ship-to address")
 
         # --- Batch label printing ---
         _sel_orders = [
@@ -975,6 +979,12 @@ if page == "Order Processing":
         if st.session_state.ss_selected or st.session_state.ss_batch_pdf:
             st.divider()
             st.subheader("🏷️ Batch Labels")
+            for kind, line in st.session_state.ss_batch_results:
+                st.write(line)
+                if kind == 'fail':
+                    st.markdown(
+                        f"&nbsp;&nbsp;&nbsp;&nbsp;[🔧 Fix in ShipStation]({order_web_url('')}) "
+                        "— correct the ship-to address, then retry")
             if st.session_state.ss_batch_pdf:
                 st.download_button(
                     "📥 Download batch labels PDF",
@@ -984,6 +994,7 @@ if page == "Order Processing":
                     type="primary")
                 if st.button("Clear batch"):
                     st.session_state.ss_batch_pdf = None
+                    st.session_state.ss_batch_results = []
                     st.session_state.ss_selected = set()
                     st.rerun()
             elif not _sel_orders:
@@ -1051,15 +1062,17 @@ if page == "Order Processing":
                                     st.session_state.ss_labels[oid2] = {
                                         'tracking': resp.get('trackingNumber', ''),
                                         'pdf': pdf}
-                                    results.append(f"✅ {o.get('orderNumber')}: {resp.get('trackingNumber', '')}")
+                                    results.append(('ok', f"✅ {o.get('orderNumber')}: {resp.get('trackingNumber', '')}"))
                                 except Exception as e:
-                                    results.append(f"❌ {o.get('orderNumber')}: {e}")
+                                    results.append(('fail', f"❌ {o.get('orderNumber')}: {label_error_message(e)}"))
                                 prog.progress((bi + 1) / len(_sel_orders))
                             prog.empty()
                             if pdfs:
                                 st.session_state.ss_batch_pdf = _merge_pdfs(pdfs)
-                            for line in results:
-                                st.write(line)
+                            else:
+                                for kind, line in results:
+                                    st.write(line)
+                            st.session_state.ss_batch_results = results
                             st.rerun()
 
     st.divider()

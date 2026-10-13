@@ -104,6 +104,25 @@ def create_label(api_key: str, api_secret: str, order_id,
     return resp.json()
 
 
+def label_error_message(exc) -> str:
+    """Extract ShipStation's human-readable error from a failed API call."""
+    try:
+        data = exc.response.json()
+        for key in ('ExceptionMessage', 'Message', 'message'):
+            if data.get(key):
+                return str(data[key])
+        return str(exc.response.text or exc)
+    except Exception:
+        return str(exc)
+
+
+def order_web_url(order_id) -> str:
+    """Deep link to the order in the ShipStation web app (for fixing
+    addresses etc.). Subdomain varies by account; all-orders search page
+    is the most stable target."""
+    return 'https://ship11.shipstation.com/orders/all-orders'
+
+
 def label_pdf_bytes(label_response: Dict) -> bytes:
     """Decode the base64 labelData field from a create_label response."""
     import base64
