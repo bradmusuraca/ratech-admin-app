@@ -17,6 +17,7 @@ from shipstation import (list_orders as ss_list_orders,
                          list_services as ss_list_services,
                          list_packages as ss_list_packages,
                          create_label as ss_create_label,
+                         mark_as_shipped as ss_mark_as_shipped,
                          label_pdf_bytes, label_error_message, order_web_url,
                          order_channel as ss_order_channel)
 
@@ -620,6 +621,15 @@ def build_sage_sales_orders(df):
     return pd.DataFrame(out, columns=SAGE_SO_COLUMNS)
 
 
+def _addr_key(order):
+    """Normalized ship-to key for grouping orders going to the same address."""
+    s = order.get('shipTo') or {}
+    parts = [s.get('name'), s.get('street1'), s.get('city'),
+             s.get('state'), s.get('postalCode')]
+    key = '|'.join(str(p or '').strip().lower() for p in parts)
+    return key if key.strip('|') else ''
+
+
 def _merge_pdfs(pdf_blobs):
     """Merge a list of PDF byte-strings into a single PDF."""
     from pypdf import PdfReader, PdfWriter
@@ -861,6 +871,12 @@ if page == "Order Processing":
                 except Exception as e:
                     st.error(f"ShipStation fetch failed: {e}")
 
+        _addr_counts = {}
+        for _o in st.session_state.ss_orders:
+            _k = _addr_key(_o)
+            if _k:
+                _addr_counts[_k] = _addr_counts.get(_k, 0) + 1
+
         for order in st.session_state.ss_orders:
             oid = str(order.get('orderId') or order.get('orderKey') or '')
             if oid in st.session_state.loaded_ss:
@@ -875,10 +891,12 @@ if page == "Order Processing":
                     n_items = len(order.get('items') or [])
                     st.write(f"**{order.get('orderNumber', '(no number)')}** — "
                              f"{ss_order_channel(order, st.session_state.ss_store_map)}")
+                    _shared = _addr_counts.get(_addr_key(order), 0) > 1
                     st.caption(
                         f"{(order.get('shipTo') or {}).get('name', '')} • "
                         f"{_fmt_ss_date(order.get('orderDate'))} • "
-                        f"{order.get('orderStatus', '')} • {n_items} item(s)")
+                        f"{order.get('orderStatus', '')} • {n_items} item(s)"
+                        + (" • 🔗 shares address" if _shared else ""))
                 with oc_cols[1]:
                     if st.button("Load", key=f"ss_load_{oid}"):
                         st.session_state.invoices.append(
@@ -1039,16 +1057,40 @@ if page == "Order Processing":
                     with bw2:
                         _btest = st.checkbox("Test labels (no postage)", value=False,
                                              key='batch_test')
-                    if st.button(f"Create {len(_sel_orders)} label(s)", type="primary",
-                                 key='batch_go'):
+                    _bcombine = st.checkbox(
+                        "Combine same-address orders into single labels",
+                        value=True, key='batch_combine',
+                        help="Orders going to the same ship-to get one label; "
+                             "siblings are marked shipped with the same tracking")
+                    _n_labels = (len({_addr_key(o) or ('__solo__' + str(
+                                     o.get('orderId') or o.get('orderKey') or ''))
+                                     for o in _sel_orders})
+                                 if _bcombine else len(_sel_orders))
+                    if st.button(
+                            f"Create {_n_labels} label(s) for {len(_sel_orders)} order(s)",
+                            type="primary", key='batch_go'):
                         if not _bsvc_map or not _bpkg_map:
                             st.error("Pick a carrier that has services/packages available.")
                         else:
                             results, pdfs = [], []
+                            if _bcombine:
+                                groups = {}
+                                for o in _sel_orders:
+                                    _ak = _addr_key(o) or ('__solo__' + str(
+                                        o.get('orderId') or o.get('orderKey') or ''))
+                                    groups.setdefault(_ak, []).append(o)
+                                work_groups = list(groups.values())
+                            else:
+                                work_groups = [[o] for o in _sel_orders]
+                            total_units = sum(len(g) for g in work_groups)
+                            done = 0
                             prog = st.progress(0, text="Creating labels...")
-                            for bi, o in enumerate(_sel_orders):
-                                oid2 = str(o.get('orderId') or o.get('orderKey') or '')
-                                wt = (o.get('weight') or {}).get('value') or _bwt
+                            for grp in work_groups:
+                                primary = grp[0]
+                                oid2 = str(primary.get('orderId') or primary.get('orderKey') or '')
+                                nums = ', '.join(str(x.get('orderNumber')) for x in grp)
+                                wt = sum(float((x.get('weight') or {}).get('value') or 0)
+                                         for x in grp) or _bwt
                                 try:
                                     resp = ss_create_label(
                                         ss_key, ss_secret, oid2,
@@ -1056,16 +1098,31 @@ if page == "Order Processing":
                                         service_code=_bsvc_map[_bsname],
                                         package_code=_bpkg_map[_bpname],
                                         weight_oz=wt, test=_btest)
+                                    track = resp.get('trackingNumber', '')
                                     pdf = label_pdf_bytes(resp)
                                     if pdf[:4] == b'%PDF':
                                         pdfs.append(pdf)
                                     st.session_state.ss_labels[oid2] = {
-                                        'tracking': resp.get('trackingNumber', ''),
-                                        'pdf': pdf}
-                                    results.append(('ok', f"✅ {o.get('orderNumber')}: {resp.get('trackingNumber', '')}"))
+                                        'tracking': track, 'pdf': pdf}
+                                    for sib in grp[1:]:
+                                        sib_id = str(sib.get('orderId') or sib.get('orderKey') or '')
+                                        try:
+                                            ss_mark_as_shipped(
+                                                ss_key, ss_secret, sib_id,
+                                                _bccode, track,
+                                                notify_marketplace=True)
+                                            st.session_state.ss_labels[sib_id] = {
+                                                'tracking': track, 'pdf': pdf}
+                                        except Exception as e2:
+                                            results.append(('fail',
+                                                f"⚠️ {sib.get('orderNumber')}: label created but "
+                                                f"not marked shipped - {label_error_message(e2)}"))
+                                    tag = f" (combined {len(grp)} orders)" if len(grp) > 1 else ""
+                                    results.append(('ok', f"✅ {nums}{tag}: {track}"))
                                 except Exception as e:
-                                    results.append(('fail', f"❌ {o.get('orderNumber')}: {label_error_message(e)}"))
-                                prog.progress((bi + 1) / len(_sel_orders))
+                                    results.append(('fail', f"❌ {nums}: {label_error_message(e)}"))
+                                done += len(grp)
+                                prog.progress(done / total_units)
                             prog.empty()
                             if pdfs:
                                 st.session_state.ss_batch_pdf = _merge_pdfs(pdfs)

@@ -104,6 +104,32 @@ def create_label(api_key: str, api_secret: str, order_id,
     return resp.json()
 
 
+def mark_as_shipped(api_key: str, api_secret: str, order_id,
+                    carrier_code: str, tracking_number: str,
+                    ship_date: Optional[str] = None,
+                    notify_marketplace: bool = True,
+                    notify_customer: bool = False) -> Dict:
+    """Mark an order shipped with an existing tracking number.
+
+    Used for combined shipments: one label is purchased on the primary
+    order, sibling orders get the same tracking number so each
+    marketplace still receives ship confirmation.
+    """
+    body = {
+        'orderId': int(order_id),
+        'carrierCode': carrier_code,
+        'trackingNumber': tracking_number,
+        'notifyMarketplace': bool(notify_marketplace),
+        'notifyCustomer': bool(notify_customer),
+    }
+    if ship_date:
+        body['shipDate'] = ship_date
+    resp = requests.post(f'{API_BASE}/orders/markasshipped', json=body,
+                         auth=(api_key, api_secret), timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
+
 def label_error_message(exc) -> str:
     """Extract ShipStation's human-readable error from a failed API call."""
     try:
