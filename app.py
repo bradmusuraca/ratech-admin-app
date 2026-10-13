@@ -536,6 +536,7 @@ def build_sage_sales_orders(df):
     """
     ar_acct = os.getenv('SAGE_AR_ACCOUNT', '12000')
     gl_acct = os.getenv('SAGE_GL_ACCOUNT', '30500')
+    mkt_cust = os.getenv('SAGE_MARKETPLACE_CUSTOMER', '100B')
     tax_id = os.getenv('SAGE_TAX_ID', '')
     tax_type = os.getenv('SAGE_TAX_TYPE', '1')
     terms = os.getenv('SAGE_TERMS', 'Net Due')
@@ -572,7 +573,8 @@ def build_sage_sales_orders(df):
                 desc = (f"[{r.get('Purchase Order Number', '')}] "
                         f"{r.get('Ship To', '')} - {desc}")
             out.append({
-                'Customer ID': r.get('Vendor', ''),
+                'Customer ID': (r.get('Vendor', '') or mkt_cust) if is_batch
+                               else r.get('Vendor', ''),
                 'Sales Order/Proposal #': '',
                 'Date': r.get('Date of Order', ''),
                 'Ship By': r.get('Ship By Date', ''),
@@ -1792,6 +1794,8 @@ elif page == "Settings":
                                help="0-26; your export used 1 and 2 per line")
     sage_terms = st.text_input("Displayed Terms", value=cur_terms,
                                help="Your export showed 'Net Due'")
+    sage_mkt = st.text_input("Marketplace Customer", value=os.getenv('SAGE_MARKETPLACE_CUSTOMER', '100B'),
+                             help="Sage customer ID for all ShipStation/marketplace orders")
     if st.button("Save Sage Defaults"):
         save_env_vars({
             'SAGE_AR_ACCOUNT': sage_ar,
@@ -1799,6 +1803,7 @@ elif page == "Settings":
             'SAGE_TAX_ID': sage_tax,
             'SAGE_TAX_TYPE': sage_ttype or '1',
             'SAGE_TERMS': sage_terms or 'Net Due',
+            'SAGE_MARKETPLACE_CUSTOMER': sage_mkt or '100B',
         })
         st.success("Sage defaults saved")
         st.rerun()
