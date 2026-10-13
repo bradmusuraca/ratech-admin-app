@@ -516,8 +516,20 @@ def build_sage_sales_orders(df):
     tax_type = os.getenv('SAGE_TAX_TYPE', '1')
     terms = os.getenv('SAGE_TERMS', 'Net Due')
 
+    # All ShipStation-sourced lines merge into ONE sales order (customer 100B
+    # is a marketplace clearing account). Source order numbers are preserved
+    # per-line by prefixing the Description with [order#].
+    work = df.copy()
+    comments = work['Comments'].astype(str).str.lower() if 'Comments' in work.columns else ''
+    is_ss = comments.str.contains('via shipstation') if isinstance(comments, pd.Series) \
+        else pd.Series(False, index=work.index)
+    work['_group'] = work['Purchase Order Number'].astype(str)
+    work.loc[is_ss, '_group'] = '__SHIPSTATION_BATCH__'
+
     out = []
-    for po, grp in df.groupby('Purchase Order Number', sort=False):
+    for grp_key, grp in work.groupby('_group', sort=False):
+        is_batch = grp_key == '__SHIPSTATION_BATCH__'
+        cust_po = 'ShipStation Orders' if is_batch else grp_key
         n = len(grp)
         for i, (_, r) in enumerate(grp.iterrows(), 1):
             qty = pd.to_numeric(r.get('Quantity'), errors='coerce')
@@ -531,6 +543,9 @@ def build_sage_sales_orders(df):
                 amount = ''
             if amount != '':
                 amount = -abs(float(amount))  # sales order lines are credits
+            desc = str(r.get('Description', ''))
+            if is_batch:
+                desc = f"[{r.get('Purchase Order Number', '')}] {desc}"
             out.append({
                 'Customer ID': r.get('Vendor', ''),
                 'Sales Order/Proposal #': '',
@@ -548,7 +563,7 @@ def build_sage_sales_orders(df):
                 'Ship to State': '',
                 'Ship to Zipcode': '',
                 'Ship to Country': '',
-                'Customer PO': po,
+                'Customer PO': cust_po,
                 'Ship Via': str(r.get('Shipping Instructions', ''))[:12],
                 'Discount Amount': '0',
                 'Displayed Terms': terms,
@@ -564,7 +579,7 @@ def build_sage_sales_orders(df):
                 'SO/Proposal Distribution': i,
                 'Quantity': qty if pd.notna(qty) else r.get('Quantity', ''),
                 'Item ID': str(r.get('Inventory Item', ''))[:20],
-                'Description': str(r.get('Description', ''))[:160],
+                'Description': desc[:160],
                 'G/L Account': gl_acct,
                 'Unit Price': price if pd.notna(price) else r.get('Unit Price', ''),
                 'Tax Type': tax_type,
@@ -1093,7 +1108,10 @@ if page == "Order Processing":
 
                 st.subheader("Export Combined CSV")
                 sage_df = build_sage_sales_orders(combined)
-                st.caption(f"{len(sage_df)} line item(s) from {len(all_dfs)} order(s) - Sage 50 Sales Order Journal (SO.CSV) layout")
+                n_tx = int((sage_df['SO/Proposal Distribution'] == 1).sum())
+                st.caption(f"{len(sage_df)} line item(s) across {n_tx} Sage sales order(s) "
+                           "- Sage 50 Sales Order Journal (SO.CSV) layout. "
+                           "ShipStation orders merge into one sales order under customer 100B.")
                 if not os.getenv('SAGE_AR_ACCOUNT') or not os.getenv('SAGE_GL_ACCOUNT'):
                     st.caption("Using built-in defaults: AR account 12000, G/L account 30500 "
                                "- override in Settings if needed.")

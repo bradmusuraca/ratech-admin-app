@@ -4,5 +4,6 @@ Customer Number,Customer Name,Aliases,Their Code For Us
 ,Drive Train Specialists,DRIVE TRAIN SPECIALISTS,5137422111
 ,Ford Motor Company,Ford Motor Company;FORD RACING,DBYBA
 208,North East Classic Ford Parts,north east classic;northeastclassicfordparts,
-,eBay Orders,ebay,
-,Amazon Orders,amazon,
+100B,eBay Orders,ebay,
+100B,Amazon Orders,amazon,
+100B,ShipStation (All Marketplace Orders),shipstation;ebay_v2;manual orders,
