@@ -517,8 +517,8 @@ def build_sage_sales_orders(df):
     terms = os.getenv('SAGE_TERMS', 'Net Due')
 
     # All ShipStation-sourced lines merge into ONE sales order (customer 100B
-    # is a marketplace clearing account). Source order numbers are preserved
-    # per-line by prefixing the Description with [order#].
+    # is a marketplace clearing account). Source order number and buyer ship-to
+    # are preserved per-line in the Description: "[order#] ship-to - item".
     work = df.copy()
     comments = work['Comments'].astype(str).str.lower() if 'Comments' in work.columns else ''
     is_ss = comments.str.contains('via shipstation') if isinstance(comments, pd.Series) \
@@ -545,7 +545,8 @@ def build_sage_sales_orders(df):
                 amount = -abs(float(amount))  # sales order lines are credits
             desc = str(r.get('Description', ''))
             if is_batch:
-                desc = f"[{r.get('Purchase Order Number', '')}] {desc}"
+                desc = (f"[{r.get('Purchase Order Number', '')}] "
+                        f"{r.get('Ship To', '')} - {desc}")
             out.append({
                 'Customer ID': r.get('Vendor', ''),
                 'Sales Order/Proposal #': '',
