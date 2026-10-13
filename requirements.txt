@@ -6,4 +6,5 @@ pypdf
 pymupdf
 pandas
 pillow
+requests
 google-auth

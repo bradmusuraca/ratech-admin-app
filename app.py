@@ -11,6 +11,7 @@ from email_inbox import (list_unseen_orders, fetch_pdf_from_message,
                          fetch_body_from_message, send_email, extract_email_address,
                          mark_as_read)
 from email.utils import parsedate_to_datetime
+from shipstation import list_orders as ss_list_orders, order_channel as ss_order_channel
 
 load_dotenv()
 
@@ -54,6 +55,7 @@ st.markdown("""
 
 # Session state defaults
 for _k, _v in (('invoices', []), ('inbox_items', []), ('loaded_uids', set()),
+               ('ss_orders', []), ('loaded_ss', set()),
                ('upload_version', 0), ('user', None)):
     if _k not in st.session_state:
         st.session_state[_k] = _v
@@ -412,6 +414,72 @@ def build_csv_invoice(file_bytes, file_name, doc_key):
             inv['df'] = pd.DataFrame(columns=["Purchase Order Number", "Date of Order", "Ship By Date", "Ship To", "Invoice Address", "Vendor", "Shipping Instructions", "Comments", "Inventory Item", "Description", "Quantity", "Unit Price", "Total"])
     return inv
 
+def _fmt_ss_date(value):
+    """ShipStation ISO date '2026-10-12T13:00:00.0000000' -> '10/12/2026'."""
+    if not value:
+        return ''
+    m = re.match(r'(\d{4})-(\d{2})-(\d{2})', str(value))
+    return f"{int(m.group(2))}/{int(m.group(3))}/{int(m.group(1))}" if m else str(value)
+
+
+def build_shipstation_order_invoice(order, doc_key):
+    """Map a ShipStation API order to a queue invoice dict."""
+    channel = ss_order_channel(order)
+    num = str(order.get('orderNumber') or '')
+    ship_to = order.get('shipTo') or {}
+    ship_str = ', '.join(x for x in [
+        ship_to.get('name'),
+        ship_to.get('street1'),
+        ship_to.get('street2'),
+        ' '.join(p for p in [ship_to.get('city'), ship_to.get('state'),
+                             ship_to.get('postalCode')] if p),
+    ] if x)
+    rows = []
+    for it in (order.get('items') or []):
+        qty = it.get('quantity') or 0
+        try:
+            qty_f = float(qty)
+        except (TypeError, ValueError):
+            qty_f = 0.0
+        try:
+            price_f = float(it.get('unitPrice'))
+        except (TypeError, ValueError):
+            price_f = None
+        rows.append({
+            'Purchase Order Number': num,
+            'Date of Order': _fmt_ss_date(order.get('orderDate')),
+            'Ship By Date': _fmt_ss_date(order.get('shipByDate') or order.get('shipDate')),
+            'Ship To': ship_str,
+            'Invoice Address': '',
+            'Vendor': guess_customer(channel),
+            'Shipping Instructions': order.get('requestedShippingService')
+                                     or order.get('serviceCode') or '',
+            'Comments': f"{channel} order via ShipStation API | status: {order.get('orderStatus', '')}",
+            'Inventory Item': str(it.get('sku') or '').strip(),
+            'Description': str(it.get('name') or '').strip(),
+            'Quantity': qty,
+            'Unit Price': price_f if price_f is not None else '',
+            'Total': round(qty_f * price_f, 2) if price_f is not None else '',
+        })
+    df = pd.DataFrame(rows, columns=[
+        "Purchase Order Number", "Date of Order", "Ship By Date", "Ship To",
+        "Invoice Address", "Vendor", "Shipping Instructions", "Comments",
+        "Inventory Item", "Description", "Quantity", "Unit Price", "Total"])
+    vendors = [v for v in df['Vendor'].unique() if str(v).strip()] if not df.empty else []
+    return {
+        'key': doc_key,
+        'name': f"ShipStation order {num}",
+        'pdf_bytes': None,
+        'pdf_images': [],
+        'raw_csv_df': None,
+        'extracted_text': json.dumps(order, indent=2, default=str)[:20000],
+        'df': df,
+        'customer': vendors[0] if len(vendors) == 1 else '',
+        'email': None,
+        'confirmed': False,
+    }
+
+
 # ---- Login gate (only active when users are configured) ----
 _users = get_users()
 if _users and st.session_state.user is None:
@@ -454,6 +522,7 @@ for _label, _ok in [
     ("Vision OCR", os.getenv('GOOGLE_CREDENTIALS')),
     ("Gemini parser", os.getenv('GEMINI_API_KEY')),
     ("Email inbox", os.getenv('EMAIL_USER') and os.getenv('EMAIL_PASSWORD')),
+    ("ShipStation", os.getenv('SHIPSTATION_API_KEY') and os.getenv('SHIPSTATION_API_SECRET')),
 ]:
     st.sidebar.markdown(f"{'🟢' if _ok else '⚪'} {_label}")
 st.sidebar.caption(f"🗂 {len(st.session_state.invoices)} order(s) in queue")
@@ -595,6 +664,67 @@ if page == "Order Processing":
                     st.session_state.loaded_uids.add(item['uid'])
                     st.session_state.inbox_items = [i for i in st.session_state.inbox_items if i['uid'] != item['uid']]
                     st.rerun()
+
+    st.divider()
+    st.subheader("🛒 ShipStation Orders")
+    ss_key = os.getenv('SHIPSTATION_API_KEY')
+    ss_secret = os.getenv('SHIPSTATION_API_SECRET')
+    if not ss_key or not ss_secret:
+        st.caption("Add SHIPSTATION_API_KEY and SHIPSTATION_API_SECRET in Settings or secrets to pull orders from the API.")
+    else:
+        ss1, ss2, ss3 = st.columns([2, 1, 1])
+        with ss1:
+            ss_status = st.selectbox(
+                "Status",
+                ["awaiting_shipment", "shipped", "awaiting_payment", "on_hold", "(all)"],
+                key='ss_status')
+        with ss2:
+            ss_days = st.number_input("Days back", min_value=1, max_value=90,
+                                      value=7, key='ss_days')
+        with ss3:
+            st.write("")  # align button
+            fetch_clicked = st.button("🔄 Fetch Orders", use_container_width=True)
+        if fetch_clicked:
+            from datetime import datetime, timedelta
+            since = (datetime.now() - timedelta(days=int(ss_days))
+                     ).strftime('%Y-%m-%dT%H:%M:%S')
+            with st.spinner("Fetching ShipStation orders..."):
+                try:
+                    st.session_state.ss_orders = ss_list_orders(
+                        ss_key, ss_secret,
+                        status=None if ss_status == "(all)" else ss_status,
+                        order_date_start=since)
+                    if st.session_state.ss_orders:
+                        st.success(f"Found {len(st.session_state.ss_orders)} order(s)")
+                    else:
+                        st.info("No ShipStation orders matched.")
+                except Exception as e:
+                    st.error(f"ShipStation fetch failed: {e}")
+
+        for order in st.session_state.ss_orders:
+            oid = str(order.get('orderId') or order.get('orderKey') or '')
+            if oid in st.session_state.loaded_ss:
+                continue
+            try:
+                oc = st.container(border=True)
+            except TypeError:
+                oc = st.container()
+            with oc:
+                oc_cols = st.columns([5, 1])
+                with oc_cols[0]:
+                    n_items = len(order.get('items') or [])
+                    st.write(f"**{order.get('orderNumber', '(no number)')}** — "
+                             f"{ss_order_channel(order)}")
+                    st.caption(
+                        f"{(order.get('shipTo') or {}).get('name', '')} • "
+                        f"{_fmt_ss_date(order.get('orderDate'))} • "
+                        f"{order.get('orderStatus', '')} • {n_items} item(s)")
+                with oc_cols[1]:
+                    if st.button("Load", key=f"ss_load_{oid}"):
+                        st.session_state.invoices.append(
+                            build_shipstation_order_invoice(order, ('shipstation', oid)))
+                        st.session_state.loaded_ss.add(oid)
+                        st.rerun()
 
     st.divider()
     st.subheader("Upload Order File(s)")
@@ -1239,7 +1369,8 @@ elif page == "Settings":
     st.divider()
     
     st.subheader("Email Inbox (IMAP)")
-    st.info("Read-only inbox check: the app never marks emails as read, moves, or deletes anything. "
+    st.info("Reading is non-destructive: the app only marks an email read after it has been "
+            "loaded into the queue or explicitly ignored. Nothing is moved or deleted. "
             "For Yahoo, use an **app password** (Yahoo Account Security → Generate app password) — "
             "your regular password will be rejected.")
 
@@ -1268,6 +1399,34 @@ elif page == "Settings":
         })
         st.success("Email settings saved")
         st.rerun()
+
+    st.divider()
+
+    st.subheader("ShipStation API")
+    st.info("Generate an **API key + secret** in ShipStation: "
+            "Settings → Account → API Settings. This is separate from your login "
+            "email/password, and requires a Standard plan or higher.")
+
+    cur_ss_key = os.getenv('SHIPSTATION_API_KEY', '')
+    cur_ss_secret = os.getenv('SHIPSTATION_API_SECRET', '')
+    if cur_ss_key and cur_ss_secret:
+        st.success("✅ ShipStation API keys configured")
+    else:
+        st.warning("⚠️ ShipStation API keys not configured")
+
+    ss_key_in = st.text_input("ShipStation API Key", value=cur_ss_key)
+    ss_secret_in = st.text_input("ShipStation API Secret", value=cur_ss_secret,
+                                 type='password')
+    if st.button("Save ShipStation Keys"):
+        if ss_key_in and ss_secret_in:
+            save_env_vars({
+                'SHIPSTATION_API_KEY': ss_key_in,
+                'SHIPSTATION_API_SECRET': ss_secret_in,
+            })
+            st.success("ShipStation keys saved")
+            st.rerun()
+        else:
+            st.warning("Enter both the API key and secret")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### Quick Links")
