@@ -64,6 +64,7 @@ st.markdown("""
 for _k, _v in (('invoices', []), ('inbox_items', []), ('loaded_uids', set()),
                ('ss_orders', []), ('loaded_ss', set()), ('ss_store_map', {}),
                ('ss_carriers', []), ('ss_labels', {}), ('ss_opts_cache', {}),
+               ('ss_selected', set()), ('ss_batch_pdf', None),
                ('upload_version', 0), ('user', None)):
     if _k not in st.session_state:
         st.session_state[_k] = _v
@@ -619,6 +620,19 @@ def build_sage_sales_orders(df):
     return pd.DataFrame(out, columns=SAGE_SO_COLUMNS)
 
 
+def _merge_pdfs(pdf_blobs):
+    """Merge a list of PDF byte-strings into a single PDF."""
+    from pypdf import PdfReader, PdfWriter
+    from io import BytesIO
+    writer = PdfWriter()
+    for b in pdf_blobs:
+        for pg in PdfReader(BytesIO(b)).pages:
+            writer.add_page(pg)
+    buf = BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
 # ---- Login gate (only active when users are configured) ----
 _users = get_users()
 if _users and st.session_state.user is None:
@@ -856,7 +870,7 @@ if page == "Order Processing":
             except TypeError:
                 oc = st.container()
             with oc:
-                oc_cols = st.columns([5, 1])
+                oc_cols = st.columns([4, 1, 1])
                 with oc_cols[0]:
                     n_items = len(order.get('items') or [])
                     st.write(f"**{order.get('orderNumber', '(no number)')}** — "
@@ -872,6 +886,14 @@ if page == "Order Processing":
                                                             st.session_state.ss_store_map))
                         st.session_state.loaded_ss.add(oid)
                         st.rerun()
+                with oc_cols[2]:
+                    if oid not in st.session_state.ss_labels:
+                        _sel = st.checkbox("Batch", key=f"sel_{oid}",
+                                           help="Include in batch label printing")
+                        if _sel:
+                            st.session_state.ss_selected.add(oid)
+                        else:
+                            st.session_state.ss_selected.discard(oid)
 
                 # --- Shipping label (billable: buys postage, marks shipped,
                 #     notifies the marketplace) ---
@@ -944,6 +966,101 @@ if page == "Order Processing":
                                             st.rerun()
                                         except Exception as e:
                                             st.error(f"Label failed: {e}")
+
+        # --- Batch label printing ---
+        _sel_orders = [
+            o for o in st.session_state.ss_orders
+            if str(o.get('orderId') or o.get('orderKey') or '') in st.session_state.ss_selected
+            and str(o.get('orderId') or o.get('orderKey') or '') not in st.session_state.ss_labels]
+        if st.session_state.ss_selected or st.session_state.ss_batch_pdf:
+            st.divider()
+            st.subheader("🏷️ Batch Labels")
+            if st.session_state.ss_batch_pdf:
+                st.download_button(
+                    "📥 Download batch labels PDF",
+                    st.session_state.ss_batch_pdf,
+                    file_name="batch-labels.pdf",
+                    mime="application/pdf",
+                    type="primary")
+                if st.button("Clear batch"):
+                    st.session_state.ss_batch_pdf = None
+                    st.session_state.ss_selected = set()
+                    st.rerun()
+            elif not _sel_orders:
+                st.info("Selected orders already have labels.")
+            else:
+                st.caption(f"{len(_sel_orders)} order(s) selected — one carrier/service/package "
+                           "applies to all; each order uses its own recorded weight.")
+                if not st.session_state.ss_carriers:
+                    try:
+                        st.session_state.ss_carriers = ss_list_carriers(ss_key, ss_secret)
+                    except Exception as e:
+                        st.error(f"Could not load carriers: {e}")
+                _carriers = {c.get('name', c.get('code')): c.get('code')
+                             for c in st.session_state.ss_carriers}
+                if _carriers:
+                    bc1, bc2, bc3 = st.columns(3)
+                    with bc1:
+                        _bcname = st.selectbox("Carrier", list(_carriers), key='batch_carrier')
+                    _bccode = _carriers[_bcname]
+                    try:
+                        _bsvc = st.session_state.ss_opts_cache.get(_bccode + '_svc') or \
+                            ss_list_services(ss_key, ss_secret, _bccode)
+                        st.session_state.ss_opts_cache[_bccode + '_svc'] = _bsvc
+                        _bpkg = st.session_state.ss_opts_cache.get(_bccode + '_pkg') or \
+                            ss_list_packages(ss_key, ss_secret, _bccode)
+                        st.session_state.ss_opts_cache[_bccode + '_pkg'] = _bpkg
+                    except Exception as e:
+                        st.error(f"Carrier options failed: {e}")
+                        _bsvc, _bpkg = [], []
+                    _bsvc_map = {s.get('name', s.get('code')): s.get('code') for s in _bsvc}
+                    _bpkg_map = {p.get('name', p.get('code')): p.get('code') for p in _bpkg}
+                    with bc2:
+                        _bsname = st.selectbox("Service", list(_bsvc_map) or ['(none)'],
+                                               key='batch_svc')
+                    with bc3:
+                        _bpname = st.selectbox("Package", list(_bpkg_map) or ['(none)'],
+                                               key='batch_pkg')
+                    bw1, bw2 = st.columns(2)
+                    with bw1:
+                        _bwt = st.number_input("Default weight (oz) for orders without one",
+                                               min_value=0.0, value=16.0, key='batch_w')
+                    with bw2:
+                        _btest = st.checkbox("Test labels (no postage)", value=False,
+                                             key='batch_test')
+                    if st.button(f"Create {len(_sel_orders)} label(s)", type="primary",
+                                 key='batch_go'):
+                        if not _bsvc_map or not _bpkg_map:
+                            st.error("Pick a carrier that has services/packages available.")
+                        else:
+                            results, pdfs = [], []
+                            prog = st.progress(0, text="Creating labels...")
+                            for bi, o in enumerate(_sel_orders):
+                                oid2 = str(o.get('orderId') or o.get('orderKey') or '')
+                                wt = (o.get('weight') or {}).get('value') or _bwt
+                                try:
+                                    resp = ss_create_label(
+                                        ss_key, ss_secret, oid2,
+                                        carrier_code=_bccode,
+                                        service_code=_bsvc_map[_bsname],
+                                        package_code=_bpkg_map[_bpname],
+                                        weight_oz=wt, test=_btest)
+                                    pdf = label_pdf_bytes(resp)
+                                    if pdf[:4] == b'%PDF':
+                                        pdfs.append(pdf)
+                                    st.session_state.ss_labels[oid2] = {
+                                        'tracking': resp.get('trackingNumber', ''),
+                                        'pdf': pdf}
+                                    results.append(f"✅ {o.get('orderNumber')}: {resp.get('trackingNumber', '')}")
+                                except Exception as e:
+                                    results.append(f"❌ {o.get('orderNumber')}: {e}")
+                                prog.progress((bi + 1) / len(_sel_orders))
+                            prog.empty()
+                            if pdfs:
+                                st.session_state.ss_batch_pdf = _merge_pdfs(pdfs)
+                            for line in results:
+                                st.write(line)
+                            st.rerun()
 
     st.divider()
     st.subheader("Upload Order File(s)")
