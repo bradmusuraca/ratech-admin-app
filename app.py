@@ -11,7 +11,9 @@ from email_inbox import (list_unseen_orders, fetch_pdf_from_message,
                          fetch_body_from_message, send_email, extract_email_address,
                          mark_as_read)
 from email.utils import parsedate_to_datetime
-from shipstation import list_orders as ss_list_orders, order_channel as ss_order_channel
+from shipstation import (list_orders as ss_list_orders,
+                         list_stores as ss_list_stores,
+                         order_channel as ss_order_channel)
 
 load_dotenv()
 
@@ -55,7 +57,7 @@ st.markdown("""
 
 # Session state defaults
 for _k, _v in (('invoices', []), ('inbox_items', []), ('loaded_uids', set()),
-               ('ss_orders', []), ('loaded_ss', set()),
+               ('ss_orders', []), ('loaded_ss', set()), ('ss_store_map', {}),
                ('upload_version', 0), ('user', None)):
     if _k not in st.session_state:
         st.session_state[_k] = _v
@@ -422,9 +424,9 @@ def _fmt_ss_date(value):
     return f"{int(m.group(2))}/{int(m.group(3))}/{int(m.group(1))}" if m else str(value)
 
 
-def build_shipstation_order_invoice(order, doc_key):
+def build_shipstation_order_invoice(order, doc_key, store_map=None):
     """Map a ShipStation API order to a queue invoice dict."""
-    channel = ss_order_channel(order)
+    channel = ss_order_channel(order, store_map)
     num = str(order.get('orderNumber') or '')
     ship_to = order.get('shipTo') or {}
     ship_str = ', '.join(x for x in [
@@ -690,6 +692,13 @@ if page == "Order Processing":
                      ).strftime('%Y-%m-%dT%H:%M:%S')
             with st.spinner("Fetching ShipStation orders..."):
                 try:
+                    try:
+                        stores = ss_list_stores(ss_key, ss_secret)
+                        st.session_state.ss_store_map = {
+                            s.get('storeId'): s.get('marketplaceName') or s.get('storeName')
+                            for s in stores}
+                    except Exception:
+                        pass  # store names are a nicety, not required
                     st.session_state.ss_orders = ss_list_orders(
                         ss_key, ss_secret,
                         status=None if ss_status == "(all)" else ss_status,
@@ -714,7 +723,7 @@ if page == "Order Processing":
                 with oc_cols[0]:
                     n_items = len(order.get('items') or [])
                     st.write(f"**{order.get('orderNumber', '(no number)')}** — "
-                             f"{ss_order_channel(order)}")
+                             f"{ss_order_channel(order, st.session_state.ss_store_map)}")
                     st.caption(
                         f"{(order.get('shipTo') or {}).get('name', '')} • "
                         f"{_fmt_ss_date(order.get('orderDate'))} • "
@@ -722,7 +731,8 @@ if page == "Order Processing":
                 with oc_cols[1]:
                     if st.button("Load", key=f"ss_load_{oid}"):
                         st.session_state.invoices.append(
-                            build_shipstation_order_invoice(order, ('shipstation', oid)))
+                            build_shipstation_order_invoice(order, ('shipstation', oid),
+                                                            st.session_state.ss_store_map))
                         st.session_state.loaded_ss.add(oid)
                         st.rerun()
 

@@ -38,19 +38,30 @@ def list_orders(api_key: str, api_secret: str,
     return orders
 
 
-def order_channel(order: Dict) -> str:
+def list_stores(api_key: str, api_secret: str) -> List[Dict]:
+    """Return connected stores (marketplaces) - used to map storeId to a name."""
+    resp = requests.get(f'{API_BASE}/stores', auth=(api_key, api_secret),
+                        timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def order_channel(order: Dict, store_map: Optional[Dict] = None) -> str:
     """Best-effort marketplace detection for a ShipStation order."""
-    src = str((order.get('advancedOptions') or {}).get('source') or '')
-    num = str(order.get('orderNumber') or '')
-    sl = src.lower()
-    if 'amazon' in sl:
-        return 'Amazon'
-    if 'ebay' in sl:
-        return 'eBay'
-    # Amazon IDs look like 114-3315411-3045845; eBay like 17-15192-30111
     import re
+    num = str(order.get('orderNumber') or '')
+    adv = order.get('advancedOptions') or {}
+    src = str(adv.get('source') or '')
+    store_name = str((store_map or {}).get(adv.get('storeId')) or '')
+    for cand in (src, store_name):
+        cl = cand.lower()
+        if 'amazon' in cl:
+            return 'Amazon'
+        if 'ebay' in cl:
+            return 'eBay'
+    # Amazon IDs look like 114-3315411-3045845; eBay like 17-15192-30111
     if re.match(r'^\d{3}-\d{7}-\d{7}$', num):
         return 'Amazon'
     if re.match(r'^\d{2}-\d{5}-\d{5}$', num):
         return 'eBay'
-    return src or 'ShipStation'
+    return store_name or src or 'ShipStation'
