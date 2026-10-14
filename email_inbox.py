@@ -154,8 +154,11 @@ def fetch_body_from_message(host, port, user, password, uid) -> str:
         if html_parts:
             import re as _re
             html = '\n'.join(html_parts)
+            # Drop non-content blocks and comments before tag-stripping
+            html = _re.sub(r'(?is)<(style|script|head)[^>]*>.*?</\1>', '', html)
+            html = _re.sub(r'(?is)<!--.*?-->', '', html)
             html = _re.sub(r'(?i)<br\s*/?>', '\n', html)
-            html = _re.sub(r'(?i)</(?:p|div|tr|li)>', '\n', html)
+            html = _re.sub(r'(?i)</(?:p|div|tr|li|td|th|h\d)>', '\n', html)
             html = _re.sub(r'<[^>]+>', '', html)
             from html import unescape
             return unescape(html)

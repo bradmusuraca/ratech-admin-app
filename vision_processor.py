@@ -219,6 +219,8 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
     """
     import re
     items = []
+    # Normalize HTML entities that can leak through email body conversion
+    extracted_text = html.unescape(extracted_text)
     lines = extracted_text.split('\n')
     full_text = ' '.join(lines)
 
@@ -380,27 +382,50 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
             if delivery_match:
                 order_info['Ship By Date'] = delivery_match.group(1)
         
-        # Look for Ship To address
-        ship_to_match = re.search(r'Ship To:\s*\n\s*(.*?)\s*\n\s*(?:PH|FX)\s*:', extracted_text, re.DOTALL)
-        if ship_to_match:
-            ship_to = ship_to_match.group(1).strip()
-            # Drop any FX:/PH: lines that were captured, and avoid
-            # duplicating the SUMMIT RACING header line
-            ship_to = '\n'.join(l for l in ship_to.split('\n')
-                                if not re.match(r'\s*(?:PH|FX)\s*[:]', l))
-            if 'SUMMIT' not in ship_to.upper():
-                ship_to = 'SUMMIT RACING\n' + ship_to
-            order_info['Ship To'] = ship_to
-        
-        # Look for Bill To address
-        bill_to_match = re.search(r'Bill To:\s*\n\s*(.*?)\s*\n\s*PH:', extracted_text, re.DOTALL)
-        if bill_to_match:
-            order_info['Invoice Address'] = bill_to_match.group(1).strip()
-        
-        # Look for Vendor (Purchase Order To)
-        vendor_match = re.search(r'Purchase Order To:\s*\n\s*\((.*?)\)\s*([^\n]+)', extracted_text)
-        if vendor_match:
-            order_info['Vendor'] = f"{vendor_match.group(1)} {vendor_match.group(2).strip()}"
+        # Shipping info comes in two layouts: labels with inline values
+        # (PDF), or all four labels stacked then the value blocks in
+        # order From / Bill To / Ship To / Purchase Order To (HTML email
+        # flattened to text), each block ending with PH:/FX: lines.
+        stacked = re.search(
+            r'From:\s*\n\s*Bill To:\s*\n\s*Ship To:\s*\n\s*Purchase Order To:',
+            extracted_text)
+        if stacked:
+            tail = extracted_text[stacked.end():]
+            segs = re.split(r'(?im)^\s*(?:PH|FX)\s*:[^\n]*\n?', tail)
+            blocks = [s.strip() for s in segs if s.strip()]
+            if len(blocks) >= 2:
+                order_info['Invoice Address'] = blocks[1]
+            if len(blocks) >= 3:
+                ship_to = blocks[2]
+                if 'SUMMIT' not in ship_to.upper():
+                    ship_to = 'SUMMIT RACING\n' + ship_to
+                order_info['Ship To'] = ship_to
+            if len(blocks) >= 4:
+                vm = re.match(r'\((.*?)\)\s*([^\n]+)', blocks[3])
+                order_info['Vendor'] = (f"{vm.group(1)} {vm.group(2).strip()}"
+                                        if vm else blocks[3].split('\n')[0].strip())
+        else:
+            # Look for Ship To address
+            ship_to_match = re.search(r'Ship To:\s*\n\s*(.*?)\s*\n\s*(?:PH|FX)\s*:', extracted_text, re.DOTALL)
+            if ship_to_match:
+                ship_to = ship_to_match.group(1).strip()
+                # Drop any FX:/PH: lines that were captured, and avoid
+                # duplicating the SUMMIT RACING header line
+                ship_to = '\n'.join(l for l in ship_to.split('\n')
+                                    if not re.match(r'\s*(?:PH|FX)\s*[:]', l))
+                if 'SUMMIT' not in ship_to.upper():
+                    ship_to = 'SUMMIT RACING\n' + ship_to
+                order_info['Ship To'] = ship_to
+
+            # Look for Bill To address
+            bill_to_match = re.search(r'Bill To:\s*\n\s*(.*?)\s*\n\s*PH:', extracted_text, re.DOTALL)
+            if bill_to_match:
+                order_info['Invoice Address'] = bill_to_match.group(1).strip()
+
+            # Look for Vendor (Purchase Order To)
+            vendor_match = re.search(r'Purchase Order To:\s*\n\s*\((.*?)\)\s*([^\n]+)', extracted_text)
+            if vendor_match:
+                order_info['Vendor'] = f"{vendor_match.group(1)} {vendor_match.group(2).strip()}"
         
         # Look for comments
         comments_match = re.search(r'Comments\s*\n\s*(.*?)\s*\n\s*Order Items', extracted_text, re.DOTALL)
@@ -411,7 +436,9 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
         # Layout: "0001" / "RAT-xxxx" / qty / description... / $cost / 0% / $ext
         # Some descriptions are split: first line appears BEFORE the item number
         # and the last line AFTER the extended price.
-        tbl_lines = [l.strip() for l in extracted_text.split('\n')]
+        # Drop blank lines: the HTML-table email layout flattens with empty
+        # lines between every field, which would break the anchor detection.
+        tbl_lines = [l.strip() for l in extracted_text.split('\n') if l.strip()]
 
         # Start scanning after the "Ext Price" column header
         start_idx = 0
