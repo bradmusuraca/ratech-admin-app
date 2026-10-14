@@ -180,6 +180,26 @@ def guess_customer(text):
     return ''
 
 
+def resolve_vendor(inv):
+    """Ensure the order's Vendor column holds a Sage customer number.
+    Orders loaded before a number was entered keep the raw parsed vendor
+    text (e.g. 'RAT RATECH'); re-run alias matching on the document text
+    so the number fills in without re-loading the order."""
+    df = inv.get('df')
+    if df is None or df.empty or 'Vendor' not in df.columns:
+        return
+    cust_numbers = {str(n) for n in load_customers()['Customer Number']
+                    if str(n).strip()}
+    vend = [v for v in df['Vendor'].astype(str).unique() if v.strip()]
+    if vend and all(v in cust_numbers for v in vend):
+        return
+    gc = guess_customer(f"{inv.get('name', '')}\n{inv.get('extracted_text') or ''}\n"
+                        f"{(inv.get('email') or {}).get('sender', '')}")
+    if gc:
+        df['Vendor'] = gc
+        inv['customer'] = gc
+
+
 EMAIL_RULES_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'email_rules.csv')
 
 
@@ -1173,6 +1193,7 @@ if page == "Order Processing":
 
         for idx, inv in enumerate(st.session_state.invoices):
             wkey = str(inv['key'])
+            resolve_vendor(inv)
             try:
                 card = st.container(border=True)
             except TypeError:
@@ -1269,7 +1290,7 @@ if page == "Order Processing":
                     )
                     inv['df'] = edited_df
 
-                    qc1, qc2 = st.columns(2)
+                    qc1, qc2, qc3 = st.columns(3)
                     with qc1:
                         if st.button("📋 Copy Header to All Rows", key=f"copyhdr_{wkey}"):
                             if not edited_df.empty:
@@ -1293,6 +1314,16 @@ if page == "Order Processing":
                                             new_row[col] = first_value
                                 inv['df'] = pd.concat([edited_df, pd.DataFrame([new_row])], ignore_index=True)
                                 st.rerun()
+                    with qc3:
+                        st.download_button(
+                            "📥 This order → SO.CSV",
+                            data=build_sage_sales_orders(edited_df).to_csv(index=False)
+                                 if not edited_df.empty else "",
+                            file_name=f"SO_{inv['name'].rsplit('.', 1)[0]}.csv",
+                            mime="text/csv",
+                            key=f"ordercsv_{wkey}",
+                            disabled=edited_df.empty,
+                        )
 
                 # Order confirmation - only for orders loaded from the inbox
                 if inv.get('email'):
