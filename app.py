@@ -198,6 +198,9 @@ def resolve_vendor(inv):
     if gc:
         df['Vendor'] = gc
         inv['customer'] = gc
+        # Bump the editor key: data_editor caches widget state per key, so
+        # the stale vendor string would otherwise overwrite this fix.
+        inv['editor_version'] = inv.get('editor_version', 0) + 1
 
 
 EMAIL_RULES_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'email_rules.csv')
@@ -1286,7 +1289,7 @@ if page == "Order Processing":
                         inv['df'],
                         num_rows="dynamic",
                         use_container_width=True,
-                        key=f"editor_{wkey}"
+                        key=f"editor_{wkey}_{inv.get('editor_version', 0)}"
                     )
                     inv['df'] = edited_df
 
@@ -1369,6 +1372,10 @@ if page == "Order Processing":
             st.markdown("")
 
         # --- Combined validation & export ---
+        # Last-chance vendor resolution so the export always carries Sage
+        # customer numbers even if a card's table state is stale.
+        for inv in st.session_state.invoices:
+            resolve_vendor(inv)
         all_dfs = [inv['df'] for inv in st.session_state.invoices
                    if inv['df'] is not None and not inv['df'].empty]
         if all_dfs:
