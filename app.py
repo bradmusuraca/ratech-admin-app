@@ -20,6 +20,9 @@ from shipstation import (list_orders as ss_list_orders,
                          mark_as_shipped as ss_mark_as_shipped,
                          label_pdf_bytes, label_error_message, order_web_url,
                          order_channel as ss_order_channel)
+from sage_queue import (is_configured as sage_queue_configured,
+                        queue_orders as sage_queue_push,
+                        queue_status as sage_queue_status)
 
 load_dotenv()
 
@@ -688,6 +691,7 @@ for _label, _ok in [
     ("Gemini parser", os.getenv('GEMINI_API_KEY')),
     ("Email inbox", os.getenv('EMAIL_USER') and os.getenv('EMAIL_PASSWORD')),
     ("ShipStation", os.getenv('SHIPSTATION_API_KEY') and os.getenv('SHIPSTATION_API_SECRET')),
+    ("Sage queue", sage_queue_configured()),
 ]:
     st.sidebar.markdown(f"{'🟢' if _ok else '⚪'} {_label}")
 st.sidebar.caption(f"🗂 {len(st.session_state.invoices)} order(s) in queue")
@@ -1401,7 +1405,7 @@ if page == "Order Processing":
                                "- override in Settings if needed.")
                 with st.expander("Preview SO.CSV data (Sage format)", expanded=True):
                     st.dataframe(sage_df, use_container_width=True)
-                ec1, ec2 = st.columns(2)
+                ec1, ec2, ec3 = st.columns(3)
                 with ec1:
                     st.download_button(
                         label="📥 Download SO.CSV for Sage 50",
@@ -1412,10 +1416,45 @@ if page == "Order Processing":
                         use_container_width=True
                     )
                 with ec2:
+                    if sage_queue_configured():
+                        if st.button("🚀 Send to Sage", use_container_width=True,
+                                     help="Queue these orders for the desktop "
+                                          "bridge to post into Sage 50"):
+                            try:
+                                sent, skipped = sage_queue_push(sage_df)
+                                msg = f"Queued {len(sent)} order(s) for Sage."
+                                if skipped:
+                                    msg += (f" {len(skipped)} already in the queue "
+                                            "(unchanged orders are never re-posted).")
+                                st.success(msg)
+                            except Exception as e:
+                                st.error(f"Queue push failed: {e}")
+                    else:
+                        st.caption("Supabase not configured - see sage_bridge/README.md")
+                with ec3:
                     if st.button("🧹 Clear All Orders", use_container_width=True):
                         st.session_state.invoices = []
                         st.session_state.upload_version += 1
                         st.rerun()
+
+                if sage_queue_configured():
+                    with st.expander("📤 Sage queue status"):
+                        try:
+                            rows = sage_queue_status()
+                            if rows:
+                                qdf = pd.DataFrame([{
+                                    'Status': r['status'],
+                                    'Sage SO #': r.get('sage_order_no') or '',
+                                    'Customer PO': (r.get('payload') or {}).get('customer_po', ''),
+                                    'Error': (r.get('error') or '')[:120],
+                                    'Queued': str(r.get('created_at', ''))[:19],
+                                } for r in rows])
+                                st.dataframe(qdf, use_container_width=True,
+                                             hide_index=True)
+                            else:
+                                st.caption("Queue is empty.")
+                        except Exception as e:
+                            st.error(f"Could not load queue: {e}")
 
 elif page == "Customers":
     st.header("👥 Customers")
