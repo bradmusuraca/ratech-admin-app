@@ -89,3 +89,34 @@ class SageComClient:
 
         so.Save()
         return getattr(so, f.get('order_number', 'SalesOrderNumber'), '')
+
+    def update_sales_order(self, so_number, lines):
+        """Open an existing sales order and rewrite line quantities
+        (short-pack adjustments from the floor). Lines is a list of
+        {'item_id', 'quantity'}; matched by item_id.
+
+        NOTE: existing-record open/load semantics vary by SDK build -
+        run probe.py and adjust (Load() vs. setting the key then Read).
+        """
+        f = FIELD_MAP
+        so = self._company.CreateObject('PTOWSalesOrder')
+        # Load existing order - candidate patterns, first that works wins.
+        loaded = False
+        for meth in ('Load', 'Open', 'Read'):
+            if hasattr(so, meth):
+                try:
+                    getattr(so, meth)(so_number)
+                    loaded = True
+                    break
+                except Exception:
+                    continue
+        if not loaded:
+            setattr(so, f.get('order_number', 'SalesOrderNumber'), so_number)
+            if hasattr(so, 'Load'):
+                so.Load()
+        want = {str(l['item_id']): float(l['quantity']) for l in lines}
+        for ln in getattr(so, f['lines_collection']):
+            iid = str(getattr(ln, f['line_item_id']))
+            if iid in want:
+                setattr(ln, f['line_quantity'], want[iid])
+        so.Save()

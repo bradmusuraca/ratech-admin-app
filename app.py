@@ -22,7 +22,9 @@ from shipstation import (list_orders as ss_list_orders,
                          order_channel as ss_order_channel)
 from sage_queue import (is_configured as sage_queue_configured,
                         queue_orders as sage_queue_push,
-                        queue_status as sage_queue_status)
+                        queue_status as sage_queue_status,
+                        create_open_orders, list_open_orders,
+                        update_packed, queue_qty_update)
 
 load_dotenv()
 
@@ -73,7 +75,8 @@ for _k, _v in (('invoices', []), ('inbox_items', []), ('loaded_uids', set()),
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
-ALL_PAGES = ["Order Processing", "Customers", "Inventory Management", "Settings"]
+ALL_PAGES = ["Order Processing", "Open Sales Orders", "Customers",
+             "Inventory Management", "Settings"]
 
 
 def get_users():
@@ -1486,6 +1489,9 @@ if page == "Order Processing":
                                 if skipped:
                                     msg += (f" {len(skipped)} already in the queue "
                                             "(unchanged orders are never re-posted).")
+                                packed_new, _ = create_open_orders(sage_df)
+                                if packed_new:
+                                    msg += f" {len(packed_new)} released to packing."
                                 st.success(msg)
                             except Exception as e:
                                 st.error(f"Queue push failed: {e}")
@@ -1496,6 +1502,19 @@ if page == "Order Processing":
                         st.session_state.invoices = []
                         st.session_state.upload_version += 1
                         st.rerun()
+
+                if sage_queue_configured():
+                    if st.button("📋 Release to Packing List",
+                                 help="Send these orders to the Open Sales Orders "
+                                      "packing list without queueing a Sage post "
+                                      "(for CSV/manual import)"):
+                        try:
+                            packed_new, packed_skip = create_open_orders(sage_df)
+                            st.success(f"Released {len(packed_new)} order(s) to packing."
+                                       + (f" {len(packed_skip)} already listed."
+                                          if packed_skip else ""))
+                        except Exception as e:
+                            st.error(f"Could not release: {e}")
 
                 if sage_queue_configured():
                     with st.expander("📤 Sage queue status"):
@@ -1515,6 +1534,69 @@ if page == "Order Processing":
                                 st.caption("Queue is empty.")
                         except Exception as e:
                             st.error(f"Could not load queue: {e}")
+
+elif page == "Open Sales Orders":
+    st.header("📦 Open Sales Orders")
+    st.caption("Packing list: enter the quantity actually packaged on each "
+               "line, then mark the order. Short orders are pushed back to "
+               "Sage automatically.")
+
+    if not sage_queue_configured():
+        st.warning("Supabase not configured - see sage_bridge/README.md")
+    else:
+        show_done = st.checkbox("Show completed orders", value=False)
+        try:
+            open_orders = list_open_orders(include_done=show_done)
+        except Exception as e:
+            open_orders = []
+            st.error(f"Could not load open orders: {e}")
+        if not open_orders:
+            st.info("No open sales orders.")
+        badge = {'open': '🟡', 'short': '🟠', 'complete': '✅'}
+        for o in open_orders:
+            so_no = o.get('sage_order_no') or '—'
+            title = (f"{badge.get(o['status'], '⚪')} SO {so_no} · "
+                     f"{o.get('customer_id', '')} · {o.get('customer_po', '')}")
+            if o.get('packed_by'):
+                title += f" · packed by {o['packed_by']}"
+            with st.expander(title, expanded=(o['status'] != 'complete')):
+                df = pd.DataFrame(o.get('lines') or []).rename(
+                    columns={'item_id': 'Item', 'description': 'Description',
+                             'qty_required': 'Required', 'qty_packed': 'Packed'})
+                ed = st.data_editor(
+                    df, use_container_width=True,
+                    key=f"open_{o['order_key']}",
+                    disabled=(o['status'] == 'complete'))
+                req = pd.to_numeric(ed['Required'], errors='coerce').fillna(0)
+                packed = pd.to_numeric(ed['Packed'], errors='coerce').fillna(0)
+                any_short = bool((packed < req).any())
+                packed_by = ((st.session_state.user or {}).get('name', '')
+                             if st.session_state.get('user') else '')
+                if st.button(
+                        "⚠️ Mark Short — update Sage" if any_short else "✅ Mark Complete",
+                        key=f"done_{o['order_key']}", type='primary',
+                        disabled=(o['status'] == 'complete')):
+                    try:
+                        new_lines = [{'item_id': r['Item'],
+                                      'description': r['Description'],
+                                      'qty_required': r['Required'],
+                                      'qty_packed': r['Packed']}
+                                     for _, r in ed.iterrows()]
+                        update_packed(o['order_key'], new_lines,
+                                      'short' if any_short else 'complete',
+                                      packed_by=packed_by)
+                        if any_short and o.get('sage_order_no'):
+                            queue_qty_update(o['order_key'], o['sage_order_no'],
+                                             new_lines)
+                            st.warning("Marked short — quantity update queued for Sage.")
+                        elif any_short:
+                            st.warning("Marked short — Sage SO number not known yet; "
+                                       "the office will need to enter this manually.")
+                        else:
+                            st.success("Marked complete.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Could not save: {e}")
 
 elif page == "Customers":
     st.header("👥 Customers")

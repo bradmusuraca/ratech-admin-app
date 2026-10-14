@@ -15,6 +15,7 @@ import json
 import requests
 
 TABLE = 'sage_order_queue'
+OPEN_TABLE = 'open_orders'
 
 
 def is_configured():
@@ -30,10 +31,10 @@ def _headers():
     }
 
 
-def _url(**params):
+def _url(table=TABLE, **params):
     base = os.getenv('SUPABASE_URL', '').rstrip('/')
     q = '&'.join(f'{k}={v}' for k, v in params.items())
-    return f'{base}/rest/v1/{TABLE}' + (f'?{q}' if q else '')
+    return f'{base}/rest/v1/{table}' + (f'?{q}' if q else '')
 
 
 def _order_key(tx):
@@ -91,6 +92,7 @@ def queue_orders(sage_df):
         tx['order_key'] = _order_key(tx)
         rows.append({
             'order_key': tx['order_key'],
+            'job_type': 'create',
             'status': 'pending',
             'payload': tx,
         })
@@ -113,3 +115,78 @@ def queue_status(limit=25):
         headers=_headers(), timeout=20)
     resp.raise_for_status()
     return resp.json()
+
+
+# ---- Open sales orders (packing list) ----
+
+def create_open_orders(sage_df):
+    """Create packing-list rows for each Sage transaction.
+    Returns (inserted, skipped) order_key lists."""
+    txs = transactions_from_sage_df(sage_df)
+    rows = []
+    for tx in txs:
+        key = _order_key(tx)
+        rows.append({
+            'order_key': key,
+            'customer_id': tx['customer_id'],
+            'customer_po': tx['customer_po'],
+            'status': 'open',
+            'lines': [{
+                'item_id': l['item_id'],
+                'description': l['description'],
+                'qty_required': l['quantity'],
+                'qty_packed': l['quantity'],
+            } for l in tx['lines']],
+        })
+    if not rows:
+        return [], []
+    resp = requests.post(
+        _url(OPEN_TABLE),
+        headers={**_headers(), 'Prefer': 'resolution=ignore-duplicates,return=representation'},
+        json=rows, timeout=20)
+    resp.raise_for_status()
+    inserted = {r['order_key'] for r in resp.json()} if resp.text else set()
+    return ([r['order_key'] for r in rows if r['order_key'] in inserted],
+            [r['order_key'] for r in rows if r['order_key'] not in inserted])
+
+
+def list_open_orders(include_done=False, limit=50):
+    """Packing-list rows, oldest first. open/short only unless include_done."""
+    params = {'order': 'created_at.asc', 'limit': str(limit),
+              'select': 'order_key,customer_id,customer_po,status,lines,sage_order_no,packed_by,created_at'}
+    if not include_done:
+        params['status'] = 'in.(open,short)'
+    resp = requests.get(_url(OPEN_TABLE, **params), headers=_headers(), timeout=20)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def update_packed(order_key, lines, status, packed_by=''):
+    """Write packed quantities + status back to an open order."""
+    resp = requests.patch(
+        _url(OPEN_TABLE, order_key=f'eq.{order_key}'),
+        headers=_headers(),
+        json={'lines': lines, 'status': status, 'packed_by': packed_by,
+              'updated_at': 'now()'},
+        timeout=20)
+    resp.raise_for_status()
+
+
+def queue_qty_update(order_key, sage_order_no, lines):
+    """Queue a Sage-side quantity update for a short-packed order."""
+    import hashlib as _h
+    upd_key = f"{order_key[:20]}-upd-{_h.sha1(str(lines).encode()).hexdigest()[:8]}"
+    resp = requests.post(
+        _url(),
+        headers={**_headers(), 'Prefer': 'resolution=ignore-duplicates,return=representation'},
+        json=[{
+            'order_key': upd_key,
+            'job_type': 'qty_update',
+            'status': 'pending',
+            'payload': {'sage_order_no': sage_order_no,
+                        'parent_order': order_key,
+                        'lines': [{'item_id': l['item_id'],
+                                   'quantity': l['qty_packed']} for l in lines]},
+        }], timeout=20)
+    resp.raise_for_status()
+    return upd_key

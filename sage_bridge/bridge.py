@@ -42,7 +42,7 @@ def fetch_pending():
     r = requests.get(
         f'{SUPABASE_URL}/rest/v1/{TABLE}',
         params={'status': 'eq.pending', 'order': 'created_at.asc',
-                'select': 'order_key,payload'},
+                'select': 'order_key,job_type,payload'},
         headers=hdrs(), timeout=20)
     r.raise_for_status()
     return r.json()
@@ -69,15 +69,33 @@ def finish(order_key, status, sage_order_no=None, error=None):
     r.raise_for_status()
 
 
+def record_so_number(order_key, so_no):
+    """Write the Sage SO number onto the matching open_orders row so
+    short-pack updates later know which order to edit."""
+    requests.patch(
+        f'{SUPABASE_URL}/rest/v1/open_orders',
+        params={'order_key': f'eq.{order_key}'},
+        json={'sage_order_no': str(so_no), 'updated_at': 'now()'},
+        headers=hdrs(), timeout=20)
+
+
 def process_once(sage):
     for row in fetch_pending():
         key = row['order_key']
         if not claim(key):
             continue  # another worker took it
         try:
-            so_no = sage.create_sales_order(row['payload'])
-            finish(key, 'done', sage_order_no=str(so_no))
-            print(f'[+] {key[:8]} -> Sage sales order {so_no}')
+            if row.get('job_type') == 'qty_update':
+                sage.update_sales_order(row['payload']['sage_order_no'],
+                                        row['payload']['lines'])
+                finish(key, 'done')
+                print(f'[+] {key[:8]} -> updated SO '
+                      f"{row['payload']['sage_order_no']} quantities")
+            else:
+                so_no = sage.create_sales_order(row['payload'])
+                finish(key, 'done', sage_order_no=str(so_no))
+                record_so_number(row['payload'].get('order_key', key), so_no)
+                print(f'[+] {key[:8]} -> Sage sales order {so_no}')
         except Exception as e:
             tb = traceback.format_exc(limit=3)
             finish(key, 'error', error=f'{e}\n{tb}')
