@@ -169,13 +169,15 @@ def load_customers():
 
 
 def guess_customer(text):
-    """Return the Sage customer number whose alias appears in the given
-    text (extracted document text, filename, channel name, etc.)."""
+    """Return the Sage customer number whose alias OR name appears in the
+    given text (extracted document text, filename, channel name, etc.)."""
     tl = (text or '').lower()
     for _, row in load_customers().iterrows():
-        for alias in str(row.get('Aliases', '')).split(';'):
-            alias = alias.strip().lower()
-            if alias and alias in tl:
+        terms = str(row.get('Aliases', '')).split(';')
+        terms.append(str(row.get('Customer Name', '')))
+        for term in terms:
+            term = term.strip().lower()
+            if term and term in tl:
                 return str(row.get('Customer Number', '')).strip()
     return ''
 
