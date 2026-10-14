@@ -552,6 +552,22 @@ SAGE_SO_COLUMNS = [
 ]
 
 
+def _split_ship_to(text):
+    """Split a multiline ship-to blob into Sage's address fields.
+    Layout: name / address line(s) / 'City, ST ZIP' (last line)."""
+    lines = [l.strip() for l in str(text or '').split('\n') if l.strip()]
+    name = l1 = l2 = city = state = zipc = ''
+    if lines:
+        name = lines[0]
+        m = re.match(r'^(.*?),?\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)$', lines[-1])
+        addr = lines[1:-1] if m and len(lines) >= 2 else lines[1:]
+        if m and len(lines) >= 2:
+            city, state, zipc = m.group(1).strip(' ,'), m.group(2), m.group(3)
+        l1 = addr[0] if addr else ''
+        l2 = addr[1] if len(addr) > 1 else ''
+    return name, l1, l2, city, state, zipc
+
+
 def build_sage_sales_orders(df):
     """Transform the internal order table into the Sage 50 Sales Order
     Journal (SO.CSV) layout, matching the company's export template.
@@ -600,6 +616,7 @@ def build_sage_sales_orders(df):
             if is_batch:
                 desc = (f"[{r.get('Purchase Order Number', '')}] "
                         f"{r.get('Ship To', '')} - {desc}")
+            s_name, s_l1, s_l2, s_city, s_state, s_zip = _split_ship_to(r.get('Ship To', ''))
             out.append({
                 'Customer ID': (r.get('Vendor', '') or mkt_cust) if is_batch
                                else r.get('Vendor', ''),
@@ -611,13 +628,13 @@ def build_sage_sales_orders(df):
                 'Closed': 'FALSE',
                 'Quote #': '',
                 'Drop Ship': 'FALSE',
-                'Ship to Name': str(r.get('Ship To', ''))[:30],
-                'Ship to Address-Line One': '',
-                'Ship to Address-Line Two': '',
-                'Ship to City': '',
-                'Ship to State': '',
-                'Ship to Zipcode': '',
-                'Ship to Country': '',
+                'Ship to Name': s_name[:30],
+                'Ship to Address-Line One': s_l1[:30],
+                'Ship to Address-Line Two': s_l2[:30],
+                'Ship to City': s_city[:20],
+                'Ship to State': s_state[:2],
+                'Ship to Zipcode': s_zip[:10],
+                'Ship to Country': 'USA' if s_zip else '',
                 'Customer PO': cust_po,
                 'Ship Via': str(r.get('Shipping Instructions', ''))[:12],
                 'Discount Amount': '0',
