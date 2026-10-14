@@ -1292,6 +1292,9 @@ if page == "Order Processing":
                         key=f"editor_{wkey}_{inv.get('editor_version', 0)}"
                     )
                     inv['df'] = edited_df
+                    # Re-resolve AFTER the editor hands data back - its cached
+                    # widget state can still carry the stale vendor string.
+                    resolve_vendor(inv)
 
                     qc1, qc2, qc3 = st.columns(3)
                     with qc1:
