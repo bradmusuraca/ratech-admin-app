@@ -1532,12 +1532,66 @@ elif page == "Customers":
       on their documents (e.g. Ford's `DBYBA`). Not exported.
     """)
 
-    cust_df = load_customers()
+    if 'cust_override' not in st.session_state:
+        st.session_state.cust_override = None
+    if 'cust_editor_ver' not in st.session_state:
+        st.session_state.cust_editor_ver = 0
+
+    with st.expander("📥 Bulk load (upload a file or paste CSV text)"):
+        up_file = st.file_uploader("Upload a customer CSV", type=['csv'],
+                                   key="cust_csv_upload")
+        pasted = st.text_area("...or paste CSV text", height=120,
+                              placeholder="Customer Number,Customer Name,Aliases,Their Code For Us\n...")
+        mode = st.radio("Load mode", ["Replace table", "Append to table"],
+                        horizontal=True, key="cust_load_mode")
+        if st.button("Load Customers"):
+            try:
+                text = (bytes(up_file.getbuffer()).decode('utf-8-sig', errors='replace')
+                        if up_file is not None else pasted)
+                new_df = pd.read_csv(StringIO(text), dtype=str).fillna('')
+                # Map common header variants onto our columns
+                ren = {}
+                for c in new_df.columns:
+                    cl = c.strip().lower()
+                    if cl in ('customer number', 'customer id', 'customer no',
+                              'customer #', 'cust id', 'cust number', 'id'):
+                        ren[c] = 'Customer Number'
+                    elif cl in ('customer name', 'name', 'customer'):
+                        ren[c] = 'Customer Name'
+                    elif cl in ('aliases', 'alias', 'keywords'):
+                        ren[c] = 'Aliases'
+                    elif cl in ('their code for us', 'their code', 'customer code',
+                                'our account', 'account number', 'account #'):
+                        ren[c] = 'Their Code For Us'
+                new_df = new_df.rename(columns=ren)
+                if 'Customer Number' not in new_df.columns and len(new_df.columns):
+                    fallback = {new_df.columns[0]: 'Customer Number'}
+                    if len(new_df.columns) > 1:
+                        fallback[new_df.columns[1]] = 'Customer Name'
+                    new_df = new_df.rename(columns=fallback)
+                for c in CUSTOMER_COLS:
+                    if c not in new_df.columns:
+                        new_df[c] = ''
+                new_df = new_df[CUSTOMER_COLS]
+                if mode == "Append to table":
+                    base = (st.session_state.cust_override
+                            if st.session_state.cust_override is not None
+                            else load_customers())
+                    new_df = pd.concat([base, new_df], ignore_index=True)
+                st.session_state.cust_override = new_df
+                st.session_state.cust_editor_ver += 1
+                st.rerun()
+            except Exception as e:
+                st.error(f"Could not parse CSV: {e}")
+
+    cust_df = (st.session_state.cust_override
+               if st.session_state.cust_override is not None
+               else load_customers())
     edited_cust = st.data_editor(
         cust_df,
         num_rows="dynamic",
         use_container_width=True,
-        key="customers_editor"
+        key=f"customers_editor_{st.session_state.cust_editor_ver}"
     )
 
     c1, c2 = st.columns(2)
@@ -1545,6 +1599,7 @@ elif page == "Customers":
         if st.button("Save Customers", type="primary"):
             try:
                 edited_cust.to_csv(CUSTOMERS_CSV, index=False)
+                st.session_state.cust_override = edited_cust
                 st.success("✅ Customers saved")
                 st.rerun()
             except Exception as e:
