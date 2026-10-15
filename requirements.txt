@@ -4,6 +4,7 @@ google-generativeai
 python-dotenv
 pypdf
 pymupdf
+fpdf2
 pandas
 pillow
 requests

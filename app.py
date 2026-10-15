@@ -586,6 +586,50 @@ SAGE_SO_COLUMNS = [
 ]
 
 
+def build_pick_list_pdf(orders):
+    """Printable pick list - one page per order, item table with a blank
+    'Packed' column the packager writes on. orders = [(name, df), ...]"""
+    from fpdf import FPDF
+
+    def t(v):
+        return str(v if v is not None else '').encode('latin-1', 'replace').decode('latin-1')
+
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    for name, df in orders:
+        if df is None or df.empty:
+            continue
+        pdf.add_page()
+        pdf.set_font('helvetica', 'B', 14)
+        pdf.cell(0, 9, t(f'Pick List - {name}'), new_x='LMARGIN', new_y='NEXT')
+        r0 = df.iloc[0]
+        pdf.set_font('helvetica', '', 10)
+        for label, col in [('PO', 'Purchase Order Number'),
+                           ('Order Date', 'Date of Order'),
+                           ('Ship By', 'Ship By Date'),
+                           ('Customer #', 'Vendor'),
+                           ('Ship Via', 'Shipping Instructions'),
+                           ('Ship To', 'Ship To'),
+                           ('Comments', 'Comments')]:
+            val = t(r0.get(col, '')).strip()
+            if val and val.lower() != 'nan':
+                pdf.multi_cell(0, 5, f'{label}: {val}')
+        pdf.ln(4)
+        pdf.set_font('helvetica', 'B', 9)
+        widths = [40, 90, 20, 25]
+        for h, w in zip(['Item', 'Description', 'Qty', 'Packed'], widths):
+            pdf.cell(w, 7, h, border=1)
+        pdf.ln()
+        pdf.set_font('helvetica', '', 9)
+        for _, r in df.iterrows():
+            pdf.cell(widths[0], 7, t(r.get('Inventory Item', ''))[:22], border=1)
+            pdf.cell(widths[1], 7, t(r.get('Description', ''))[:58], border=1)
+            pdf.cell(widths[2], 7, t(r.get('Quantity', '')), border=1)
+            pdf.cell(widths[3], 7, '', border=1)
+            pdf.ln()
+    return bytes(pdf.output())
+
+
 def _split_ship_to(text):
     """Split a multiline ship-to blob into Sage's address fields.
     Layout: name / address line(s) / 'City, ST ZIP' (last line)."""
@@ -1534,18 +1578,30 @@ if page == "Order Processing":
                         st.session_state.upload_version += 1
                         st.rerun()
 
-                if sage_queue_configured():
-                    if st.button("📋 Release to Packing List",
-                                 help="Send these orders to the Open Sales Orders "
-                                      "packing list without queueing a Sage post "
-                                      "(for CSV/manual import)"):
-                        try:
-                            packed_new, packed_skip = create_open_orders(sage_df)
-                            st.success(f"Released {len(packed_new)} order(s) to packing."
-                                       + (f" {len(packed_skip)} already listed."
-                                          if packed_skip else ""))
-                        except Exception as e:
-                            st.error(f"Could not release: {e}")
+                pc1, pc2 = st.columns(2)
+                with pc1:
+                    if sage_queue_configured():
+                        if st.button("📋 Release to Packing List",
+                                     help="Send these orders to the Open Sales Orders "
+                                          "packing list without queueing a Sage post "
+                                          "(for CSV/manual import)"):
+                            try:
+                                packed_new, packed_skip = create_open_orders(sage_df)
+                                st.success(f"Released {len(packed_new)} order(s) to packing."
+                                           + (f" {len(packed_skip)} already listed."
+                                              if packed_skip else ""))
+                            except Exception as e:
+                                st.error(f"Could not release: {e}")
+                with pc2:
+                    st.download_button(
+                        "🖨 Download pick list PDF",
+                        data=build_pick_list_pdf(
+                            [(inv['name'], inv['df']) for inv in st.session_state.invoices]),
+                        file_name="pick-list.pdf",
+                        mime="application/pdf",
+                        help="Printable summary of all orders in the queue - "
+                             "one page per order with a blank Packed column",
+                    )
 
                 if sage_queue_configured():
                     with st.expander("📤 Sage queue status"):
