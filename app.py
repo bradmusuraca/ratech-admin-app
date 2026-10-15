@@ -571,7 +571,7 @@ def build_shipstation_order_invoice(order, doc_key, store_map=None):
 # Sage 50 2019 US "Sales Order Journal" import template - column layout matches
 # the company's own SO.CSV export exactly (verified against a real export).
 SAGE_SO_COLUMNS = [
-    'Customer ID', 'Sales Order/Proposal #', 'Date', 'Ship By', 'Proposal',
+    'Customer ID', 'Customer Name', 'Sales Order/Proposal #', 'Date', 'Ship By', 'Proposal',
     'Proposal Accepted', 'Closed', 'Quote #', 'Drop Ship', 'Ship to Name',
     'Ship to Address-Line One', 'Ship to Address-Line Two', 'Ship to City',
     'Ship to State', 'Ship to Zipcode', 'Ship to Country', 'Customer PO',
@@ -665,6 +665,8 @@ def build_sage_sales_orders(df):
     ar_acct = os.getenv('SAGE_AR_ACCOUNT', '12000')
     gl_acct = os.getenv('SAGE_GL_ACCOUNT', '30500')
     mkt_cust = os.getenv('SAGE_MARKETPLACE_CUSTOMER', '100B')
+    cust_names = dict(zip(load_customers()['Customer Number'].astype(str),
+                          load_customers()['Customer Name'].astype(str)))
     tax_id = os.getenv('SAGE_TAX_ID', '')
     tax_type = os.getenv('SAGE_TAX_TYPE', '1')
     terms = os.getenv('SAGE_TERMS', 'Net Due')
@@ -701,9 +703,10 @@ def build_sage_sales_orders(df):
                 desc = (f"[{r.get('Purchase Order Number', '')}] "
                         f"{r.get('Ship To', '')} - {desc}")
             s_name, s_l1, s_l2, s_city, s_state, s_zip = _split_ship_to(r.get('Ship To', ''))
+            cust_id = (r.get('Vendor', '') or mkt_cust) if is_batch else r.get('Vendor', '')
             out.append({
-                'Customer ID': (r.get('Vendor', '') or mkt_cust) if is_batch
-                               else r.get('Vendor', ''),
+                'Customer ID': cust_id,
+                'Customer Name': cust_names.get(str(cust_id), ''),
                 'Sales Order/Proposal #': '',
                 'Date': r.get('Date of Order', ''),
                 'Ship By': r.get('Ship By Date', ''),
@@ -740,11 +743,11 @@ def build_sage_sales_orders(df):
                 'Unit Price': price if pd.notna(price) else r.get('Unit Price', ''),
                 'Tax Type': tax_type,
                 'UPC / SKU': '',
-                'Weight': '',
-                'U/M ID': '',
-                'U/M No. of Stocking Units': '',
-                'Stocking Quantity': '',
-                'Stocking Unit Price': '',
+                'Weight': '0.00',
+                'U/M ID': '<Each>',
+                'U/M No. of Stocking Units': '1.00',
+                'Stocking Quantity': qty if pd.notna(qty) else r.get('Quantity', ''),
+                'Stocking Unit Price': price if pd.notna(price) else r.get('Unit Price', ''),
                 'Amount': amount,
                 'Job ID': '',
                 'Sales Tax Agency ID': '',
