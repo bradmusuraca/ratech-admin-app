@@ -1264,6 +1264,20 @@ if page == "Order Processing":
                             st.session_state.ss_batch_results = results
                             st.rerun()
 
+        _ss_pick = [(inv['name'], inv['df']) for inv in st.session_state.invoices
+                    if inv['df'] is not None and not inv['df'].empty and (
+                        inv['name'].startswith('ShipStation')
+                        or ('Comments' in inv['df'].columns
+                            and inv['df']['Comments'].astype(str).str.contains(
+                                'shipstation', case=False).any()))]
+        if _ss_pick:
+            st.download_button(
+                "🖨 Download pick list PDF (ShipStation orders)",
+                data=build_pick_list_pdf(_ss_pick),
+                file_name="pick-list.pdf",
+                mime="application/pdf",
+                help="Printable pick list of the ShipStation orders in the queue")
+
     st.divider()
     st.subheader("Upload Order File(s)")
     uploaded_files = st.file_uploader(
@@ -1584,30 +1598,18 @@ if page == "Order Processing":
                         st.session_state.upload_version += 1
                         st.rerun()
 
-                pc1, pc2 = st.columns(2)
-                with pc1:
-                    if sage_queue_configured():
-                        if st.button("📋 Release to Packing List",
-                                     help="Send these orders to the Open Sales Orders "
-                                          "packing list without queueing a Sage post "
-                                          "(for CSV/manual import)"):
-                            try:
-                                packed_new, packed_skip = create_open_orders(sage_df)
-                                st.success(f"Released {len(packed_new)} order(s) to packing."
-                                           + (f" {len(packed_skip)} already listed."
-                                              if packed_skip else ""))
-                            except Exception as e:
-                                st.error(f"Could not release: {e}")
-                with pc2:
-                    st.download_button(
-                        "🖨 Download pick list PDF",
-                        data=build_pick_list_pdf(
-                            [(inv['name'], inv['df']) for inv in st.session_state.invoices]),
-                        file_name="pick-list.pdf",
-                        mime="application/pdf",
-                        help="Printable summary of all orders in the queue - "
-                             "one page per order with a blank Packed column",
-                    )
+                if sage_queue_configured():
+                    if st.button("📋 Release to Packing List",
+                                 help="Send these orders to the Open Sales Orders "
+                                      "packing list without queueing a Sage post "
+                                      "(for CSV/manual import)"):
+                        try:
+                            packed_new, packed_skip = create_open_orders(sage_df)
+                            st.success(f"Released {len(packed_new)} order(s) to packing."
+                                       + (f" {len(packed_skip)} already listed."
+                                          if packed_skip else ""))
+                        except Exception as e:
+                            st.error(f"Could not release: {e}")
 
                 if sage_queue_configured():
                     with st.expander("📤 Sage queue status"):
