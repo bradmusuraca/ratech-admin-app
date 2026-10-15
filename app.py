@@ -28,6 +28,15 @@ from sage_queue import (is_configured as sage_queue_configured,
 
 load_dotenv()
 
+# Streamlit Cloud dashboard secrets live in st.secrets but are not reliably
+# injected into os.environ - copy them in so every os.getenv() works.
+try:
+    for _k, _v in st.secrets.items():
+        if isinstance(_v, str) and _k not in os.environ:
+            os.environ[_k] = _v
+except Exception:
+    pass
+
 st.set_page_config(
     page_title="Ratech Order Management",
     page_icon="📦",
