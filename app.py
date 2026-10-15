@@ -1906,6 +1906,16 @@ elif page == "Settings":
                "**Streamlit Cloud → Secrets** instead. Each section shows where its "
                "credentials are actually coming from.")
 
+    with st.expander("🔍 Secrets diagnostic"):
+        try:
+            _keys = list(st.secrets.keys())
+            st.write(f"st.secrets has {len(_keys)} top-level key(s): `{_keys}`")
+        except Exception as e:
+            st.error(f"st.secrets failed to load: {type(e).__name__}: {e}")
+            st.caption("A TOML parse error in Secrets makes ALL secrets "
+                       "invisible to the app - check for unclosed quotes or "
+                       "a stray section header like [secrets]")
+
     st.subheader("Google Cloud Vision API")
     
     # Show current status
