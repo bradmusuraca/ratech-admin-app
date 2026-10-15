@@ -1,19 +1,14 @@
-# Ratech -> Sage 50 bridge (PowerShell — no Python install needed).
+# Ratech -> Sage 50 bridge (PowerShell + Sage.Peachtree.API managed .NET API).
+# No Python, no SDK install, no COM registration — uses the API assembly
+# already installed with Sage 50 at C:\Program Files (x86)\Sage\Peachtree\API.
 #
-# Polls the Supabase `sage_order_queue` table for pending orders,
-# creates them as sales orders in Sage 50 via the PeachwServer COM API,
-# and writes the result (done/error + Sage order number) back.
+# MUST run in 32-bit PowerShell (Sage is 32-bit):
+#   C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass -File .\bridge.ps1
 #
-# Run on the Windows PC where Sage 50 is installed:
-#
-#   copy .env.example .env   (fill in values)
-#   powershell -ExecutionPolicy Bypass -File .\probe.ps1
-#   powershell -ExecutionPolicy Bypass -File .\bridge.ps1
-#
-# Loops forever; Ctrl+C to stop. For always-on use, register as a
-# Scheduled Task at logon.
+# First run probe.ps1 to verify the company opens and the app is authorized.
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$ErrorActionPreference = 'Stop'
 
 # ---- config ----
 $envFile = Join-Path $PSScriptRoot '.env'
@@ -24,41 +19,31 @@ if (Test-Path $envFile) {
         [Environment]::SetEnvironmentVariable($k.Trim(), $v.Trim(), 'Process')
     }
 }
-$SUPABASE_URL  = $env:SUPABASE_URL.TrimEnd('/')
-$SUPABASE_KEY  = $env:SUPABASE_KEY
-$COMPANY_PATH  = $env:SAGE_COMPANY_PATH
-$POLL_SECONDS  = 60
+$SUPABASE_URL   = $env:SUPABASE_URL.TrimEnd('/')
+$SUPABASE_KEY   = $env:SUPABASE_KEY
+$COMPANY_NAME   = $env:SAGE_COMPANY_NAME   # substring match on CompanyIdentifier CompanyName/DatabaseName/Path
+$APP_ID         = if ($env:SAGE_APP_ID) { $env:SAGE_APP_ID } else { 'Ratech.OrderBridge.1.0' }
+$POLL_SECONDS   = 60
 if ($env:POLL_SECONDS) { $POLL_SECONDS = [int]$env:POLL_SECONDS }
-$TABLE         = 'sage_order_queue'
+$TABLE          = 'sage_order_queue'
+$SAGE_BASE      = if ($env:SAGE_BASE_DIR) { $env:SAGE_BASE_DIR } else { 'C:\Program Files (x86)\Sage' }
 
-if (-not $SUPABASE_URL -or -not $SUPABASE_KEY -or -not $COMPANY_PATH) {
-    Write-Host 'Missing SUPABASE_URL / SUPABASE_KEY / SAGE_COMPANY_PATH in .env' -ForegroundColor Red
+if (-not $SUPABASE_URL -or -not $SUPABASE_KEY -or -not $COMPANY_NAME) {
+    Write-Host 'Missing SUPABASE_URL / SUPABASE_KEY / SAGE_COMPANY_NAME in .env' -ForegroundColor Red
     exit 1
 }
 
-# Sage 50 COM field names — calibrate with probe.ps1 (see sage_client.py
-# for the Python equivalent). Rename values here if your SDK differs.
-$FM = @{
-    customer_id       = 'CustomerID'
-    customer_po       = 'CustomerPONumber'
-    order_date        = 'TransactionDate'
-    ship_by           = 'ShipByDate'
-    ship_to_name      = 'ShipToName'
-    ship_via          = 'ShipViaCode'
-    internal_note     = 'InternalNote'
-    lines_collection  = 'LineItems'
-    line_item_id      = 'ItemID'
-    line_description  = 'Description'
-    line_quantity     = 'Quantity'
-    line_unit_price   = 'UnitPrice'
-    line_gl_account   = 'GLAccount'
-    line_tax_type     = 'TaxType'
-    order_number      = 'SalesOrderNumber'
+# ---- load Sage.Peachtree.API with dependency resolution from the Sage tree ----
+$script:resolveHandler = {
+    param($sender, $e)
+    $name = ($e.Name -split ',')[0]
+    $hit = Get-ChildItem $SAGE_BASE -Recurse -Filter "$name.dll" -ErrorAction SilentlyContinue |
+           Select-Object -First 1
+    if ($hit) { return [Reflection.Assembly]::LoadFrom($hit.FullName) }
+    return $null
 }
-
-function Set-Prop($obj, [string]$name, $value) { $obj.$name = $value }
-function Get-Prop($obj, [string]$name) { return $obj.$name }
-function Trim-To([string]$s, [int]$n) { if ($s.Length -gt $n) { $s.Substring(0, $n) } else { $s } }
+[AppDomain]::CurrentDomain.add_AssemblyResolve($script:resolveHandler)
+[Reflection.Assembly]::LoadFrom("$SAGE_BASE\Peachtree\API\Sage.Peachtree.API.dll") | Out-Null
 
 function Headers {
     @{
@@ -78,7 +63,7 @@ function Claim-Order([string]$key) {
     $h = Headers; $h['Prefer'] = 'return=representation'
     $body = @{ status = 'processing'; updated_at = 'now()' } | ConvertTo-Json
     $res = Invoke-RestMethod -Uri $uri -Method Patch -Headers $h -Body $body -TimeoutSec 20
-    return $res.Count -gt 0
+    return @($res).Count -gt 0
 }
 
 function Finish-Order([string]$key, [string]$status, $soNo = $null, $err = $null) {
@@ -94,53 +79,84 @@ function Record-SoNumber([string]$key, [string]$soNo) {
     catch { Write-Host "  [!] open_orders update failed: $_" -ForegroundColor Yellow }
 }
 
-function Open-Sage {
-    $server = New-Object -ComObject PeachwServer
-    $server.Begin('RatechOrderBridge') | Out-Null
-    $company = $server.OpenCompany($COMPANY_PATH)
-    return @{ Server = $server; Company = $company }
+# ---- Sage session ----
+function Open-SageCompany {
+    $session = New-Object Sage.Peachtree.API.PeachtreeSession
+    $session.Begin($APP_ID)
+    $cid = $session.CompanyList() | Where-Object {
+        $_.CompanyName -match [regex]::Escape($COMPANY_NAME) -or
+        $_.DatabaseName -match [regex]::Escape($COMPANY_NAME) -or
+        $_.Path -match [regex]::Escape($COMPANY_NAME)
+    } | Select-Object -First 1
+    if (-not $cid) {
+        $session.End()
+        throw "No company matching '$COMPANY_NAME'. Companies seen: " +
+              (($session.CompanyList() | ForEach-Object { $_.CompanyName }) -join ', ')
+    }
+    $auth = $session.VerifyAccess($cid)
+    if ("$auth" -notmatch 'Grant|Allow|Success|Authorized') {
+        $auth = $session.RequestAccess($cid)
+    }
+    $company = $session.Open($cid)
+    return @{ Session = $session; Company = $company }
 }
 
-function New-SalesOrder($company, $payload) {
-    $so = $company.CreateObject('PTOWSalesOrder')
-    Set-Prop $so $FM.customer_id "$($payload.customer_id)"
-    Set-Prop $so $FM.customer_po (Trim-To "$($payload.customer_po)" 20)
-    if ($payload.order_date)    { Set-Prop $so $FM.order_date ([datetime]$payload.order_date) }
-    if ($payload.ship_by)       { Set-Prop $so $FM.ship_by ([datetime]$payload.ship_by) }
-    if ($payload.ship_to_name)  { Set-Prop $so $FM.ship_to_name (Trim-To "$($payload.ship_to_name)" 30) }
-    if ($payload.ship_via)      { Set-Prop $so $FM.ship_via (Trim-To "$($payload.ship_via)" 12) }
-    if ($payload.internal_note) { Set-Prop $so $FM.internal_note (Trim-To "$($payload.internal_note)" 2000) }
-
-    $lines = Get-Prop $so $FM.lines_collection
-    foreach ($line in $payload.lines) {
-        $ln = $lines.Add()
-        Set-Prop $ln $FM.line_item_id (Trim-To "$($line.item_id)" 20)
-        Set-Prop $ln $FM.line_description (Trim-To "$($line.description)" 160)
-        Set-Prop $ln $FM.line_quantity ([double]$line.quantity)
-        Set-Prop $ln $FM.line_unit_price ([double]$line.unit_price)
-        if ($line.gl_account) { Set-Prop $ln $FM.line_gl_account "$($line.gl_account)" }
-        if ($line.tax_type)   { Set-Prop $ln $FM.line_tax_type "$($line.tax_type)" }
+# Resolve an entity's Key (EntityReference) by its ID, cached per sweep.
+function Resolve-Ref($factory, [string]$id, $cache) {
+    if ($cache.ContainsKey($id)) { return $cache[$id] }
+    $hit = $factory.List() | Where-Object { "$($_.ID)" -eq $id } | Select-Object -First 1
+    if (-not $hit) {
+        $hit = $factory.List() | Where-Object { "$($_.Number)" -eq $id } | Select-Object -First 1
     }
+    if (-not $hit) { throw "No Sage entity with ID '$id'" }
+    $cache[$id] = $hit.Key
+    return $cache[$id]
+}
 
+function Trim-To([string]$s, [int]$n) { if ($s.Length -gt $n) { $s.Substring(0, $n) } else { $s } }
+
+function New-SalesOrder($company, $payload, $refCache) {
+    $so = $company.Factories.SalesOrderFactory.Create()
+    $so.CustomerReference = Resolve-Ref $company.Factories.CustomerFactory "$($payload.customer_id)" $refCache.Customer
+    $so.CustomerPurchaseOrderNumber = Trim-To "$($payload.customer_po)" 20
+    if ($payload.order_date) { $so.Date = [datetime]$payload.order_date }
+    if ($payload.ship_by)    { $so.ShipByDate = [datetime]$payload.ship_by }
+    if ($payload.ship_via)   { $so.ShipVia = Trim-To "$($payload.ship_via)" 12 }
+    if ($payload.internal_note) { $so.InternalNote = Trim-To "$($payload.internal_note)" 2000 }
+    if ($payload.ship_to_name)  { $so.ShipToAddress.Name = Trim-To "$($payload.ship_to_name)" 39 }
+
+    foreach ($line in $payload.lines) {
+        $ln = $so.AddLine()
+        if (-not $ln) { $ln = $so.SalesOrderLines.Add() }
+        $ln.InventoryItemReference = Resolve-Ref $company.Factories.InventoryItemFactory "$($line.item_id)" $refCache.Item
+        $ln.Description  = Trim-To "$($line.description)" 160
+        $ln.Quantity     = [decimal]$line.quantity
+        $ln.UnitPrice    = [decimal]$line.unit_price
+        $ln.SalesTaxType = 1
+        if ($line.gl_account) {
+            try { $ln.AccountReference = Resolve-Ref $company.Factories.AccountFactory "$($line.gl_account)" $refCache.Account }
+            catch { Write-Host "  [!] G/L account $($line.gl_account) unresolved, using item default" -ForegroundColor Yellow }
+        }
+    }
     $so.Save()
-    return "$(Get-Prop $so $FM.order_number)"
+    return "$($so.ReferenceNumber)"
 }
 
 function Update-SalesOrder($company, [string]$soNo, $lines) {
-    $so = $company.CreateObject('PTOWSalesOrder')
-    $loaded = $false
-    foreach ($meth in 'Load', 'Open', 'Read') {
-        try { $so.$meth($soNo); $loaded = $true; break } catch { }
-    }
-    if (-not $loaded) {
-        Set-Prop $so $FM.order_number $soNo
-        $so.Load()
-    }
+    $hit = $company.Factories.SalesOrderFactory.List() |
+           Where-Object { "$($_.ReferenceNumber)" -eq $soNo } | Select-Object -First 1
+    if (-not $hit) { throw "Sales order '$soNo' not found" }
+    $so = $company.Factories.SalesOrderFactory.Load($hit.Key)
     $want = @{}
-    foreach ($l in $lines) { $want["$($l.item_id)"] = [double]$l.quantity }
-    foreach ($ln in (Get-Prop $so $FM.lines_collection)) {
-        $iid = "$(Get-Prop $ln $FM.line_item_id)"
-        if ($want.ContainsKey($iid)) { Set-Prop $ln $FM.line_quantity $want[$iid] }
+    foreach ($l in $lines) { $want["$($l.item_id)"] = [decimal]$l.quantity }
+    foreach ($ln in $so.SalesOrderLines) {
+        $iid = "$($ln.InventoryItemReference.Key.ID)"
+        if (-not $iid) { $iid = "$($ln.InventoryItemReference)" }
+        foreach ($k in $want.Keys) {
+            if ($iid -match [regex]::Escape($k) -or $k -match [regex]::Escape($iid)) {
+                $ln.Quantity = $want[$k]
+            }
+        }
     }
     $so.Save()
 }
@@ -149,7 +165,8 @@ Write-Host "Sage bridge polling every $POLL_SECONDS s - Ctrl+C to stop"
 while ($true) {
     $sess = $null
     try {
-        $sess = Open-Sage
+        $sess = Open-SageCompany
+        $refCache = @{ Customer = @{}; Item = @{}; Account = @{} }
         foreach ($row in (Get-Pending)) {
             $key = $row.order_key
             if (-not (Claim-Order $key)) { continue }
@@ -159,7 +176,7 @@ while ($true) {
                     Finish-Order $key 'done'
                     Write-Host "[+] $($key.Substring(0,8)) -> updated SO $($row.payload.sage_order_no) quantities"
                 } else {
-                    $soNo = New-SalesOrder $sess.Company $row.payload
+                    $soNo = New-SalesOrder $sess.Company $row.payload $refCache
                     Finish-Order $key 'done' $soNo
                     Record-SoNumber "$($row.payload.order_key)" $soNo
                     Write-Host "[+] $($key.Substring(0,8)) -> Sage sales order $soNo"
@@ -172,7 +189,7 @@ while ($true) {
     } catch {
         Write-Host "[!] sweep failed: $_" -ForegroundColor Red
     } finally {
-        if ($sess) { try { $sess.Server.End() | Out-Null } catch { } }
+        if ($sess) { try { $sess.Session.End() } catch { } }
     }
     Start-Sleep -Seconds $POLL_SECONDS
 }

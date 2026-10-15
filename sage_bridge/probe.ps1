@@ -1,12 +1,12 @@
-# Probe the Sage 50 COM API on this machine (no Python needed).
+# Read-only probe for the Sage.Peachtree.API managed API.
+# Verifies: assembly loads, session begins, companies are visible,
+# app access is authorized, and entity factories list correctly.
+# Creates NOTHING in Sage.
 #
-# Run once before starting bridge.ps1. It opens a PeachwServer session,
-# creates a PTOWSalesOrder, and prints every property/method the object
-# exposes — compare the output against $FM in bridge.ps1 and rename any
-# that differ.
-#
-#   powershell -ExecutionPolicy Bypass -File .\probe.ps1
+# MUST run in 32-bit PowerShell:
+#   C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass -File .\probe.ps1
 
+$ErrorActionPreference = 'Continue'
 $envFile = Join-Path $PSScriptRoot '.env'
 if (Test-Path $envFile) {
     Get-Content $envFile | ForEach-Object {
@@ -15,27 +15,81 @@ if (Test-Path $envFile) {
         [Environment]::SetEnvironmentVariable($k.Trim(), $v.Trim(), 'Process')
     }
 }
-$COMPANY_PATH = $env:SAGE_COMPANY_PATH
-if (-not $COMPANY_PATH) {
-    Write-Host 'Set SAGE_COMPANY_PATH in .env first' -ForegroundColor Red
+$COMPANY_NAME = $env:SAGE_COMPANY_NAME
+$APP_ID       = if ($env:SAGE_APP_ID) { $env:SAGE_APP_ID } else { 'Ratech.OrderBridge.1.0' }
+$SAGE_BASE    = if ($env:SAGE_BASE_DIR) { $env:SAGE_BASE_DIR } else { 'C:\Program Files (x86)\Sage' }
+
+$script:resolveHandler = {
+    param($sender, $e)
+    $name = ($e.Name -split ',')[0]
+    $hit = Get-ChildItem $SAGE_BASE -Recurse -Filter "$name.dll" -ErrorAction SilentlyContinue |
+           Select-Object -First 1
+    if ($hit) { return [Reflection.Assembly]::LoadFrom($hit.FullName) }
+    return $null
+}
+[AppDomain]::CurrentDomain.add_AssemblyResolve($script:resolveHandler)
+
+Write-Host 'Loading Sage.Peachtree.API ...'
+[Reflection.Assembly]::LoadFrom("$SAGE_BASE\Peachtree\API\Sage.Peachtree.API.dll") | Out-Null
+
+$session = New-Object Sage.Peachtree.API.PeachtreeSession
+Write-Host "Begin('$APP_ID') ..."
+try {
+    $session.Begin($APP_ID)
+    Write-Host '  OK' -ForegroundColor Green
+} catch {
+    Write-Host "  FAILED: $_" -ForegroundColor Red
+    Write-Host '  If this says invalid application identifier, the app ID may need to be registered in Sage.'
     exit 1
 }
 
-$server = New-Object -ComObject PeachwServer
-$server.Begin('RatechProbe') | Out-Null
-$company = $server.OpenCompany($COMPANY_PATH)
+Write-Host "`nCompanies visible to the API:"
+$ids = $session.CompanyList()
+$ids | ForEach-Object { Write-Host "  - $($_.CompanyName)  [db=$($_.DatabaseName) path=$($_.Path)]" }
 
-$so = $company.CreateObject('PTOWSalesOrder')
-Write-Host '=== PTOWSalesOrder members ==='
-$so | Get-Member | Select-Object -ExpandProperty Name | Sort-Object -Unique
+$cid = $ids | Where-Object {
+    $_.CompanyName -match [regex]::Escape($COMPANY_NAME) -or
+    $_.DatabaseName -match [regex]::Escape($COMPANY_NAME) -or
+    $_.Path -match [regex]::Escape($COMPANY_NAME)
+} | Select-Object -First 1
+if (-not $cid) {
+    Write-Host "`nSAGE_COMPANY_NAME='$COMPANY_NAME' matched nothing — set it to part of a name above." -ForegroundColor Yellow
+    $session.End()
+    exit 1
+}
+Write-Host "`nUsing company: $($cid.CompanyName)"
 
+Write-Host 'VerifyAccess ...'
+try { Write-Host "  $($session.VerifyAccess($cid))" } catch { Write-Host "  $_" -ForegroundColor Yellow }
+Write-Host 'RequestAccess ...'
+try { Write-Host "  $($session.RequestAccess($cid))" } catch { Write-Host "  $_" -ForegroundColor Yellow }
+
+Write-Host "`nOpen ..."
 try {
-    $lines = $so.LineItems
-    $ln = $lines.Add()
-    Write-Host '=== Line item members ==='
-    $ln | Get-Member | Select-Object -ExpandProperty Name | Sort-Object -Unique
+    $company = $session.Open($cid)
+    Write-Host '  OK' -ForegroundColor Green
 } catch {
-    Write-Host "LineItems probe failed: $_"
+    Write-Host "  FAILED: $_" -ForegroundColor Red
+    $session.End()
+    exit 1
 }
 
-$server.End() | Out-Null
+Write-Host "`nFirst 5 customers (ID -> Name):"
+try {
+    $company.Factories.CustomerFactory.List() | Select-Object -First 5 |
+        ForEach-Object { Write-Host "  $($_.ID) -> $($_.Name)" }
+} catch { Write-Host "  $_" -ForegroundColor Yellow }
+
+Write-Host "`nFirst 5 inventory items (ID -> Description):"
+try {
+    $company.Factories.InventoryItemFactory.List() | Select-Object -First 5 |
+        ForEach-Object { Write-Host "  $($_.ID) -> $($_.Description)" }
+} catch { Write-Host "  $_" -ForegroundColor Yellow }
+
+Write-Host "`nNext sales order number (peek only):"
+try { Write-Host "  $($company.Services.ReferenceNumber.TakeNextSalesOrderNumber())" }
+catch { Write-Host "  $_" -ForegroundColor Yellow }
+
+$session.Close($company)
+$session.End()
+Write-Host "`nProbe complete." -ForegroundColor Green

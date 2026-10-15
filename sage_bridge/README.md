@@ -1,33 +1,51 @@
 # Ratech → Sage 50 Bridge
 
-Runs on the Windows PC where **Sage 50 US 2019** is installed. Polls a
-Supabase queue table and creates sales orders through the Sage 50 COM
-API — no CSV import wizard needed.
+Runs on the Windows PC where **Sage 50 US** is installed. Polls a
+Supabase queue table and creates sales orders through the
+**Sage.Peachtree.API managed .NET assembly** that ships with Sage —
+no SDK install, no COM registration, no Python.
 
 ## One-time setup
 
-1. **Install the Sage 50 2019.2 SDK** on this PC (Sage KB 96384 — includes
-   the PeachwServer COM interop and docs).
-2. **Supabase**: create a free project, run `supabase_setup.sql` in the
+1. **Supabase**: create a free project, run `supabase_setup.sql` in the
    SQL Editor, copy the project URL + service-role key.
-3. `copy .env.example .env` and fill in `SUPABASE_URL`, `SUPABASE_KEY`,
-   `SAGE_COMPANY_PATH` (the company folder path Sage uses to open it).
+2. `copy .env.example .env` and fill in `SUPABASE_URL`, `SUPABASE_KEY`,
+   and `SAGE_COMPANY_NAME` (a substring of the company name — the probe
+   lists what's available).
+3. Run the probe in **32-bit PowerShell** (Sage is 32-bit):
 
-### PowerShell (recommended — nothing to install)
+   ```
+   C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass -File .\probe.ps1
+   ```
 
-4. `powershell -ExecutionPolicy Bypass -File .\probe.ps1` — dumps the
-   actual `PTOWSalesOrder` members. Compare against `$FM` in
-   `bridge.ps1` and rename any that differ.
-5. `powershell -ExecutionPolicy Bypass -File .\bridge.ps1` — leave
-   running, or register as a Scheduled Task at logon.
+   It lists companies, checks app authorization (Sage may prompt inside
+   the app to allow "Ratech.OrderBridge" the first time), and samples
+   customers/items — all read-only.
+4. Run the bridge the same way:
 
-### Python (alternative)
+   ```
+   C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass -File .\bridge.ps1
+   ```
 
-4. `pip install -r requirements.txt` (Python 3.8+; install pywin32 then
-   run `python -m pywin32_postinstall` if COM registration complains).
-5. `python probe.py` — same calibration against `FIELD_MAP` in
-   `sage_client.py`.
-6. `python bridge.py` — leave running, or register as a Scheduled Task.
+   Leave running, or register as a Scheduled Task at logon.
+
+## Flow
+
+App pushes a validated order → queue row `status=pending` → bridge claims
+it (`processing`), posts the sales order via `SalesOrderFactory.Create()`,
+writes `done` + the Sage order number — or `error` + the exception.
+`order_key` is a hash of the order contents, so re-sending the same batch
+can never double-post.
+
+Sage does not need to be open, but the company must have been opened at
+least once. The bridge opens its own session each sweep.
+
+## Python variant (optional)
+
+`sage_client.py` / `bridge.py` / `probe.py` target the older COM
+(`PeachwServer`) interface and are kept for reference; the PowerShell
+managed-API scripts above are the supported path.
+
 
 ## Flow
 
