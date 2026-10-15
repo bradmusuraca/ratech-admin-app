@@ -185,6 +185,28 @@ def guess_customer(text):
     return ''
 
 
+def cred_source(name):
+    """Where a credential is actually coming from: 'secrets' (permanent),
+    'env' (.env file - wiped on redeploy), or None."""
+    try:
+        if name in st.secrets:
+            return 'secrets'
+    except Exception:
+        pass
+    return 'env' if os.getenv(name) else None
+
+
+def cred_status_caption(name, label):
+    src = cred_source(name)
+    if src == 'secrets':
+        st.success(f"✅ {label} configured (Streamlit secrets - permanent)")
+    elif src == 'env':
+        st.warning(f"⚠️ {label} configured via .env only - will be lost on reboot. "
+                   "Add it to Streamlit secrets.")
+    else:
+        st.info(f"ℹ️ {label} not configured")
+
+
 def resolve_vendor(inv):
     """Ensure the order's Vendor column holds a Sage customer number.
     Orders loaded before a number was entered keep the raw parsed vendor
@@ -1870,15 +1892,16 @@ elif page == "Inventory Management":
 
 elif page == "Settings":
     st.header("⚙️ Settings")
-    
+    st.caption("⚠️ Saving here writes to the app's temporary `.env` — values are "
+               "**lost on reboot/redeploy**. For anything permanent, add it to "
+               "**Streamlit Cloud → Secrets** instead. Each section shows where its "
+               "credentials are actually coming from.")
+
     st.subheader("Google Cloud Vision API")
     
     # Show current status
     current_creds = os.getenv('GOOGLE_CREDENTIALS')
-    if current_creds:
-        st.success("✅ Google Cloud credentials are configured")
-    else:
-        st.warning("⚠️ Google Cloud credentials not configured")
+    cred_status_caption('GOOGLE_CREDENTIALS', 'Google Cloud credentials')
     
     google_credentials = st.text_area(
         "Google Cloud Credentials JSON",
@@ -1956,10 +1979,7 @@ elif page == "Settings":
     
     # Show current status
     current_gemini = os.getenv('GEMINI_API_KEY')
-    if current_gemini:
-        st.success("✅ Gemini API key is configured")
-    else:
-        st.info("ℹ️ Gemini API key not configured (optional - will use regex parsing)")
+    cred_status_caption('GEMINI_API_KEY', 'Gemini API key')
     
     gemini_key = st.text_input(
         "Gemini API Key",
@@ -2057,10 +2077,10 @@ elif page == "Settings":
     cur_user = os.getenv('EMAIL_USER', '')
     cur_pass = os.getenv('EMAIL_PASSWORD', '')
 
-    if cur_user and cur_pass:
-        st.success(f"✅ Email configured for {cur_user}")
-    else:
-        st.warning("⚠️ Email credentials not configured")
+    cred_status_caption('EMAIL_USER', 'Email user')
+    cred_status_caption('EMAIL_PASSWORD', 'Email app password')
+    if cur_user:
+        st.caption(f"Configured for {cur_user}")
 
     email_host = st.text_input("IMAP Host", value=cur_host)
     email_port = st.text_input("IMAP Port", value=cur_port)
@@ -2087,10 +2107,8 @@ elif page == "Settings":
 
     cur_ss_key = os.getenv('SHIPSTATION_API_KEY', '')
     cur_ss_secret = os.getenv('SHIPSTATION_API_SECRET', '')
-    if cur_ss_key and cur_ss_secret:
-        st.success("✅ ShipStation API keys configured")
-    else:
-        st.warning("⚠️ ShipStation API keys not configured")
+    cred_status_caption('SHIPSTATION_API_KEY', 'ShipStation API key')
+    cred_status_caption('SHIPSTATION_API_SECRET', 'ShipStation API secret')
 
     ss_key_in = st.text_input("ShipStation API Key", value=cur_ss_key)
     ss_secret_in = st.text_input("ShipStation API Secret", value=cur_ss_secret,
