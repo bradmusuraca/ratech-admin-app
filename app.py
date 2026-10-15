@@ -636,6 +636,14 @@ def build_pick_list_pdf(orders):
     return bytes(pdf.output())
 
 
+def _csv_safe(v):
+    """Make a field safe for Sage's line-based CSV import: collapse
+    newlines and neutralize embedded double quotes (9" -> 9in)."""
+    s = ' '.join(str(v).split())
+    s = re.sub(r'(\d)"', r'\1in', s)
+    return s.replace('"', "'")
+
+
 def _split_ship_to(text):
     """Split a multiline ship-to blob into Sage's address fields.
     Layout: name / address line(s) / 'City, ST ZIP' (last line)."""
@@ -715,15 +723,15 @@ def build_sage_sales_orders(df):
                 'Closed': 'FALSE',
                 'Quote #': '',
                 'Drop Ship': 'FALSE',
-                'Ship to Name': s_name[:30],
-                'Ship to Address-Line One': s_l1[:30],
-                'Ship to Address-Line Two': s_l2[:30],
-                'Ship to City': s_city[:20],
-                'Ship to State': s_state[:2],
-                'Ship to Zipcode': s_zip[:10],
+                'Ship to Name': _csv_safe(s_name)[:30],
+                'Ship to Address-Line One': _csv_safe(s_l1)[:30],
+                'Ship to Address-Line Two': _csv_safe(s_l2)[:30],
+                'Ship to City': _csv_safe(s_city)[:20],
+                'Ship to State': _csv_safe(s_state)[:2],
+                'Ship to Zipcode': _csv_safe(s_zip)[:10],
                 'Ship to Country': 'USA' if s_zip else '',
-                'Customer PO': cust_po,
-                'Ship Via': str(r.get('Shipping Instructions', ''))[:12],
+                'Customer PO': _csv_safe(cust_po),
+                'Ship Via': _csv_safe(str(r.get('Shipping Instructions', '')))[:12],
                 'Discount Amount': '0',
                 'Displayed Terms': terms,
                 'Sales Representative ID': '',
@@ -733,12 +741,12 @@ def build_sage_sales_orders(df):
                 'Note Prints After Line Items': 'FALSE',
                 'Statement Note': '',
                 'Stmt Note Prints Before Ref': 'FALSE',
-                'Internal Note': str(r.get('Comments', ''))[:2000],
+                'Internal Note': _csv_safe(str(r.get('Comments', '')))[:2000],
                 'Number of Distributions': n,
                 'SO/Proposal Distribution': i,
                 'Quantity': qty if pd.notna(qty) else r.get('Quantity', ''),
                 'Item ID': str(r.get('Inventory Item', ''))[:20],
-                'Description': desc[:160],
+                'Description': _csv_safe(desc)[:160],
                 'G/L Account': gl_acct,
                 'Unit Price': price if pd.notna(price) else r.get('Unit Price', ''),
                 'Tax Type': tax_type,
