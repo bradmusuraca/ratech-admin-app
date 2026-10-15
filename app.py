@@ -587,8 +587,9 @@ SAGE_SO_COLUMNS = [
 
 
 def build_pick_list_pdf(orders):
-    """Printable pick list - one page per order, item table with a blank
-    'Packed' column the packager writes on. orders = [(name, df), ...]"""
+    """Printable pick list - all orders on one continuous sheet. Each order
+    is a bold header row followed by its item lines with a blank 'Packed'
+    column the packager writes on. orders = [(name, df), ...]"""
     from fpdf import FPDF
 
     def t(v):
@@ -596,34 +597,39 @@ def build_pick_list_pdf(orders):
 
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
-    for name, df in orders:
-        if df is None or df.empty:
-            continue
-        pdf.add_page()
-        pdf.set_font('helvetica', 'B', 14)
-        pdf.cell(0, 9, t(f'Pick List - {name}'), new_x='LMARGIN', new_y='NEXT')
-        r0 = df.iloc[0]
-        pdf.set_font('helvetica', '', 10)
-        for label, col in [('PO', 'Purchase Order Number'),
-                           ('Order Date', 'Date of Order'),
-                           ('Ship By', 'Ship By Date'),
-                           ('Customer #', 'Vendor'),
-                           ('Ship Via', 'Shipping Instructions'),
-                           ('Ship To', 'Ship To'),
-                           ('Comments', 'Comments')]:
-            val = t(r0.get(col, '')).strip()
-            if val and val.lower() != 'nan':
-                pdf.multi_cell(0, 5, f'{label}: {val}')
-        pdf.ln(4)
+    pdf.add_page()
+    widths = [42, 92, 20, 22]
+
+    def header_row():
         pdf.set_font('helvetica', 'B', 9)
-        widths = [40, 90, 20, 25]
         for h, w in zip(['Item', 'Description', 'Qty', 'Packed'], widths):
             pdf.cell(w, 7, h, border=1)
         pdf.ln()
+
+    header_row()
+    for name, df in orders:
+        if df is None or df.empty:
+            continue
+        r0 = df.iloc[0]
+        bits = [t(name)]
+        for label, col in [('PO', 'Purchase Order Number'),
+                           ('Ship By', 'Ship By Date'),
+                           ('Cust', 'Vendor'),
+                           ('To', 'Ship To')]:
+            val = ' '.join(t(r0.get(col, '')).split())
+            if val and val.lower() != 'nan':
+                bits.append(f'{label}: {val}')
+        pdf.set_font('helvetica', 'B', 9)
+        pdf.set_fill_color(220, 230, 245)
+        pdf.multi_cell(sum(widths), 7, t('  |  '.join(bits)),
+                       border=1, fill=True)
         pdf.set_font('helvetica', '', 9)
         for _, r in df.iterrows():
-            pdf.cell(widths[0], 7, t(r.get('Inventory Item', ''))[:22], border=1)
-            pdf.cell(widths[1], 7, t(r.get('Description', ''))[:58], border=1)
+            if pdf.get_y() > pdf.page_break_trigger - 10:
+                pdf.add_page()
+                header_row()
+            pdf.cell(widths[0], 7, t(r.get('Inventory Item', ''))[:24], border=1)
+            pdf.cell(widths[1], 7, t(r.get('Description', ''))[:60], border=1)
             pdf.cell(widths[2], 7, t(r.get('Quantity', '')), border=1)
             pdf.cell(widths[3], 7, '', border=1)
             pdf.ln()
