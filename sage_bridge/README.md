@@ -10,12 +10,23 @@ API — no CSV import wizard needed.
    the PeachwServer COM interop and docs).
 2. **Supabase**: create a free project, run `supabase_setup.sql` in the
    SQL Editor, copy the project URL + service-role key.
-3. `pip install -r requirements.txt` (Python 3.8+; install pywin32 then run
-   `python -m pywin32_postinstall` if COM registration complains).
-4. `copy .env.example .env` and fill in `SUPABASE_URL`, `SUPABASE_KEY`,
+3. `copy .env.example .env` and fill in `SUPABASE_URL`, `SUPABASE_KEY`,
    `SAGE_COMPANY_PATH` (the company folder path Sage uses to open it).
-5. `python probe.py` — dumps the actual `PTOWSalesOrder` members. Compare
-   against `FIELD_MAP` in `sage_client.py` and rename any that differ.
+
+### PowerShell (recommended — nothing to install)
+
+4. `powershell -ExecutionPolicy Bypass -File .\probe.ps1` — dumps the
+   actual `PTOWSalesOrder` members. Compare against `$FM` in
+   `bridge.ps1` and rename any that differ.
+5. `powershell -ExecutionPolicy Bypass -File .\bridge.ps1` — leave
+   running, or register as a Scheduled Task at logon.
+
+### Python (alternative)
+
+4. `pip install -r requirements.txt` (Python 3.8+; install pywin32 then
+   run `python -m pywin32_postinstall` if COM registration complains).
+5. `python probe.py` — same calibration against `FIELD_MAP` in
+   `sage_client.py`.
 6. `python bridge.py` — leave running, or register as a Scheduled Task.
 
 ## Flow
