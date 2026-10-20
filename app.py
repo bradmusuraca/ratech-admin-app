@@ -24,7 +24,9 @@ from sage_queue import (is_configured as sage_queue_configured,
                         queue_orders as sage_queue_push,
                         queue_status as sage_queue_status,
                         create_open_orders, list_open_orders,
-                        update_packed, queue_qty_update)
+                        update_packed, queue_qty_update,
+                        transactions_from_sage_df)
+import streamlit.components.v1 as components
 
 load_dotenv()
 
@@ -761,6 +763,57 @@ def build_sage_sales_orders(df):
                 'Sales Tax Agency ID': '',
             })
     return pd.DataFrame(out, columns=SAGE_SO_COLUMNS)
+
+
+def _orders_print_html(sage_df):
+    """Print-ready pick sheet — one page per Sage transaction, with an
+    in-page Print button (opens the browser print dialog)."""
+    import html as _h
+    pages = []
+    for tx in transactions_from_sage_df(sage_df):
+        lines = ''.join(
+            "<tr>"
+            f"<td>{_h.escape(str(l['item_id']))}</td>"
+            f"<td>{_h.escape(str(l['description']))}</td>"
+            f"<td class='num'>{_h.escape(str(l['quantity']))}</td>"
+            f"<td class='num'>{_h.escape(str(l['unit_price']))}</td>"
+            f"<td class='num'>{_h.escape(str(l['amount']))}</td>"
+            "<td class='packed'></td></tr>"
+            for l in tx['lines'])
+        city_state_zip = ' '.join(p for p in [tx.get('ship_to_city', ''),
+                                              tx.get('ship_to_state', ''),
+                                              tx.get('ship_to_zip', '')] if p)
+        ship_addr = '<br>'.join(
+            _h.escape(x) for x in [tx['ship_to_name'],
+                                   tx.get('ship_to_line1', ''),
+                                   tx.get('ship_to_line2', ''),
+                                   city_state_zip] if x)
+        pages.append(
+            "<div class='page'>"
+            "<h2>RATECH — Sales Order Pick Sheet</h2>"
+            "<table class='hdr'><tr>"
+            f"<td><b>Customer:</b> {_h.escape(tx['customer_id'])}</td>"
+            f"<td><b>PO:</b> {_h.escape(tx['customer_po'])}</td>"
+            f"<td><b>Date:</b> {_h.escape(tx['order_date'])}</td>"
+            f"<td><b>Ship by:</b> {_h.escape(tx['ship_by'])}</td>"
+            f"<td><b>Via:</b> {_h.escape(tx['ship_via'])}</td></tr></table>"
+            f"<p><b>Ship to:</b><br>{ship_addr}</p>"
+            "<table class='lines'><tr><th>Item</th><th>Description</th>"
+            "<th>Qty</th><th>Price</th><th>Amount</th><th>Packed</th></tr>"
+            f"{lines}</table></div>")
+    return ("<!doctype html><html><head><style>"
+            "body{font-family:Arial,sans-serif;margin:8px}"
+            ".page{page-break-after:always;padding:12px}"
+            ".hdr{width:100%;border-collapse:collapse}"
+            ".hdr td{padding:2px 10px 2px 0;font-size:13px;white-space:nowrap}"
+            ".lines{width:100%;border-collapse:collapse;margin-top:10px}"
+            ".lines th,.lines td{border:1px solid #999;padding:5px;font-size:13px;text-align:left}"
+            ".num{text-align:right}.packed{width:70px}"
+            "#printbtn{position:fixed;top:8px;right:14px;padding:8px 18px;font-size:15px}"
+            "@media print{#printbtn{display:none}}"
+            "</style></head><body>"
+            "<button id='printbtn' onclick='window.print()'>Print</button>"
+            + ''.join(pages) + "</body></html>")
 
 
 def _addr_key(order):
@@ -1610,17 +1663,11 @@ if page == "Order Processing":
                         st.rerun()
 
                 if sage_queue_configured():
-                    if st.button("📋 Release to Packing List",
-                                 help="Send these orders to the Open Sales Orders "
-                                      "packing list without queueing a Sage post "
-                                      "(for CSV/manual import)"):
-                        try:
-                            packed_new, packed_skip = create_open_orders(sage_df)
-                            st.success(f"Released {len(packed_new)} order(s) to packing."
-                                       + (f" {len(packed_skip)} already listed."
-                                          if packed_skip else ""))
-                        except Exception as e:
-                            st.error(f"Could not release: {e}")
+                    with st.expander("🖨️ Print order sheets"):
+                        st.caption("One printable page per sales order — "
+                                   "click the Print button inside the sheet.")
+                        components.html(_orders_print_html(sage_df),
+                                        height=520, scrolling=True)
 
                 if sage_queue_configured():
                     with st.expander("📤 Sage queue status"):
