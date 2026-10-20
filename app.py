@@ -25,7 +25,7 @@ from sage_queue import (is_configured as sage_queue_configured,
                         queue_status as sage_queue_status,
                         create_open_orders, list_open_orders,
                         update_packed, queue_qty_update,
-                        queue_assembly_build,
+                        queue_assembly_build, delete_open_order,
                         transactions_from_sage_df)
 import streamlit.components.v1 as components
 
@@ -1719,44 +1719,59 @@ elif page == "Open Sales Orders":
                                    + str(l.get('description') or ''),
                     'Required': l.get('qty_required'),
                     'Packed': l.get('qty_packed'),
-                    'Assembled': bool(l.get('assembled')),
                 } for l in raw_lines])
                 ed = st.data_editor(
                     df, use_container_width=True,
                     key=f"open_{o['order_key']}",
-                    column_config={'Assembled': st.column_config.CheckboxColumn(
-                        'Assembled',
-                        help='Tick after the worker physically builds the '
-                             'assembly — Sage gets updated automatically')},
                     disabled=(o['status'] == 'complete'))
                 req = pd.to_numeric(ed['Required'], errors='coerce').fillna(0)
                 packed = pd.to_numeric(ed['Packed'], errors='coerce').fillna(0)
                 any_short = bool((packed < req).any())
                 packed_by = ((st.session_state.user or {}).get('name', '')
                              if st.session_state.get('user') else '')
-                if st.button(
+                bc1, bc2 = st.columns([4, 1])
+                with bc1:
+                    mark = st.button(
                         "⚠️ Mark Short — update Sage" if any_short else "✅ Mark Complete",
                         key=f"done_{o['order_key']}", type='primary',
-                        disabled=(o['status'] == 'complete')):
+                        disabled=(o['status'] == 'complete'),
+                        use_container_width=True)
+                with bc2:
+                    if st.button("🗑", key=f"del_{o['order_key']}",
+                                 help="Remove this order from the packing list",
+                                 use_container_width=True):
+                        try:
+                            delete_open_order(o['order_key'])
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Could not delete: {e}")
+                if mark:
                     try:
                         new_lines = []
                         builds = []
                         for i, (_, r) in enumerate(ed.iterrows()):
                             prev = raw_lines[i] if i < len(raw_lines) else {}
                             desc = re.sub(r'^⚙ ', '', str(r['Description']))
+                            packed_qty = (float(r['Packed'])
+                                          if pd.notna(r['Packed']) else 0)
+                            prev_built = float(prev.get('built_qty') or 0)
                             new_lines.append({
                                 'item_id': r['Item'],
                                 'description': desc,
                                 'qty_required': r['Required'],
-                                'qty_packed': r['Packed'],
-                                'assembled': bool(r['Assembled']),
+                                'qty_packed': (r['Packed']
+                                               if pd.notna(r['Packed']) else None),
                                 'assembly': bool(prev.get('assembly')),
+                                'built_qty': (packed_qty
+                                              if prev.get('assembly')
+                                              else prev.get('built_qty')),
                             })
-                            if (prev.get('assembly') and r['Assembled']
-                                    and not prev.get('assembled')):
-                                builds.append({'item_id': r['Item'],
-                                               'qty': r['Packed'],
-                                               'description': desc})
+                            if (prev.get('assembly')
+                                    and packed_qty > prev_built):
+                                builds.append({
+                                    'item_id': r['Item'],
+                                    'qty': packed_qty - prev_built,
+                                    'description': desc})
                         update_packed(o['order_key'], new_lines,
                                       'short' if any_short else 'complete',
                                       packed_by=packed_by)

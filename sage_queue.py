@@ -141,7 +141,7 @@ def create_open_orders(sage_df):
                 'item_id': l['item_id'],
                 'description': l['description'],
                 'qty_required': l['quantity'],
-                'qty_packed': l['quantity'],
+                'qty_packed': None,
             } for l in tx['lines']],
         })
     if not rows:
@@ -175,6 +175,13 @@ def update_packed(order_key, lines, status, packed_by=''):
         json={'lines': lines, 'status': status, 'packed_by': packed_by,
               'updated_at': 'now()'},
         timeout=20)
+    resp.raise_for_status()
+
+
+def delete_open_order(order_key):
+    """Remove a packing-list row (e.g. test orders or SOs deleted in Sage)."""
+    resp = requests.delete(_url(OPEN_TABLE, order_key=f'eq.{order_key}'),
+                           headers=_headers(), timeout=20)
     resp.raise_for_status()
 
 
