@@ -1726,7 +1726,8 @@ elif page == "Open Sales Orders":
                     key=f"open_{o['order_key']}",
                     column_config={'Assembled': st.column_config.CheckboxColumn(
                         'Assembled',
-                        help='Tick when the assembly has been built in Sage')},
+                        help='Tick after the worker physically builds the '
+                             'assembly — Sage gets updated automatically')},
                     disabled=(o['status'] == 'complete'))
                 req = pd.to_numeric(ed['Required'], errors='coerce').fillna(0)
                 packed = pd.to_numeric(ed['Packed'], errors='coerce').fillna(0)
