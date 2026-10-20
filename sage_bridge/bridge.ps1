@@ -230,6 +230,38 @@ function Write-AssemblyBuild($lines, $bom) {
     return $null
 }
 
+# Delete a sales order in Sage (app-side delete button queues this).
+# Returns a warning string or $null.
+function Remove-SalesOrder($company, [string]$soNo) {
+    $soList = $company.Factories.SalesOrderFactory.List()
+    $soList.Load()
+    $hit = $soList | Where-Object { "$($_.ReferenceNumber)" -eq $soNo } | Select-Object -First 1
+    if (-not $hit) { return "SO $soNo not in Sage (already deleted or invoiced)" }
+    $so = $company.Factories.SalesOrderFactory.Load($hit.Key)
+    if (-not $so.IsDeleteAllowed) { throw "Sales order $soNo cannot be deleted" }
+    $so.Delete()
+    return $null
+}
+
+# Auto-close packing rows whose SO disappeared from Sage (deleted or invoiced).
+function Close-MissingOrders($company) {
+    $uri = "$SUPABASE_URL/rest/v1/open_orders`?status=in.(open,short)&sage_order_no=not.is.null&select=order_key,sage_order_no"
+    $rows = @(Invoke-RestMethod -Uri $uri -Headers (Headers) -TimeoutSec 20)
+    if (-not $rows.Count) { return }
+    $soList = $company.Factories.SalesOrderFactory.List()
+    $soList.Load()
+    $existing = @{}
+    $soList | ForEach-Object { $existing["$($_.ReferenceNumber)"] = $true }
+    foreach ($r in $rows) {
+        if (-not $existing.ContainsKey("$($r.sage_order_no)")) {
+            $body = @{ status = 'complete'; updated_at = 'now()' } | ConvertTo-Json
+            Invoke-RestMethod -Uri "$SUPABASE_URL/rest/v1/open_orders`?order_key=eq.$($r.order_key)" `
+                -Method Patch -Headers (Headers) -Body $body -TimeoutSec 20 | Out-Null
+            Write-Host "[~] open order closed - SO $($r.sage_order_no) no longer in Sage" -ForegroundColor DarkYellow
+        }
+    }
+}
+
 function Update-SalesOrder($company, [string]$soNo, $lines) {
     $soList = $company.Factories.SalesOrderFactory.List()
     $soList.Load()
@@ -270,6 +302,10 @@ while ($true) {
                     $warn = Write-AssemblyBuild $row.payload.lines $bom
                     Finish-Order $key 'done' $null $warn
                     Write-Host "[+] $($key.Substring(0,8)) -> assembly build row(s) added to assembly_builds.csv$(if($warn){" ($warn)"})"
+                } elseif ($row.job_type -eq 'void_order') {
+                    $warn = Remove-SalesOrder $sess.Company "$($row.payload.sage_order_no)"
+                    Finish-Order $key 'done' $null $warn
+                    Write-Host "[+] $($key.Substring(0,8)) -> deleted Sage SO $($row.payload.sage_order_no)$(if($warn){" ($warn)"})"
                 } else {
                     $soNo = New-SalesOrder $sess.Company $row.payload $refCache
                     Finish-Order $key 'done' $soNo
@@ -289,6 +325,9 @@ while ($true) {
                 Finish-Order $key 'error' $null "$_"
                 Write-Host "[!] $($key.Substring(0,8)) FAILED: $_" -ForegroundColor Red
             }
+        }
+        try { Close-MissingOrders $sess.Company } catch {
+            Write-Host "  [!] missing-order check failed: $_" -ForegroundColor Yellow
         }
     } catch {
         Write-Host "[!] sweep failed: $_" -ForegroundColor Red

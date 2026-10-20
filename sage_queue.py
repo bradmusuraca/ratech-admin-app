@@ -185,6 +185,22 @@ def delete_open_order(order_key):
     resp.raise_for_status()
 
 
+def queue_order_void(order_key, sage_order_no):
+    """Queue a Sage-side delete for a sales order the user removed from
+    the packing list."""
+    resp = requests.post(
+        _url(),
+        headers={**_headers(), 'Prefer': 'resolution=ignore-duplicates,return=representation'},
+        json=[{
+            'order_key': f"{order_key[:20]}-void",
+            'job_type': 'void_order',
+            'status': 'pending',
+            'payload': {'sage_order_no': sage_order_no,
+                        'parent_order': order_key},
+        }], timeout=20)
+    resp.raise_for_status()
+
+
 def queue_assembly_build(order_key, lines):
     """Queue assembly build(s): the bridge appends rows to assembly_builds.csv
     in Sage's Inventory Assemblies Journal import format."""

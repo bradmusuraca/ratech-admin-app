@@ -26,6 +26,7 @@ from sage_queue import (is_configured as sage_queue_configured,
                         create_open_orders, list_open_orders,
                         update_packed, queue_qty_update,
                         queue_assembly_build, delete_open_order,
+                        queue_order_void,
                         transactions_from_sage_df)
 import streamlit.components.v1 as components
 
@@ -1738,9 +1739,13 @@ elif page == "Open Sales Orders":
                         use_container_width=True)
                 with bc2:
                     if st.button("🗑", key=f"del_{o['order_key']}",
-                                 help="Remove this order from the packing list",
+                                 help="Remove from packing list (also deletes "
+                                      "the Sage sales order)",
                                  use_container_width=True):
                         try:
+                            if o.get('sage_order_no'):
+                                queue_order_void(o['order_key'],
+                                                 o['sage_order_no'])
                             delete_open_order(o['order_key'])
                             st.rerun()
                         except Exception as e:
