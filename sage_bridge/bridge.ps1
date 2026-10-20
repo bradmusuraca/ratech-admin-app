@@ -83,19 +83,28 @@ function Record-SoNumber([string]$key, [string]$soNo) {
 function Open-SageCompany {
     $session = New-Object Sage.Peachtree.API.PeachtreeSession
     $session.Begin($APP_ID)
+    # Exact match first — substring matching can grab the wrong company
+    # (e.g. 'Precision Gasket / Ratech' also -matches 'RATECH').
     $cid = $session.CompanyList() | Where-Object {
-        $_.CompanyName -match [regex]::Escape($COMPANY_NAME) -or
-        $_.DatabaseName -match [regex]::Escape($COMPANY_NAME) -or
-        $_.Path -match [regex]::Escape($COMPANY_NAME)
+        $_.CompanyName -ieq $COMPANY_NAME -or $_.DatabaseName -ieq $COMPANY_NAME
     } | Select-Object -First 1
+    if (-not $cid) {
+        $cid = $session.CompanyList() | Where-Object {
+            $_.CompanyName -match [regex]::Escape($COMPANY_NAME) -or
+            $_.DatabaseName -match [regex]::Escape($COMPANY_NAME) -or
+            $_.Path -match [regex]::Escape($COMPANY_NAME)
+        } | Select-Object -First 1
+    }
     if (-not $cid) {
         $session.End()
         throw "No company matching '$COMPANY_NAME'. Companies seen: " +
               (($session.CompanyList() | ForEach-Object { $_.CompanyName }) -join ', ')
     }
-    $auth = $session.VerifyAccess($cid)
+    # RequestAccess activates the grant for this session (VerifyAccess
+    # alone only inspects it — Open fails with "Authentication failed").
+    $auth = $session.RequestAccess($cid)
     if ("$auth" -notmatch 'Grant|Allow|Success|Authorized') {
-        $auth = $session.RequestAccess($cid)
+        $auth = $session.VerifyAccess($cid)
     }
     $company = $session.Open($cid)
     return @{ Session = $session; Company = $company }
@@ -126,7 +135,13 @@ function New-SalesOrder($company, $payload, $refCache) {
     if ($payload.ship_by)    { $so.ShipByDate = [datetime]$payload.ship_by }
     if ($payload.ship_via)   { $so.ShipVia = Trim-To "$($payload.ship_via)" 12 }
     if ($payload.internal_note) { $so.InternalNote = Trim-To "$($payload.internal_note)" 2000 }
-    if ($payload.ship_to_name)  { $so.ShipToAddress.Name = Trim-To "$($payload.ship_to_name)" 39 }
+    if ($payload.ship_to_name)    { $so.ShipToAddress.Name = Trim-To "$($payload.ship_to_name)" 39 }
+    if ($payload.ship_to_line1)   { $so.ShipToAddress.Address.Address1 = Trim-To "$($payload.ship_to_line1)" 39 }
+    if ($payload.ship_to_line2)   { $so.ShipToAddress.Address.Address2 = Trim-To "$($payload.ship_to_line2)" 39 }
+    if ($payload.ship_to_city)    { $so.ShipToAddress.Address.City = Trim-To "$($payload.ship_to_city)" 25 }
+    if ($payload.ship_to_state)   { $so.ShipToAddress.Address.State = Trim-To "$($payload.ship_to_state)" 4 }
+    if ($payload.ship_to_zip)     { $so.ShipToAddress.Address.Zip = Trim-To "$($payload.ship_to_zip)" 12 }
+    if ($payload.ship_to_country) { $so.ShipToAddress.Address.Country = Trim-To "$($payload.ship_to_country)" 15 }
 
     foreach ($line in $payload.lines) {
         $ln = $so.AddLine()
