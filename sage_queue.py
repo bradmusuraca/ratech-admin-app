@@ -178,6 +178,27 @@ def update_packed(order_key, lines, status, packed_by=''):
     resp.raise_for_status()
 
 
+def queue_assembly_build(order_key, lines):
+    """Queue assembly build(s): the bridge appends rows to assembly_builds.csv
+    in Sage's Inventory Assemblies Journal import format."""
+    upd_key = f"{order_key[:20]}-asm-{hashlib.sha1(str(lines).encode()).hexdigest()[:8]}"
+    resp = requests.post(
+        _url(),
+        headers={**_headers(), 'Prefer': 'resolution=ignore-duplicates,return=representation'},
+        json=[{
+            'order_key': upd_key,
+            'job_type': 'build_assembly',
+            'status': 'pending',
+            'payload': {'parent_order': order_key,
+                        'lines': [{'item_id': l['item_id'],
+                                   'qty': l['qty'],
+                                   'description': l.get('description', '')}
+                                  for l in lines]},
+        }], timeout=20)
+    resp.raise_for_status()
+    return upd_key
+
+
 def queue_qty_update(order_key, sage_order_no, lines):
     """Queue a Sage-side quantity update for a short-packed order."""
     import hashlib as _h

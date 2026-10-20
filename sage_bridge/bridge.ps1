@@ -164,6 +164,72 @@ function New-SalesOrder($company, $payload, $refCache) {
     return "$($so.ReferenceNumber)"
 }
 
+# ---- assembly support ----
+# bom.csv = Sage "Inventory Assemblies Journal" export (File > Import/Export).
+# Each row is one component of a built assembly, so per-unit component qty =
+# Quantity / Quantity Built. Returns @{ assemblyId -> @{ componentId -> qty },
+# plus "<id>_rev" -> last-seen BOM revision }.
+function Get-BomMap {
+    $path = Join-Path $PSScriptRoot 'bom.csv'
+    if (-not (Test-Path $path)) { return $null }
+    $map = @{}
+    Import-Csv $path | ForEach-Object {
+        $aid = "$($_.'Assembly Item ID')".Trim()
+        $built = [decimal]"$($_.'Quantity Built')"
+        $cqty = [decimal]"$($_.Quantity)"
+        $cid2 = "$($_.'Component Item ID')".Trim()
+        if (-not $aid -or $built -eq 0 -or -not $cid2) { return }
+        if (-not $map.ContainsKey($aid)) { $map[$aid] = @{} }
+        $map[$aid][$cid2] = $cqty / $built
+        $map["${aid}_rev"] = "$($_.'Revision Number Used')"
+    }
+    return $map
+}
+
+# Tag open_orders lines whose item is a Sage assembly item.
+function Set-AssemblyFlags([string]$orderKey, $asmIds) {
+    if (-not $asmIds.Count) { return }
+    $uri = "$SUPABASE_URL/rest/v1/open_orders`?order_key=eq.$orderKey&select=lines"
+    $row = (Invoke-RestMethod -Uri $uri -Headers (Headers) -TimeoutSec 20) | Select-Object -First 1
+    if (-not $row) { return }
+    $changed = $false
+    foreach ($l in $row.lines) {
+        if ($asmIds.ContainsKey("$($l.item_id)".Trim())) {
+            $l | Add-Member -NotePropertyName assembly -NotePropertyValue $true -Force
+            $changed = $true
+        }
+    }
+    if ($changed) {
+        $body = @{ lines = @($row.lines) } | ConvertTo-Json -Depth 8 -Compress
+        Invoke-RestMethod -Uri "$SUPABASE_URL/rest/v1/open_orders`?order_key=eq.$orderKey" `
+            -Method Patch -Headers (Headers) -Body $body -TimeoutSec 20 | Out-Null
+    }
+}
+
+# Append a build to assembly_builds.csv in Sage's Assemblies Journal import
+# layout (importable fields only, export order). Returns a warning string or $null.
+function Write-AssemblyBuild($lines, $bom) {
+    $csv = Join-Path $PSScriptRoot 'assembly_builds.csv'
+    $header = 'Assembly Item ID,Reference,Date,Reason to Build,Quantity Built,Number of distributions,Quantity,Component Item ID,Revision Number Used'
+    if (-not (Test-Path $csv)) { Set-Content $csv $header }
+    $rows = @()
+    $missing = @()
+    foreach ($l in $lines) {
+        $aid = "$($l.item_id)".Trim()
+        $qty = [decimal]$l.qty
+        $comps = if ($bom) { $bom[$aid] } else { $null }
+        if (-not $comps -or $qty -le 0) { $missing += $aid; continue }
+        $rev = "$($bom["${aid}_rev"])"
+        foreach ($c in $comps.GetEnumerator()) {
+            $cq = $c.Value * $qty
+            $rows += "$aid,SO-BUILD,$(Get-Date -Format 'M/d/yy'),Packed SO build,$qty,$($comps.Count),$cq,$($c.Key),$rev"
+        }
+    }
+    if ($rows) { Add-Content $csv $rows }
+    if ($missing) { return "no BOM for: $($missing -join ', ') - build manually" }
+    return $null
+}
+
 function Update-SalesOrder($company, [string]$soNo, $lines) {
     $soList = $company.Factories.SalesOrderFactory.List()
     $soList.Load()
@@ -190,6 +256,8 @@ while ($true) {
     try {
         $sess = Open-SageCompany
         $refCache = @{ Customer = @{}; Item = @{}; Account = @{} }
+        $bom = Get-BomMap
+        $script:asmIds = $null
         foreach ($row in (Get-Pending)) {
             $key = $row.order_key
             if (-not (Claim-Order $key)) { continue }
@@ -198,10 +266,23 @@ while ($true) {
                     Update-SalesOrder $sess.Company "$($row.payload.sage_order_no)" $row.payload.lines
                     Finish-Order $key 'done'
                     Write-Host "[+] $($key.Substring(0,8)) -> updated SO $($row.payload.sage_order_no) quantities"
+                } elseif ($row.job_type -eq 'build_assembly') {
+                    $warn = Write-AssemblyBuild $row.payload.lines $bom
+                    Finish-Order $key 'done' $null $warn
+                    Write-Host "[+] $($key.Substring(0,8)) -> assembly build row(s) added to assembly_builds.csv$(if($warn){" ($warn)"})"
                 } else {
                     $soNo = New-SalesOrder $sess.Company $row.payload $refCache
                     Finish-Order $key 'done' $soNo
                     Record-SoNumber "$($row.payload.order_key)" $soNo
+                    if (-not $script:asmIds) {
+                        $script:asmIds = @{}
+                        $al = $sess.Company.Factories.AssemblyItemFactory.List()
+                        $al.Load()
+                        $al | ForEach-Object { $script:asmIds["$($_.ID)".Trim()] = $true }
+                    }
+                    try {
+                        Set-AssemblyFlags "$($row.payload.order_key)" $script:asmIds
+                    } catch { Write-Host "  [!] assembly flag failed: $_" -ForegroundColor Yellow }
                     Write-Host "[+] $($key.Substring(0,8)) -> Sage sales order $soNo"
                 }
             } catch {

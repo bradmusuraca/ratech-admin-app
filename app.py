@@ -25,6 +25,7 @@ from sage_queue import (is_configured as sage_queue_configured,
                         queue_status as sage_queue_status,
                         create_open_orders, list_open_orders,
                         update_packed, queue_qty_update,
+                        queue_assembly_build,
                         transactions_from_sage_df)
 import streamlit.components.v1 as components
 
@@ -1711,12 +1712,21 @@ elif page == "Open Sales Orders":
             if o.get('packed_by'):
                 title += f" · packed by {o['packed_by']}"
             with st.expander(title, expanded=(o['status'] != 'complete')):
-                df = pd.DataFrame(o.get('lines') or []).rename(
-                    columns={'item_id': 'Item', 'description': 'Description',
-                             'qty_required': 'Required', 'qty_packed': 'Packed'})
+                raw_lines = o.get('lines') or []
+                df = pd.DataFrame([{
+                    'Item': l.get('item_id'),
+                    'Description': ('⚙ ' if l.get('assembly') else '')
+                                   + str(l.get('description') or ''),
+                    'Required': l.get('qty_required'),
+                    'Packed': l.get('qty_packed'),
+                    'Assembled': bool(l.get('assembled')),
+                } for l in raw_lines])
                 ed = st.data_editor(
                     df, use_container_width=True,
                     key=f"open_{o['order_key']}",
+                    column_config={'Assembled': st.column_config.CheckboxColumn(
+                        'Assembled',
+                        help='Tick when the assembly has been built in Sage')},
                     disabled=(o['status'] == 'complete'))
                 req = pd.to_numeric(ed['Required'], errors='coerce').fillna(0)
                 packed = pd.to_numeric(ed['Packed'], errors='coerce').fillna(0)
@@ -1728,14 +1738,32 @@ elif page == "Open Sales Orders":
                         key=f"done_{o['order_key']}", type='primary',
                         disabled=(o['status'] == 'complete')):
                     try:
-                        new_lines = [{'item_id': r['Item'],
-                                      'description': r['Description'],
-                                      'qty_required': r['Required'],
-                                      'qty_packed': r['Packed']}
-                                     for _, r in ed.iterrows()]
+                        new_lines = []
+                        builds = []
+                        for i, (_, r) in enumerate(ed.iterrows()):
+                            prev = raw_lines[i] if i < len(raw_lines) else {}
+                            desc = re.sub(r'^⚙ ', '', str(r['Description']))
+                            new_lines.append({
+                                'item_id': r['Item'],
+                                'description': desc,
+                                'qty_required': r['Required'],
+                                'qty_packed': r['Packed'],
+                                'assembled': bool(r['Assembled']),
+                                'assembly': bool(prev.get('assembly')),
+                            })
+                            if (prev.get('assembly') and r['Assembled']
+                                    and not prev.get('assembled')):
+                                builds.append({'item_id': r['Item'],
+                                               'qty': r['Packed'],
+                                               'description': desc})
                         update_packed(o['order_key'], new_lines,
                                       'short' if any_short else 'complete',
                                       packed_by=packed_by)
+                        if builds:
+                            queue_assembly_build(o['order_key'], builds)
+                            st.info(f"Queued {len(builds)} assembly build(s) — "
+                                    "bridge writes them to assembly_builds.csv "
+                                    "for Sage import.")
                         if any_short and o.get('sage_order_no'):
                             queue_qty_update(o['order_key'], o['sage_order_no'],
                                              new_lines)
