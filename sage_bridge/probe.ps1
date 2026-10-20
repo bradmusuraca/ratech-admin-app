@@ -76,14 +76,18 @@ try {
 
 Write-Host "`nFirst 5 customers (ID -> Name):"
 try {
-    $company.Factories.CustomerFactory.List() | Select-Object -First 5 |
+    $cl = $company.Factories.CustomerFactory.List(); $cl.Load()
+    $cl | Select-Object -First 5 |
         ForEach-Object { Write-Host "  $($_.ID) -> $($_.Name)" }
+    Write-Host "  ($($cl.Count) customers total)"
 } catch { Write-Host "  $_" -ForegroundColor Yellow }
 
 Write-Host "`nFirst 5 inventory items (ID -> Description):"
 try {
-    $company.Factories.InventoryItemFactory.List() | Select-Object -First 5 |
+    $il = $company.Factories.InventoryItemFactory.List(); $il.Load()
+    $il | Select-Object -First 5 |
         ForEach-Object { Write-Host "  $($_.ID) -> $($_.Description)" }
+    Write-Host "  ($($il.Count) items total)"
 } catch { Write-Host "  $_" -ForegroundColor Yellow }
 
 Write-Host "`nNext sales order number (peek only):"

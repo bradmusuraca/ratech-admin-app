@@ -102,11 +102,14 @@ function Open-SageCompany {
 }
 
 # Resolve an entity's Key (EntityReference) by its ID, cached per sweep.
+# NOTE: factory.List() returns an UNLOADED collection — .Load() first.
 function Resolve-Ref($factory, [string]$id, $cache) {
     if ($cache.ContainsKey($id)) { return $cache[$id] }
-    $hit = $factory.List() | Where-Object { "$($_.ID)" -eq $id } | Select-Object -First 1
+    $list = $factory.List()
+    $list.Load()
+    $hit = $list | Where-Object { "$($_.ID)" -eq $id } | Select-Object -First 1
     if (-not $hit) {
-        $hit = $factory.List() | Where-Object { "$($_.Number)" -eq $id } | Select-Object -First 1
+        $hit = $list | Where-Object { "$($_.Number)" -eq $id } | Select-Object -First 1
     }
     if (-not $hit) { throw "No Sage entity with ID '$id'" }
     $cache[$id] = $hit.Key
@@ -132,19 +135,24 @@ function New-SalesOrder($company, $payload, $refCache) {
         $ln.Description  = Trim-To "$($line.description)" 160
         $ln.Quantity     = [decimal]$line.quantity
         $ln.UnitPrice    = [decimal]$line.unit_price
+        $ln.Amount       = [decimal]$line.quantity * [decimal]$line.unit_price
         $ln.SalesTaxType = 1
+        try { $ln.Validate() | Out-Null } catch { }
         if ($line.gl_account) {
             try { $ln.AccountReference = Resolve-Ref $company.Factories.AccountFactory "$($line.gl_account)" $refCache.Account }
             catch { Write-Host "  [!] G/L account $($line.gl_account) unresolved, using item default" -ForegroundColor Yellow }
         }
     }
+    # Sage requires an explicit reference number — take the next one
+    $so.ReferenceNumber = "$($company.Services.ReferenceNumber.TakeNextSalesOrderNumber())"
     $so.Save()
     return "$($so.ReferenceNumber)"
 }
 
 function Update-SalesOrder($company, [string]$soNo, $lines) {
-    $hit = $company.Factories.SalesOrderFactory.List() |
-           Where-Object { "$($_.ReferenceNumber)" -eq $soNo } | Select-Object -First 1
+    $soList = $company.Factories.SalesOrderFactory.List()
+    $soList.Load()
+    $hit = $soList | Where-Object { "$($_.ReferenceNumber)" -eq $soNo } | Select-Object -First 1
     if (-not $hit) { throw "Sales order '$soNo' not found" }
     $so = $company.Factories.SalesOrderFactory.Load($hit.Key)
     $want = @{}
