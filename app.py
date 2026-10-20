@@ -776,8 +776,6 @@ def _orders_print_html(sage_df):
             f"<td>{_h.escape(str(l['item_id']))}</td>"
             f"<td>{_h.escape(str(l['description']))}</td>"
             f"<td class='num'>{_h.escape(str(l['quantity']))}</td>"
-            f"<td class='num'>{_h.escape(str(l['unit_price']))}</td>"
-            f"<td class='num'>{_h.escape(str(l['amount']))}</td>"
             "<td class='packed'></td></tr>"
             for l in tx['lines'])
         city_state_zip = ' '.join(p for p in [tx.get('ship_to_city', ''),
@@ -799,7 +797,7 @@ def _orders_print_html(sage_df):
             f"<td><b>Via:</b> {_h.escape(tx['ship_via'])}</td></tr></table>"
             f"<p><b>Ship to:</b><br>{ship_addr}</p>"
             "<table class='lines'><tr><th>Item</th><th>Description</th>"
-            "<th>Qty</th><th>Price</th><th>Amount</th><th>Packed</th></tr>"
+            "<th>Qty</th><th>Packed</th></tr>"
             f"{lines}</table></div>")
     return ("<!doctype html><html><head><style>"
             "body{font-family:Arial,sans-serif;margin:8px}"
