@@ -254,6 +254,7 @@ function Write-WithRetry($path, $lines, [switch]$Overwrite) {
             else { Add-Content $path $lines }
             return
         } catch {
+            Write-Host "  [.] write retry $($i+1): $($_.Exception.GetType().Name): $($_.Exception.Message)" -ForegroundColor DarkYellow
             if ($i -eq 4) { throw }
             Start-Sleep -Seconds 2
         }
