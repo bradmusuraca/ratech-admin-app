@@ -220,27 +220,26 @@ Exit 0
 
 
 Func _SelectLB($hWnd, $hCtl, $needle)
-    ; ABD_Listbox ignores ALL listbox messages and ControlSend keys.
-    ; Click it to focus (real mouse input), then type the first letter -
-    ; listboxes jump to items starting with that letter, cycling through
-    ; them on repeat presses. Verify via the dialog's own text, which
-    ; shows the selected area name / template description.
+    ; ABD_Listbox ignores listbox messages, ControlSend keys AND letter
+    ; type-ahead. Real clicks DO select rows, and the dialog text shows
+    ; the selected area / template description - so click each visible
+    ; row until the dialog text reports the target.
     WinActivate($hWnd)
     Sleep(300)
     Local $aPos = ControlGetPos($hWnd, "", $hCtl)
-    If IsArray($aPos) Then
-        ControlClick($hWnd, "", $hCtl, "left", 1, Int($aPos[2] / 2), 5)
-        Sleep(400)
-    EndIf
-    For $n = 1 To 8
-        Send(StringLeft($needle, 1))
-        Sleep(400)
+    If Not IsArray($aPos) Then Return False
+    Local $rowH = 17
+    Local $maxRows = Int($aPos[3] / $rowH)
+    For $r = 0 To $maxRows - 1
+        Local $y = Int($rowH * $r + $rowH / 2)
+        ControlClick($hWnd, "", $hCtl, "left", 1, Int($aPos[2] / 2), $y)
+        Sleep(350)
         If StringInStr(WinGetText($hWnd), $needle) Then
-            _Log("  '" & $needle & "' reached after " & $n & " keypress(es)")
+            _Log("  '" & $needle & "' selected by click at row " & $r)
             Return True
         EndIf
     Next
-    _Log("  '" & $needle & "' not reached after 8 keypresses")
+    _Log("  '" & $needle & "' not found in " & $maxRows & " visible rows")
     Return False
 EndFunc
 
