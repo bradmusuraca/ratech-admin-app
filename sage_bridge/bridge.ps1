@@ -82,9 +82,11 @@ function Record-SoNumber([string]$key, [string]$soNo) {
 # ---- Sage session ----
 function Open-SageCompany {
     $session = New-Object Sage.Peachtree.API.PeachtreeSession
+    Write-Host "  [.] begin..." -ForegroundColor DarkGray
     $session.Begin($APP_ID)
     # Exact match first — substring matching can grab the wrong company
     # (e.g. 'Precision Gasket / Ratech' also -matches 'RATECH').
+    Write-Host "  [.] company list..." -ForegroundColor DarkGray
     $cid = $session.CompanyList() | Where-Object {
         $_.CompanyName -ieq $COMPANY_NAME -or $_.DatabaseName -ieq $COMPANY_NAME
     } | Select-Object -First 1
@@ -102,10 +104,12 @@ function Open-SageCompany {
     }
     # RequestAccess activates the grant for this session (VerifyAccess
     # alone only inspects it — Open fails with "Authentication failed").
+    Write-Host "  [.] request access ($($cid.CompanyName))..." -ForegroundColor DarkGray
     $auth = $session.RequestAccess($cid)
     if ("$auth" -notmatch 'Grant|Allow|Success|Authorized') {
         $auth = $session.VerifyAccess($cid)
     }
+    Write-Host "  [.] open..." -ForegroundColor DarkGray
     $company = $session.Open($cid)
     return @{ Session = $session; Company = $company }
 }
@@ -282,17 +286,22 @@ function Update-SalesOrder($company, [string]$soNo, $lines) {
     $so.Save()
 }
 
-Write-Host "Sage bridge polling every $POLL_SECONDS s - Ctrl+C to stop"
+Write-Host "Sage bridge v3 polling every $POLL_SECONDS s - Ctrl+C to stop"
 while ($true) {
+    Write-Host "[.] sweep start $(Get-Date -Format 'HH:mm:ss')" -ForegroundColor DarkGray
     $sess = $null
     try {
         $sess = Open-SageCompany
+        Write-Host "  [.] sage open OK" -ForegroundColor DarkGray
         $refCache = @{ Customer = @{}; Item = @{}; Account = @{} }
         $bom = Get-BomMap
         $script:asmIds = $null
-        foreach ($row in (Get-Pending)) {
+        $pendingRows = @(Get-Pending)
+        Write-Host "  [.] pending rows: $($pendingRows.Count)" -ForegroundColor DarkGray
+        foreach ($row in $pendingRows) {
             $key = $row.order_key
-            if (-not (Claim-Order $key)) { continue }
+            Write-Host "  [.] claim $key ($($row.job_type))..." -ForegroundColor DarkGray
+            if (-not (Claim-Order $key)) { Write-Host "  [.] claim skipped (0 rows updated)" -ForegroundColor DarkGray; continue }
             try {
                 if ($row.job_type -eq 'qty_update') {
                     Update-SalesOrder $sess.Company "$($row.payload.sage_order_no)" $row.payload.lines
