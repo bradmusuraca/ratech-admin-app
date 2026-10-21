@@ -53,9 +53,18 @@ function Headers {
     }
 }
 
+# Invoke-RestMethod in PS 5.1 can return a JSON array wrapped as ONE
+# object instead of one element per row — flatten to real rows.
+function Get-Rows($uri) {
+    $r = Invoke-RestMethod -Uri $uri -Headers (Headers) -TimeoutSec 20
+    $rows = @()
+    if ($null -ne $r) { foreach ($x in $r) { $rows += $x } }
+    return $rows
+}
+
 function Get-Pending {
     $uri = "$SUPABASE_URL/rest/v1/$TABLE`?status=eq.pending&order=created_at.asc&select=order_key,job_type,payload"
-    Invoke-RestMethod -Uri $uri -Headers (Headers) -TimeoutSec 20
+    Get-Rows $uri
 }
 
 function Claim-Order([string]$key) {
@@ -250,7 +259,7 @@ function Remove-SalesOrder($company, [string]$soNo) {
 # Auto-close packing rows whose SO disappeared from Sage (deleted or invoiced).
 function Close-MissingOrders($company) {
     $uri = "$SUPABASE_URL/rest/v1/open_orders`?status=in.(open,short)&sage_order_no=not.is.null&select=order_key,sage_order_no"
-    $rows = @(Invoke-RestMethod -Uri $uri -Headers (Headers) -TimeoutSec 20)
+    $rows = Get-Rows $uri
     if (-not $rows.Count) { return }
     $soList = $company.Factories.SalesOrderFactory.List()
     $soList.Load()
