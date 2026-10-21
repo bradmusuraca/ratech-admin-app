@@ -220,34 +220,28 @@ Exit 0
 
 
 Func _SelectLB($hWnd, $hCtl, $needle)
-    ; The ABD listbox answers FindString/GetCount but ignores
-    ; SetCurrentSelection and ControlSend keys - click the item's row.
-    Local $i = ControlCommand($hWnd, "", $hCtl, "FindString", $needle)
+    ; ABD_Listbox ignores ALL listbox messages and ControlSend keys.
+    ; Click it to focus (real mouse input), then type the first letter -
+    ; listboxes jump to items starting with that letter, cycling through
+    ; them on repeat presses. Verify via the dialog's own text, which
+    ; shows the selected area name / template description.
+    WinActivate($hWnd)
+    Sleep(300)
     Local $aPos = ControlGetPos($hWnd, "", $hCtl)
-
-    If $i >= 0 And IsArray($aPos) Then
-        Local $n = ControlCommand($hWnd, "", $hCtl, "GetCount")
-        Local $rowH = 18
-        If $n > 0 Then $rowH = $aPos[3] / $n
-        Local $x = Int($aPos[2] / 2)
-        Local $y = Int($rowH * $i + $rowH / 2)
-        ControlClick($hWnd, "", $hCtl, "left", 1, $x, $y)
-        Sleep(600)
-        _Log("  clicked '" & $needle & "' at " & $x & "," & $y & " (idx " & $i & ", rows " & $n & ", rowH " & $rowH & ")")
-        Return True
-    EndIf
-
-    ; Fallback: click to focus, then real keystrokes
     If IsArray($aPos) Then
-        ControlClick($hWnd, "", $hCtl, "left", 1, Int($aPos[2] / 2), Int($aPos[3] / 2))
-        Sleep(300)
+        ControlClick($hWnd, "", $hCtl, "left", 1, Int($aPos[2] / 2), 5)
+        Sleep(400)
     EndIf
-    Send("{HOME}")
-    Send(StringLeft($needle, 1))
-    Sleep(500)
-    Local $s = ControlCommand($hWnd, "", $hCtl, "GetCurrentSelection")
-    _Log("  listbox selection after key '" & StringLeft($needle,1) & "': " & $s)
-    Return (StringInStr($s, $needle) > 0)
+    For $n = 1 To 8
+        Send(StringLeft($needle, 1))
+        Sleep(400)
+        If StringInStr(WinGetText($hWnd), $needle) Then
+            _Log("  '" & $needle & "' reached after " & $n & " keypress(es)")
+            Return True
+        EndIf
+    Next
+    _Log("  '" & $needle & "' not reached after 8 keypresses")
+    Return False
 EndFunc
 
 Func _Log($s)
