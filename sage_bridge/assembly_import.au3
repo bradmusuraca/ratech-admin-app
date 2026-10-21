@@ -179,7 +179,7 @@ Exit 0
 
 Func _Log($s)
     Local $h = FileOpen($sLog, $FO_APPEND)
-    FileWriteLine($h, @YMD & " " & @HOUR & ":" & @MIN & ":" & @SEC & "  " & $s)
+    FileWriteLine($h, @YEAR & "-" & @MON & "-" & @MDAY & " " & @HOUR & ":" & @MIN & ":" & @SEC & "  " & $s)
     FileClose($h)
 EndFunc
 
