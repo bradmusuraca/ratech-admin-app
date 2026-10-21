@@ -72,15 +72,16 @@ Local $hIE = WinGetHandle("Select Import/Export")
 WinActivate($hIE)
 Sleep(500)
 
-; Sage 50's dialog uses classic ListBox controls: area list on the left,
-; template list on the right, plus IMPORT/EXPORT buttons.
+; Sage 50's dialog uses custom ABD_Listbox controls (area list on the
+; left, template list on the right) and BITMAPBUTTON buttons.
 _Log("IE classes: " & StringReplace(WinGetClassList($hIE), @LF, " | "))
 
-; Enumerate ListBox instances with their x positions
+; Enumerate ABD_Listbox / ListBox instances with their x positions
 Local $aLB[8][2]
 Local $nLB = 0
 For $iInst = 1 To 8
-    Local $h = ControlGetHandle($hIE, "", "[CLASS:ListBox; INSTANCE:" & $iInst & "]")
+    Local $h = ControlGetHandle($hIE, "", "[CLASS:ABD_Listbox; INSTANCE:" & $iInst & "]")
+    If $h = "" Then $h = ControlGetHandle($hIE, "", "[CLASS:ListBox; INSTANCE:" & $iInst & "]")
     If $h = "" Then ExitLoop
     Local $aPos = ControlGetPos($hIE, "", $h)
     $aLB[$nLB][0] = $h
@@ -98,22 +99,18 @@ If $nLB >= 1 Then
     For $k = 1 To $nLB - 1
         If $aLB[$k][1] < $aLB[$iMin][1] Then $iMin = $k
     Next
-    Local $iArea = ControlCommand($hIE, "", $aLB[$iMin][0], "FindString", "Inventory")
-    If $iArea >= 0 Then
-        ControlCommand($hIE, "", $aLB[$iMin][0], "SetCurrentSelection", $iArea)
+    If _SelectLB($hIE, $aLB[$iMin][0], "Inventory") Then
         _Log("selected area 'Inventory'")
-        Sleep(1000)
     Else
-        _Log("WARN: 'Inventory' not found in left listbox")
+        _Log("WARN: could not select area 'Inventory'")
     EndIf
+    Sleep(1000)
 EndIf
 
 ; Other listbox(es) = templates; select the assemblies journal
 For $k = 0 To $nLB - 1
     If $k = $iMin And $nLB > 1 Then ContinueLoop
-    Local $iT = ControlCommand($hIE, "", $aLB[$k][0], "FindString", "Assembl")
-    If $iT >= 0 Then
-        ControlCommand($hIE, "", $aLB[$k][0], "SetCurrentSelection", $iT)
+    If _SelectLB($hIE, $aLB[$k][0], "Assembl") Then
         _Log("selected assembly template in listbox " & $k)
         $bSelected = True
         ExitLoop
@@ -134,41 +131,15 @@ If Not $bSelected Then
     EndIf
 EndIf
 If Not $bSelected Then
-    $sCtl = ControlGetHandle($hIE, "", "[CLASS:SysTreeView32; INSTANCE:1]")
-    If $sCtl <> "" Then
-        ControlTreeView($hIE, "", $sCtl, "Select", "#0|Inventory|Inventory Assemblies Journal")
-        Sleep(400)
-        $bSelected = True
-        _Log("selected template in TreeView")
-    EndIf
-EndIf
-If Not $bSelected Then
     _Snap("no_template_control")
     _Log("WARN: no template control took the selection")
 EndIf
 
-; Click the IMPORT button - find it by enumerating buttons
-Local $bClicked = False
-For $iInst = 1 To 12
-    Local $hB = ControlGetHandle($hIE, "", "[CLASS:Button; INSTANCE:" & $iInst & "]")
-    If $hB = "" Then ExitLoop
-    Local $sBT = ControlGetText($hIE, "", $hB)
-    _Log("button " & $iInst & ": " & $sBT)
-    If StringInStr($sBT, "mport") And Not StringInStr($sBT, "xport") Then
-        If ControlCommand($hIE, "", $hB, "IsEnabled") Then
-            ControlClick($hIE, "", $hB)
-            $bClicked = True
-            _Log("clicked Import")
-            ExitLoop
-        Else
-            _Log("Import button disabled (template not selected?)")
-        EndIf
-    EndIf
-Next
-If Not $bClicked Then
-    _Log("WARN: no Import button clicked - sending Enter")
-    Send("{ENTER}")
-EndIf
+; IMPORT button's accelerator is Alt+P (window text shows 'IMPORT&P')
+WinActivate($hIE)
+Sleep(300)
+_Log("pressing Alt+P (IMPORT)")
+Send("!p")
 Sleep(800)
 
 ; ---- template window (Fields/Options tabs + filename) ----
@@ -236,6 +207,25 @@ If WinExists("Select Import/Export") Then WinClose("Select Import/Export")
 _Log("=== import run end ===")
 Exit 0
 
+
+Func _SelectLB($hWnd, $hCtl, $needle)
+    ; Try message-based selection first (works if ABD_Listbox responds
+    ; to standard listbox messages)
+    Local $i = ControlCommand($hWnd, "", $hCtl, "FindString", $needle)
+    If $i >= 0 Then
+        ControlCommand($hWnd, "", $hCtl, "SetCurrentSelection", $i)
+        Sleep(300)
+        Return True
+    EndIf
+    ; Fallback: focus the listbox and jump by first letter, then verify
+    ControlFocus($hWnd, "", $hCtl)
+    Sleep(300)
+    ControlSend($hWnd, "", $hCtl, StringLeft($needle, 1))
+    Sleep(500)
+    Local $s = ControlCommand($hWnd, "", $hCtl, "GetCurrentSelection")
+    _Log("  listbox selection after key '" & StringLeft($needle,1) & "': " & $s)
+    Return (StringInStr($s, $needle) > 0)
+EndFunc
 
 Func _Log($s)
     Local $h = FileOpen($sLog, $FO_APPEND)
