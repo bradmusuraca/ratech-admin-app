@@ -72,45 +72,101 @@ Local $hIE = WinGetHandle("Select Import/Export")
 WinActivate($hIE)
 Sleep(500)
 
-; The dialog is a tree/list of program areas + templates. Try every common
-; control type; log what we find if none take the selection.
-Local $bSelected = False
+; Sage 50's dialog uses classic ListBox controls: area list on the left,
+; template list on the right, plus IMPORT/EXPORT buttons.
+_Log("IE classes: " & StringReplace(WinGetClassList($hIE), @LF, " | "))
 
-; Try a list view first (SysListView32)
-Local $sCtl = ControlGetHandle($hIE, "", "[CLASS:SysListView32; INSTANCE:1]")
-If $sCtl <> "" Then
-    Local $iItem = ControlListView($hIE, "", $sCtl, "FindItem", "Inventory Assemblies Journal")
-    If $iItem < 0 Then $iItem = ControlListView($hIE, "", $sCtl, "FindItem", "Assemblies Journal")
-    If $iItem >= 0 Then
-        ControlListView($hIE, "", $sCtl, "Select", $iItem)
-        $bSelected = True
-        _Log("selected template in ListView")
+; Enumerate ListBox instances with their x positions
+Local $aLB[8][2]
+Local $nLB = 0
+For $iInst = 1 To 8
+    Local $h = ControlGetHandle($hIE, "", "[CLASS:ListBox; INSTANCE:" & $iInst & "]")
+    If $h = "" Then ExitLoop
+    Local $aPos = ControlGetPos($hIE, "", $h)
+    $aLB[$nLB][0] = $h
+    $aLB[$nLB][1] = 9999
+    If IsArray($aPos) Then $aLB[$nLB][1] = $aPos[0]
+    $nLB += 1
+Next
+_Log("listboxes found: " & $nLB)
+
+Local $bSelected = False
+Local $iMin = 0
+
+; Leftmost listbox = program area; select "Inventory"
+If $nLB >= 1 Then
+    For $k = 1 To $nLB - 1
+        If $aLB[$k][1] < $aLB[$iMin][1] Then $iMin = $k
+    Next
+    Local $iArea = ControlCommand($hIE, "", $aLB[$iMin][0], "FindString", "Inventory")
+    If $iArea >= 0 Then
+        ControlCommand($hIE, "", $aLB[$iMin][0], "SetCurrentSelection", $iArea)
+        _Log("selected area 'Inventory'")
+        Sleep(1000)
+    Else
+        _Log("WARN: 'Inventory' not found in left listbox")
     EndIf
 EndIf
 
-; Try a tree view (SysTreeView32)
+; Other listbox(es) = templates; select the assemblies journal
+For $k = 0 To $nLB - 1
+    If $k = $iMin And $nLB > 1 Then ContinueLoop
+    Local $iT = ControlCommand($hIE, "", $aLB[$k][0], "FindString", "Assembl")
+    If $iT >= 0 Then
+        ControlCommand($hIE, "", $aLB[$k][0], "SetCurrentSelection", $iT)
+        _Log("selected assembly template in listbox " & $k)
+        $bSelected = True
+        ExitLoop
+    EndIf
+Next
+
+; Fallbacks for other Sage versions: ListView / TreeView
+If Not $bSelected Then
+    Local $sCtl = ControlGetHandle($hIE, "", "[CLASS:SysListView32; INSTANCE:1]")
+    If $sCtl <> "" Then
+        Local $iItem = ControlListView($hIE, "", $sCtl, "FindItem", "Inventory Assemblies Journal")
+        If $iItem < 0 Then $iItem = ControlListView($hIE, "", $sCtl, "FindItem", "Assemblies Journal")
+        If $iItem >= 0 Then
+            ControlListView($hIE, "", $sCtl, "Select", $iItem)
+            $bSelected = True
+            _Log("selected template in ListView")
+        EndIf
+    EndIf
+EndIf
 If Not $bSelected Then
     $sCtl = ControlGetHandle($hIE, "", "[CLASS:SysTreeView32; INSTANCE:1]")
     If $sCtl <> "" Then
         ControlTreeView($hIE, "", $sCtl, "Select", "#0|Inventory|Inventory Assemblies Journal")
         Sleep(400)
-        $bSelected = True   ; best-effort - even partial select may work
+        $bSelected = True
         _Log("selected template in TreeView")
     EndIf
 EndIf
-
 If Not $bSelected Then
     _Snap("no_template_control")
-    _Log("WARN: no list/tree control found - attempting blind Import click anyway")
+    _Log("WARN: no template control took the selection")
 EndIf
 
-; Click the Import button
-If ControlCommand($hIE, "", "[CLASS:Button; TEXT:&Import]", "IsEnabled") Then
-    ControlClick($hIE, "", "[CLASS:Button; TEXT:&Import]")
-ElseIf ControlCommand($hIE, "", "[CLASS:Button; TEXT:Import]", "IsEnabled") Then
-    ControlClick($hIE, "", "[CLASS:Button; TEXT:Import]")
-Else
-    ; fall back: Enter usually triggers the default action
+; Click the IMPORT button - find it by enumerating buttons
+Local $bClicked = False
+For $iInst = 1 To 12
+    Local $hB = ControlGetHandle($hIE, "", "[CLASS:Button; INSTANCE:" & $iInst & "]")
+    If $hB = "" Then ExitLoop
+    Local $sBT = ControlGetText($hIE, "", $hB)
+    _Log("button " & $iInst & ": " & $sBT)
+    If StringInStr($sBT, "mport") And Not StringInStr($sBT, "xport") Then
+        If ControlCommand($hIE, "", $hB, "IsEnabled") Then
+            ControlClick($hIE, "", $hB)
+            $bClicked = True
+            _Log("clicked Import")
+            ExitLoop
+        Else
+            _Log("Import button disabled (template not selected?)")
+        EndIf
+    EndIf
+Next
+If Not $bClicked Then
+    _Log("WARN: no Import button clicked - sending Enter")
     Send("{ENTER}")
 EndIf
 Sleep(800)
