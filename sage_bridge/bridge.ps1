@@ -188,10 +188,10 @@ function Get-BomMap {
     if (-not (Test-Path $path)) { return $null }
     $map = @{}
     Import-Csv $path | ForEach-Object {
-        $aid = "$($_.'Assembly Item ID')".Trim()
+        $aid = "$($_.'Assembly Item ID')".Trim().ToUpper()
         $built = [decimal]"$($_.'Quantity Built')"
         $cqty = [decimal]"$($_.Quantity)"
-        $cid2 = "$($_.'Component Item ID')".Trim()
+        $cid2 = "$($_.'Component Item ID')".Trim().ToUpper()
         if (-not $aid -or $built -eq 0 -or -not $cid2) { return }
         if (-not $map.ContainsKey($aid)) { $map[$aid] = @{} }
         $map[$aid][$cid2] = $cqty / $built
@@ -208,7 +208,7 @@ function Set-AssemblyFlags([string]$orderKey, $asmIds) {
     if (-not $row) { return }
     $changed = $false
     foreach ($l in $row.lines) {
-        if ($asmIds.ContainsKey("$($l.item_id)".Trim())) {
+        if ($asmIds.ContainsKey("$($l.item_id)".Trim().ToUpper())) {
             $l | Add-Member -NotePropertyName assembly -NotePropertyValue $true -Force
             $changed = $true
         }
@@ -229,7 +229,7 @@ function Write-AssemblyBuild($lines, $bom) {
     $rows = @()
     $missing = @()
     foreach ($l in $lines) {
-        $aid = "$($l.item_id)".Trim()
+        $aid = "$($l.item_id)".Trim().ToUpper()
         $qty = [decimal]$l.qty
         $comps = if ($bom) { $bom[$aid] } else { $null }
         if (-not $comps -or $qty -le 0) { $missing += $aid; continue }
@@ -343,7 +343,7 @@ while ($true) {
                         $script:asmIds = @{}
                         $al = $sess.Company.Factories.AssemblyItemFactory.List()
                         $al.Load()
-                        $al | ForEach-Object { $script:asmIds["$($_.ID)".Trim()] = $true }
+                        $al | ForEach-Object { $script:asmIds["$($_.ID)".Trim().ToUpper()] = $true }
                     }
                     try {
                         Set-AssemblyFlags "$($row.payload.order_key)" $script:asmIds
