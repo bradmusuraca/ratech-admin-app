@@ -184,19 +184,25 @@ def load_customers():
     return pd.DataFrame(columns=CUSTOMER_COLS)
 
 
-def guess_customer(text):
+def guess_customer(text, channel=''):
     """Return the Sage customer number whose alias OR name appears in the
-    given text (extracted document text, filename, channel name, etc.)."""
-    tl = (text or '').lower()
-    for _, row in load_customers().iterrows():
-        terms = str(row.get('Aliases', '')).split(';')
-        terms.append(str(row.get('Customer Name', '')))
-        for term in terms:
-            term = term.strip().lower()
-            # Word boundaries: bare substring matching lets a short alias
-            # like "rms" hit inside "terms"/"forms" and pick the wrong customer.
-            if term and re.search(r'\b' + re.escape(term) + r'\b', tl):
-                return str(row.get('Customer Number', '')).strip()
+    given text. Channel (filename + sender) is checked first — a PO's
+    bill-to block can print a different customer's name (e.g. a Ford PO
+    that says 'RMS' should resolve to the sender's customer, not the
+    bill-to text)."""
+    for src in (channel, text):
+        tl = (src or '').lower()
+        if not tl:
+            continue
+        for _, row in load_customers().iterrows():
+            terms = str(row.get('Aliases', '')).split(';')
+            terms.append(str(row.get('Customer Name', '')))
+            for term in terms:
+                term = term.strip().lower()
+                # Word boundaries: bare substring matching lets a short alias
+                # like "rms" hit inside "terms"/"forms" and pick the wrong customer.
+                if term and re.search(r'\b' + re.escape(term) + r'\b', tl):
+                    return str(row.get('Customer Number', '')).strip()
     return ''
 
 
@@ -235,8 +241,8 @@ def resolve_vendor(inv):
     vend = [v for v in df['Vendor'].astype(str).unique() if v.strip()]
     if vend and all(v in cust_numbers for v in vend):
         return
-    gc = guess_customer(f"{inv.get('name', '')}\n{inv.get('extracted_text') or ''}\n"
-                        f"{(inv.get('email') or {}).get('sender', '')}")
+    gc = guess_customer(inv.get('extracted_text') or '',
+                        f"{inv.get('name', '')}\n{(inv.get('email') or {}).get('sender', '')}")
     if gc:
         df['Vendor'] = gc
         inv['customer'] = gc
@@ -374,7 +380,7 @@ def build_invoice(pdf_bytes, pdf_name, doc_key, email_meta=None):
 
     inv['df'] = df
     # Auto-assign Sage customer number when a known customer is detected
-    gc = guess_customer(f"{pdf_name}\n{extracted_text}")
+    gc = guess_customer(extracted_text, pdf_name)
     if gc and 'Vendor' in inv['df'].columns:
         inv['df']['Vendor'] = gc
         inv['customer'] = gc
@@ -423,7 +429,7 @@ def build_text_invoice(text, name, doc_key, email_meta=None):
             df = pd.DataFrame(columns=["Purchase Order Number", "Date of Order", "Ship By Date", "Ship To", "Invoice Address", "Vendor", "Shipping Instructions", "Comments", "Inventory Item", "Description", "Quantity", "Unit Price", "Total"])
             df.loc[0] = [""] * len(df.columns)
     inv['df'] = _apply_email_date(df, email_meta)
-    gc = guess_customer(f"{name}\n{text}\n{(email_meta or {}).get('sender', '')}")
+    gc = guess_customer(text, f"{name}\n{(email_meta or {}).get('sender', '')}")
     if gc and 'Vendor' in inv['df'].columns:
         inv['df']['Vendor'] = gc
         inv['customer'] = gc
