@@ -29,10 +29,14 @@ Local $hSage = 0
 For $i = 1 To $aProcs[0][0]
     Local $aWins = WinList()
     For $j = 1 To $aWins[0][0]
-        If $aWins[$j][1] <> "" And WinGetProcess($aWins[$j][1]) = $aProcs[$i][1] Then
-            If BitAND(WinGetState($aWins[$j][1]), 2) Then  ; visible
-                $hSage = $aWins[$j][1]
-                ExitLoop 2
+        If $aWins[$j][0] <> "" And WinGetProcess($aWins[$j][1]) = $aProcs[$i][1] Then
+            If BitAND(WinGetState($aWins[$j][1]), 2) Then  ; visible, non-empty title
+                If StringInStr($aWins[$j][0], "Sage") Then
+                    $hSage = $aWins[$j][1]
+                    ExitLoop 2
+                ElseIf $hSage = 0 Then
+                    $hSage = $aWins[$j][1]  ; first candidate as fallback
+                EndIf
             EndIf
         EndIf
     Next
