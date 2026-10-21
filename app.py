@@ -193,7 +193,9 @@ def guess_customer(text):
         terms.append(str(row.get('Customer Name', '')))
         for term in terms:
             term = term.strip().lower()
-            if term and term in tl:
+            # Word boundaries: bare substring matching lets a short alias
+            # like "rms" hit inside "terms"/"forms" and pick the wrong customer.
+            if term and re.search(r'\b' + re.escape(term) + r'\b', tl):
                 return str(row.get('Customer Number', '')).strip()
     return ''
 
