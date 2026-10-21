@@ -174,6 +174,7 @@ function New-SalesOrder($company, $payload, $refCache) {
     # Sage requires an explicit reference number — take the next one
     $so.ReferenceNumber = "$($company.Services.ReferenceNumber.TakeNextSalesOrderNumber())"
     $so.Save()
+    $script:soList = $null   # new SO - invalidate the cached list
     return "$($so.ReferenceNumber)"
 }
 
@@ -245,16 +246,27 @@ function Write-AssemblyBuild($lines, $bom) {
 
 # Delete a sales order in Sage (app-side delete button queues this).
 # Returns a warning string or $null.
+# Sales-order list is 40k+ rows - load once per sweep, lazily.
+# Callers that create or delete an SO must set $script:soList = $null
+# afterwards so the cache doesn't serve stale data to later jobs.
+$script:soList = $null
+function Get-SoList($company) {
+    if ($null -eq $script:soList) {
+        Write-Host "  [.] loading SO list..." -ForegroundColor DarkGray
+        $script:soList = $company.Factories.SalesOrderFactory.List()
+        $script:soList.Load()
+        Write-Host "  [.] SO list loaded ($($script:soList.Count))" -ForegroundColor DarkGray
+    }
+    return $script:soList
+}
+
 function Remove-SalesOrder($company, [string]$soNo) {
-    Write-Host "  [.] loading SO list..." -ForegroundColor DarkGray
-    $soList = $company.Factories.SalesOrderFactory.List()
-    $soList.Load()
-    Write-Host "  [.] SO list loaded, finding $soNo..." -ForegroundColor DarkGray
-    $hit = $soList | Where-Object { "$($_.ReferenceNumber)" -eq $soNo } | Select-Object -First 1
+    $hit = (Get-SoList $company) | Where-Object { "$($_.ReferenceNumber)" -eq $soNo } | Select-Object -First 1
     if (-not $hit) { return "SO $soNo not in Sage (already deleted or invoiced)" }
     $so = $company.Factories.SalesOrderFactory.Load($hit.Key)
     if (-not $so.IsDeleteAllowed) { throw "Sales order $soNo cannot be deleted" }
     $so.Delete()
+    $script:soList = $null   # list changed - force reload
     return $null
 }
 
@@ -263,10 +275,8 @@ function Close-MissingOrders($company) {
     $uri = "$SUPABASE_URL/rest/v1/open_orders`?status=in.(open,short)&sage_order_no=not.is.null&select=order_key,sage_order_no"
     $rows = Get-Rows $uri
     if (-not $rows.Count) { return }
-    $soList = $company.Factories.SalesOrderFactory.List()
-    $soList.Load()
     $existing = @{}
-    $soList | ForEach-Object { $existing["$($_.ReferenceNumber)"] = $true }
+    (Get-SoList $company) | ForEach-Object { $existing["$($_.ReferenceNumber)"] = $true }
     foreach ($r in $rows) {
         if (-not $existing.ContainsKey("$($r.sage_order_no)")) {
             $body = @{ status = 'complete'; updated_at = 'now()' } | ConvertTo-Json
@@ -278,9 +288,7 @@ function Close-MissingOrders($company) {
 }
 
 function Update-SalesOrder($company, [string]$soNo, $lines) {
-    $soList = $company.Factories.SalesOrderFactory.List()
-    $soList.Load()
-    $hit = $soList | Where-Object { "$($_.ReferenceNumber)" -eq $soNo } | Select-Object -First 1
+    $hit = (Get-SoList $company) | Where-Object { "$($_.ReferenceNumber)" -eq $soNo } | Select-Object -First 1
     if (-not $hit) { throw "Sales order '$soNo' not found" }
     $so = $company.Factories.SalesOrderFactory.Load($hit.Key)
     $want = @{}
@@ -307,6 +315,7 @@ while ($true) {
         $refCache = @{ Customer = @{}; Item = @{}; Account = @{} }
         $bom = Get-BomMap
         $script:asmIds = $null
+        $script:soList = $null   # fresh session - drop any stale cached list
         $pendingRows = @(Get-Pending)
         Write-Host "  [.] pending rows: $($pendingRows.Count)" -ForegroundColor DarkGray
         foreach ($row in $pendingRows) {
