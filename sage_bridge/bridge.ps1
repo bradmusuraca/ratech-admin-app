@@ -246,8 +246,10 @@ function Write-AssemblyBuild($lines, $bom) {
 # Delete a sales order in Sage (app-side delete button queues this).
 # Returns a warning string or $null.
 function Remove-SalesOrder($company, [string]$soNo) {
+    Write-Host "  [.] loading SO list..." -ForegroundColor DarkGray
     $soList = $company.Factories.SalesOrderFactory.List()
     $soList.Load()
+    Write-Host "  [.] SO list loaded, finding $soNo..." -ForegroundColor DarkGray
     $hit = $soList | Where-Object { "$($_.ReferenceNumber)" -eq $soNo } | Select-Object -First 1
     if (-not $hit) { return "SO $soNo not in Sage (already deleted or invoiced)" }
     $so = $company.Factories.SalesOrderFactory.Load($hit.Key)
