@@ -246,10 +246,24 @@ function Set-AssemblyFlags([string]$orderKey, $asmIds) {
 
 # Append a build to assembly_builds.csv in Sage's Assemblies Journal import
 # layout (importable fields only, export order). Returns a warning string or $null.
+# File writes can hit transient locks (OneDrive sync, AV scans) - retry.
+function Write-WithRetry($path, $lines, [switch]$Overwrite) {
+    for ($i = 0; $i -lt 5; $i++) {
+        try {
+            if ($Overwrite) { Set-Content $path $lines }
+            else { Add-Content $path $lines }
+            return
+        } catch {
+            if ($i -eq 4) { throw }
+            Start-Sleep -Seconds 2
+        }
+    }
+}
+
 function Write-AssemblyBuild($lines, $bom) {
     $csv = Join-Path $PSScriptRoot 'assembly_builds.csv'
     $header = 'Assembly Item ID,Reference,Date,Reason to Build,Quantity Built,Number of distributions,Quantity,Component Item ID,Revision Number Used'
-    if (-not (Test-Path $csv)) { Set-Content $csv $header }
+    if (-not (Test-Path $csv)) { Write-WithRetry $csv $header -Overwrite }
     $rows = @()
     $missing = @()
     foreach ($l in $lines) {
@@ -263,7 +277,7 @@ function Write-AssemblyBuild($lines, $bom) {
             $rows += "$aid,SO-BUILD,$(Get-Date -Format 'M/d/yy'),Packed SO build,$qty,$($comps.Count),$cq,$($c.Key),$rev"
         }
     }
-    if ($rows) { Add-Content $csv $rows }
+    if ($rows) { Write-WithRetry $csv $rows }
     if ($missing) { return "no BOM for: $($missing -join ', ') - build manually" }
     return $null
 }
