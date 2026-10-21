@@ -179,15 +179,39 @@ function New-SalesOrder($company, $payload, $refCache) {
 }
 
 # ---- assembly support ----
-# bom.csv = Sage "Inventory Assemblies Journal" export (File > Import/Export).
-# Each row is one component of a built assembly, so per-unit component qty =
-# Quantity / Quantity Built. Returns @{ assemblyId -> @{ componentId -> qty },
-# plus "<id>_rev" -> last-seen BOM revision }.
+# BOM sources (in order of preference):
+#   bomlist.csv = Sage "Bill of Materials" list export — one row per component
+#                 per revision; covers every assembly, built or not. The
+#                 highest Revision Number wins.
+#   bom.csv     = Sage "Inventory Assemblies Journal" export — only assemblies
+#                 that were actually built in the export window; per-unit
+#                 component qty = Quantity / Quantity Built.
+# Returns @{ assemblyId -> @{ componentId -> qty }, "<id>_rev" -> revision }.
 function Get-BomMap {
-    $path = Join-Path $PSScriptRoot 'bom.csv'
-    if (-not (Test-Path $path)) { return $null }
     $map = @{}
-    Import-Csv $path | ForEach-Object {
+    $listPath = Join-Path $PSScriptRoot 'bomlist.csv'
+    $jrnlPath = Join-Path $PSScriptRoot 'bom.csv'
+
+    if (Test-Path $listPath) {
+        Import-Csv $listPath | ForEach-Object {
+            $aid = "$($_.'Assembly ID')".Trim().ToUpper()
+            $rev = [int]"$($_.'Revision Number')"
+            $cid2 = "$($_.'Component ID')".Trim().ToUpper()
+            $cqty = [decimal]"$($_.'Component Qty Needed')"
+            if (-not $aid -or -not $cid2) { return }
+            if ($map.ContainsKey("${aid}_revnum") -and $map["${aid}_revnum"] -gt $rev) { return }
+            if (-not $map.ContainsKey("${aid}_revnum") -or $map["${aid}_revnum"] -lt $rev) {
+                $map[$aid] = @{}
+                $map["${aid}_revnum"] = $rev
+                $map["${aid}_rev"] = "$rev"
+            }
+            $map[$aid][$cid2] = $cqty
+        }
+        return $map
+    }
+
+    if (-not (Test-Path $jrnlPath)) { return $null }
+    Import-Csv $jrnlPath | ForEach-Object {
         $aid = "$($_.'Assembly Item ID')".Trim().ToUpper()
         $built = [decimal]"$($_.'Quantity Built')"
         $cqty = [decimal]"$($_.Quantity)"
