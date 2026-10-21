@@ -220,25 +220,30 @@ Exit 0
 
 
 Func _SelectLB($hWnd, $hCtl, $needle)
-    ; FindString works on the ABD listbox, but SetCurrentSelection does
-    ; not move the visible highlight - drive it with HOME + DOWN x index.
+    ; The ABD listbox answers FindString/GetCount but ignores
+    ; SetCurrentSelection and ControlSend keys - click the item's row.
     Local $i = ControlCommand($hWnd, "", $hCtl, "FindString", $needle)
-    If $i >= 0 Then
-        ControlFocus($hWnd, "", $hCtl)
-        Sleep(300)
-        ControlSend($hWnd, "", $hCtl, "{HOME}")
-        Sleep(200)
-        For $n = 1 To $i
-            ControlSend($hWnd, "", $hCtl, "{DOWN}")
-            Sleep(120)
-        Next
-        Sleep(400)
+    Local $aPos = ControlGetPos($hWnd, "", $hCtl)
+
+    If $i >= 0 And IsArray($aPos) Then
+        Local $n = ControlCommand($hWnd, "", $hCtl, "GetCount")
+        Local $rowH = 18
+        If $n > 0 Then $rowH = $aPos[3] / $n
+        Local $x = Int($aPos[2] / 2)
+        Local $y = Int($rowH * $i + $rowH / 2)
+        ControlClick($hWnd, "", $hCtl, "left", 1, $x, $y)
+        Sleep(600)
+        _Log("  clicked '" & $needle & "' at " & $x & "," & $y & " (idx " & $i & ", rows " & $n & ", rowH " & $rowH & ")")
         Return True
     EndIf
-    ; Fallback: focus the listbox and jump by first letter, then verify
-    ControlFocus($hWnd, "", $hCtl)
-    Sleep(300)
-    ControlSend($hWnd, "", $hCtl, StringLeft($needle, 1))
+
+    ; Fallback: click to focus, then real keystrokes
+    If IsArray($aPos) Then
+        ControlClick($hWnd, "", $hCtl, "left", 1, Int($aPos[2] / 2), Int($aPos[3] / 2))
+        Sleep(300)
+    EndIf
+    Send("{HOME}")
+    Send(StringLeft($needle, 1))
     Sleep(500)
     Local $s = ControlCommand($hWnd, "", $hCtl, "GetCurrentSelection")
     _Log("  listbox selection after key '" & StringLeft($needle,1) & "': " & $s)
