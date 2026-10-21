@@ -139,6 +139,7 @@ EndIf
 WinActivate($hIE)
 Sleep(300)
 _Log("pressing Alt+P (IMPORT)")
+_Log("IE text now: " & StringReplace(WinGetText($hIE), @CRLF, " | "))
 Send("!p")
 Sleep(800)
 
@@ -162,6 +163,16 @@ If $hTpl = 0 Then
     Exit 4
 EndIf
 _Log("template window open: " & WinGetTitle($hTpl))
+
+; Safety: bail if the wrong template opened rather than driving a
+; different journal's import with our file.
+Local $sTplTitle = WinGetTitle($hTpl)
+If Not StringInStr($sTplTitle, "Assembl") And Not StringInStr($sTplTitle, "BOM") Then
+    _Log("FAIL: wrong template opened (" & $sTplTitle & ") - aborting")
+    WinClose($hTpl)
+    Exit 5
+EndIf
+
 WinActivate($hTpl)
 Sleep(400)
 
@@ -209,12 +220,19 @@ Exit 0
 
 
 Func _SelectLB($hWnd, $hCtl, $needle)
-    ; Try message-based selection first (works if ABD_Listbox responds
-    ; to standard listbox messages)
+    ; FindString works on the ABD listbox, but SetCurrentSelection does
+    ; not move the visible highlight - drive it with HOME + DOWN x index.
     Local $i = ControlCommand($hWnd, "", $hCtl, "FindString", $needle)
     If $i >= 0 Then
-        ControlCommand($hWnd, "", $hCtl, "SetCurrentSelection", $i)
+        ControlFocus($hWnd, "", $hCtl)
         Sleep(300)
+        ControlSend($hWnd, "", $hCtl, "{HOME}")
+        Sleep(200)
+        For $n = 1 To $i
+            ControlSend($hWnd, "", $hCtl, "{DOWN}")
+            Sleep(120)
+        Next
+        Sleep(400)
         Return True
     EndIf
     ; Fallback: focus the listbox and jump by first letter, then verify
