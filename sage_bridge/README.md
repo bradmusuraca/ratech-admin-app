@@ -40,6 +40,25 @@ can never double-post.
 Sage does not need to be open, but the company must have been opened at
 least once. The bridge opens its own session each sweep.
 
+## Assembly builds (headless import)
+
+Packed quantities on assembly lines queue `build_assembly` jobs; the
+bridge appends them to `assembly_builds.csv` in the Inventory Assemblies
+Journal format, using `bom.csv` (a Sage BOM export) for components.
+
+To import them without manual File → Import:
+
+1. Install **AutoIt** on the Sage PC (autoitscript.com).
+2. In Sage UI, open File → Select Import/Export → Inventory →
+   **Inventory Assemblies Journal** → Import. On the Fields tab check the
+   nine fields matching `assembly_pending.csv`; on the Options tab set the
+   filename to `...\sage_bridge\assembly_pending.csv`. Sage remembers this.
+3. Schedule `import_assemblies.ps1` (Task Scheduler, every 5–15 min).
+   It stages new build rows, drives the Sage import via
+   `assembly_import.au3`, and archives to `imported\` on success.
+   Requires Sage to be running with the company open; safe to run
+   when nothing is pending. Log: `assembly_import.log`.
+
 ## Python variant (optional)
 
 `sage_client.py` / `bridge.py` / `probe.py` target the older COM
