@@ -1760,6 +1760,24 @@ elif page == "Create Invoices":
                 for l in raw_lines:
                     if l.get('stock_warning'):
                         st.warning(f"⚠️ {l.get('item_id')}: {l['stock_warning']}")
+                        for c in (l.get('stock_components') or []):
+                            ac1, ac2, ac3 = st.columns([4, 2, 2])
+                            ac1.markdown(f"**{c['item']}** — need {c['need']:g}, have {c['have']:g}")
+                            adj_q = ac2.number_input(
+                                "receive qty", min_value=0.0, step=1.0,
+                                value=max(0.0, float(c['need']) - float(c['have'])),
+                                key=f"stadj_{o['order_key']}_{l['item_id']}_{c['item']}",
+                                label_visibility="collapsed")
+                            if ac3.button("Adjust", key=f"stbtn_{o['order_key']}_{l['item_id']}_{c['item']}"):
+                                if adj_q > 0:
+                                    try:
+                                        queue_inventory_adjustment(
+                                            str(c['item']), float(adj_q),
+                                            f"stock for {o.get('customer_po') or o['order_key']}")
+                                        st.success(f"Queued +{adj_q:g} for {c['item']} — "
+                                                   "re-save packed qty after it imports.")
+                                    except Exception as e:
+                                        st.error(f"Could not queue adjustment: {e}")
                 df = pd.DataFrame([{
                     'Item': l.get('item_id'),
                     'Description': ('⚙ ' if l.get('assembly') else '')

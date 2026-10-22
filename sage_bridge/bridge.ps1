@@ -288,15 +288,25 @@ function Set-OrderStatus($orderKey, [string]$status) {
 
 # Write/clear a stock warning on an open_orders line so the app can
 # show it next to the packed quantity.
-function Set-LineWarning($orderKey, [string]$itemId, [string]$msg) {
+function Set-LineWarning($orderKey, [string]$itemId, [string]$msg, $components = $null) {
     $uri = "$SUPABASE_URL/rest/v1/open_orders`?order_key=eq.$orderKey&select=lines"
     $row = (Invoke-RestMethod -Uri $uri -Headers (Headers) -TimeoutSec 20) | Select-Object -First 1
     if (-not $row) { return }
     $changed = $false
     foreach ($l in $row.lines) {
         if ("$($l.item_id)".Trim().ToUpper() -eq $itemId.Trim().ToUpper()) {
-            if ($msg) { $l | Add-Member -NotePropertyName stock_warning -NotePropertyValue $msg -Force }
-            elseif ($l.PSObject.Properties['stock_warning']) { $l.PSObject.Properties.Remove('stock_warning') }
+            if ($msg) {
+                $l | Add-Member -NotePropertyName stock_warning -NotePropertyValue $msg -Force
+                if ($components) {
+                    $compArr = @($components | ForEach-Object {
+                        @{ item = "$($_.item)"; need = [double]$_.need; have = [double]$_.have }
+                    })
+                    $l | Add-Member -NotePropertyName stock_components -NotePropertyValue $compArr -Force
+                }
+            } else {
+                if ($l.PSObject.Properties['stock_warning']) { $l.PSObject.Properties.Remove('stock_warning') }
+                if ($l.PSObject.Properties['stock_components']) { $l.PSObject.Properties.Remove('stock_components') }
+            }
             $changed = $true
         }
     }
@@ -340,7 +350,8 @@ function Test-InvoiceStock($company, $payload, $refCache) {
 }
 
 # Check BOM components against on-hand stock BEFORE writing build rows.
-# Returns a list of shortfall descriptions ('item: need X, have Y').
+# Returns @{line; item; need; have} objects - 'line' is the packed assembly
+# item so the app can attach the right components to the right line.
 function Test-AssemblyStock($company, $lines, $bom, $refCache) {
     $short = @()
     foreach ($l in $lines) {
@@ -351,7 +362,7 @@ function Test-AssemblyStock($company, $lines, $bom, $refCache) {
             $need = $c.Value * [decimal]$l.qty
             try { $onh = Get-ItemOnHand $company $c.Key $refCache } catch { $onh = $null }
             if ($null -ne $onh -and $onh -lt $need) {
-                $short += "$($c.Key): need $($need.ToString('0.##')), have $($onh.ToString('0.##'))"
+                $short += @{ line = $aid; item = "$($c.Key)"; need = $need; have = $onh }
             }
         }
     }
@@ -605,10 +616,13 @@ while ($true) {
                 } elseif ($row.job_type -eq 'build_assembly') {
                     $short = Test-AssemblyStock $sess.Company $row.payload.lines $bom $refCache
                     if ($short) {
-                        $msg = "insufficient components - lower Packed qty or build in Sage: $($short -join '; ')"
+                        $desc = ($short | ForEach-Object { "$($_.item): need $($_.need.ToString('0.##')), have $($_.have.ToString('0.##'))" }) -join '; '
+                        $msg = "insufficient components - lower Packed qty or build in Sage: $desc"
                         Finish-Order $key 'done' $null $msg
                         foreach ($l in $row.payload.lines) {
-                            Set-LineWarning $row.payload.parent_order "$($l.item_id)" $msg
+                            $lid = "$($l.item_id)".Trim().ToUpper()
+                            $comps = @($short | Where-Object { $_.line -eq $lid })
+                            Set-LineWarning $row.payload.parent_order "$($l.item_id)" $msg $comps
                         }
                         try { Set-OrderStatus $row.payload.parent_order 'open' } catch { }
                         Write-Host "[!] $($key.Substring(0,8)) skipped - $msg" -ForegroundColor Yellow
