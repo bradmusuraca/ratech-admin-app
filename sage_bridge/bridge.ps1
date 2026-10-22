@@ -356,9 +356,13 @@ function Get-ItemKeyMap($company) {
     return $script:itemList
 }
 
-function Get-LineItemId($line, $list) {
+function Get-LineItemId($line, $company, $list) {
     try { $iid = "$($line.InventoryItemReference.Key.ID)"; if ($iid) { return $iid } } catch { }
     try { $iid = "$($line.InventoryItemReference.ID)";     if ($iid) { return $iid } } catch { }
+    try {
+        $item = $company.Factories.InventoryItemFactory.Load($line.InventoryItemReference)
+        if ($item -and $item.ID) { return "$($item.ID)" }
+    } catch { }
     try {
         $hit = $list.GetItemByKey($line.InventoryItemReference)
         if ($hit) { return "$($hit.ID)" }
@@ -451,7 +455,7 @@ function New-SalesInvoice($company, [string]$soNo, $packLines) {
     $seen = @()
     $map = Get-ItemKeyMap $company
     foreach ($soLn in $so.SalesOrderLines) {
-        $iid = Get-LineItemId $soLn $map
+        $iid = Get-LineItemId $soLn $company $map
         $seen += $iid
         $qty = $null
         foreach ($k in $want.Keys) {
@@ -482,7 +486,7 @@ function Update-SalesOrder($company, [string]$soNo, $lines) {
     $matched = 0
     $map = Get-ItemKeyMap $company
     foreach ($ln in $so.SalesOrderLines) {
-        $iid = Get-LineItemId $ln $map
+        $iid = Get-LineItemId $ln $company $map
         $seen += $iid
         foreach ($k in $want.Keys) {
             if ($iid -match [regex]::Escape($k) -or $k -match [regex]::Escape($iid)) {
