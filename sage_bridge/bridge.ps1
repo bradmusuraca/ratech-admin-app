@@ -343,7 +343,7 @@ function Test-InvoiceStock($company, $payload, $refCache) {
         if ($need -le 0) { continue }
         try { $onh = Get-ItemOnHand $company $id $refCache } catch { $onh = $null }
         if ($null -ne $onh -and $onh -lt $need) {
-            $short += "${id}: need $($need.ToString('0.##')), on-hand $($onh.ToString('0.##'))"
+            $short += @{ item = $id; need = $need; have = $onh }
         }
     }
     return $short
@@ -639,9 +639,20 @@ while ($true) {
                     $short = Test-InvoiceStock $sess.Company $row.payload $refCache
                     if ($short) {
                         # build not posted yet (or skipped) - hold for next sweep
-                        Finish-Order $key 'pending' $null "waiting on assembly stock: $($short -join '; ')"
+                        $desc = ($short | ForEach-Object { "$($_.item): need $($_.need.ToString('0.##')), on-hand $($_.have.ToString('0.##'))" }) -join '; '
+                        Finish-Order $key 'pending' $null "waiting on assembly stock: $desc"
                         try { Set-OrderStatus $row.payload.parent_order 'open' } catch { }
-                        Write-Host "[~] $($key.Substring(0,8)) held - $($short -join '; ')" -ForegroundColor DarkYellow
+                        # Attach component-level shortfalls so the app can show
+                        # inline adjust controls next to the warning.
+                        $adjLines = @($row.payload.lines | ForEach-Object {
+                            [pscustomobject]@{ item_id = "$($_.item_id)"; qty = [decimal]$_.quantity }
+                        })
+                        $compShort = @(Test-AssemblyStock $sess.Company $adjLines $bom $refCache)
+                        foreach ($s in $short) {
+                            $comps = @($s) + @($compShort | Where-Object { $_.line -eq $s.item })
+                            Set-LineWarning $row.payload.parent_order $s.item "waiting on assembly stock: $desc" $comps
+                        }
+                        Write-Host "[~] $($key.Substring(0,8)) held - $desc" -ForegroundColor DarkYellow
                     } else {
                         $invNo = New-SalesInvoice $sess.Company "$($row.payload.sage_order_no)" $row.payload.lines
                         Finish-Order $key 'done' $invNo
