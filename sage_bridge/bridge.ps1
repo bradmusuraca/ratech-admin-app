@@ -261,14 +261,14 @@ function Write-WithRetry($path, $lines, [switch]$Overwrite) {
     }
 }
 
-# Read an item's on-hand quantity. Property name varies across API
-# versions - try the common ones.
+# Read an item's on-hand quantity. It's a METHOD - QuantityOnHand(asOf) -
+# not a property (confirmed via type probe: StockItem/AssemblyItem both
+# expose QuantityOnHand(DateTime) and QuantityAvailable(DateTime)).
 function Get-ItemOnHand($company, [string]$itemId, $refCache) {
     $key = Resolve-Ref $company.Factories.InventoryItemFactory $itemId $refCache.Item
     $item = $company.Factories.InventoryItemFactory.Load($key)
-    foreach ($p in 'QuantityOnHand','OnHandQuantity','QtyOnHand','OnHandQty') {
-        try { $v = $item.$p; if ($null -ne $v) { return [decimal]$v } } catch { }
-    }
+    try { return [decimal]$item.QuantityOnHand((Get-Date)) } catch { }
+    try { return [decimal]$item.QuantityAvailable((Get-Date)) } catch { }
     return $null
 }
 
