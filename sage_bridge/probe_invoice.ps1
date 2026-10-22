@@ -31,15 +31,17 @@ function Dump-Type([type]$t) {
     } catch { Write-Host "  (member dump failed: $($_.Exception.Message))" -ForegroundColor Yellow }
 }
 
+$types = @()
+try { $types = $asm.GetTypes() }
+catch { $types = $_.Exception.Types | Where-Object { $_ } }
+
+Write-Host "=== types matching Factory|Filter ===" -ForegroundColor Cyan
+$types | Where-Object { $_.Name -match 'Factory|Filter' } |
+    ForEach-Object { Write-Host "  $($_.FullName)" }
+
 foreach ($n in @(
     'Sage.Peachtree.API.SalesOrderFactory',
-    'Sage.Peachtree.API.ISalesOrderFactory',
-    'Sage.Peachtree.API.Factory`1',
-    'Sage.Peachtree.API.IFactory`1',
-    'Sage.Peachtree.API.IFactory',
-    'Sage.Peachtree.API.Filter',
-    'Sage.Peachtree.API.Expression',
-    'Sage.Peachtree.API.FilterExpression'
+    'Sage.Peachtree.API.Filter'
 )) {
     Dump-Type ($asm.GetType($n))
 }
