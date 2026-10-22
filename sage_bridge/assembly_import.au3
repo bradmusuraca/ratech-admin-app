@@ -199,16 +199,31 @@ Else
 EndIf
 Sleep(1000)
 
-; ---- wait for completion dialog, log text, dismiss ----
+; ---- handle pre-import prompts, then wait for completion ----
 Local $bDone = False
-For $i = 0 To 120   ; up to ~60 s
+Local $bBackedUp = False
+For $i = 0 To 150   ; up to ~75 s
     Local $aT = WinList()
     For $j = 1 To $aT[0][0]
-        If $aT[$j][0] <> "" And StringInStr($aT[$j][0], "Sage") Then
-            Local $sTxt = WinGetText($aT[$j][1])
+        If $aT[$j][0] = "" Then ContinueLoop
+        Local $sTxt = WinGetText($aT[$j][1])
+        ; "back up before importing - continue?" prompt -> Yes
+        If Not $bBackedUp And StringInStr($sTxt, "back") And StringInStr($sTxt, "continue") Then
+            _Log("backup warning: " & StringReplace($sTxt, @CRLF, " | "))
+            WinActivate($aT[$j][1])
+            Send("y")          ; Yes
+            Sleep(500)
+            Send("!y")         ; Alt+Y if underlined accelerator
+            $bBackedUp = True
+            Sleep(1000)
+            ExitLoop
+        EndIf
+        ; completion / error dialog (title mentions Sage or text matches)
+        If StringInStr($aT[$j][0], "Sage") Or StringInStr($sTxt, "import") Then
             If StringInStr($sTxt, "complete") Or StringInStr($sTxt, "finished") Or StringInStr($sTxt, "error") Then
                 _Log("result dialog: " & StringReplace($sTxt, @CRLF, " | "))
-                ControlClick($aT[$j][1], "", "[CLASS:Button; INSTANCE:1]")
+                WinActivate($aT[$j][1])
+                Send("{ENTER}")
                 $bDone = True
                 ExitLoop 2
             EndIf
