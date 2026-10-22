@@ -144,8 +144,14 @@ function New-SalesOrder($company, $payload, $refCache) {
     $so = $company.Factories.SalesOrderFactory.Create()
     $so.CustomerReference = Resolve-Ref $company.Factories.CustomerFactory "$($payload.customer_id)" $refCache.Customer
     $so.CustomerPurchaseOrderNumber = Trim-To "$($payload.customer_po)" 20
-    if ($payload.order_date) { $so.Date = [datetime]$payload.order_date }
-    if ($payload.ship_by)    { $so.ShipByDate = [datetime]$payload.ship_by }
+    if ($payload.order_date) {
+        try { $so.Date = [datetime]$payload.order_date }
+        catch { Write-Host "  [!] bad order_date '$($payload.order_date)' - using today" -ForegroundColor Yellow; $so.Date = Get-Date }
+    }
+    if ($payload.ship_by) {
+        try { $so.ShipByDate = [datetime]$payload.ship_by }
+        catch { Write-Host "  [!] bad ship_by '$($payload.ship_by)' - left blank" -ForegroundColor Yellow }
+    }
     if ($payload.ship_via)   { $so.ShipVia = Trim-To "$($payload.ship_via)" 12 }
     if ($payload.internal_note) { $so.InternalNote = Trim-To "$($payload.internal_note)" 2000 }
     if ($payload.ship_to_name)    { $so.ShipToAddress.Name = Trim-To "$($payload.ship_to_name)" 39 }

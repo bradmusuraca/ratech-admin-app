@@ -1483,6 +1483,23 @@ if page == "Order Processing":
                         use_container_width=True,
                         key=f"editor_{wkey}_{inv.get('editor_version', 0)}"
                     )
+                    # Keep Total in sync when the user edits Quantity/Price -
+                    # but only on rows that changed, so the OCR mismatch check
+                    # still sees the document's original totals on first render.
+                    _pc = ('Unit Price' if 'Unit Price' in edited_df.columns
+                           else ('Price' if 'Price' in edited_df.columns else None))
+                    if _pc and 'Quantity' in edited_df.columns and 'Total' in edited_df.columns:
+                        _q = pd.to_numeric(edited_df['Quantity'], errors='coerce').fillna(0)
+                        _p = pd.to_numeric(edited_df[_pc], errors='coerce').fillna(0)
+                        _prev = inv['df']
+                        if (_prev is not None and len(_prev) == len(edited_df)
+                                and 'Quantity' in _prev.columns and _pc in _prev.columns):
+                            _qo = pd.to_numeric(_prev['Quantity'], errors='coerce').fillna(0)
+                            _po = pd.to_numeric(_prev[_pc], errors='coerce').fillna(0)
+                            _chg = (_q != _qo) | (_p != _po)
+                            edited_df.loc[_chg, 'Total'] = (_q * _p)[_chg]
+                        else:
+                            edited_df['Total'] = _q * _p
                     inv['df'] = edited_df
                     # Re-resolve AFTER the editor hands data back - its cached
                     # widget state can still carry the stale vendor string.
@@ -1653,18 +1670,33 @@ if page == "Order Processing":
                         if st.button("🚀 Send to Sage", use_container_width=True,
                                      help="Queue these orders for the desktop "
                                           "bridge to post into Sage 50"):
-                            try:
-                                sent, skipped = sage_queue_push(sage_df)
-                                msg = f"Queued {len(sent)} order(s) for Sage."
-                                if skipped:
-                                    msg += (f" {len(skipped)} already in the queue "
-                                            "(unchanged orders are never re-posted).")
-                                packed_new, _ = create_open_orders(sage_df)
-                                if packed_new:
-                                    msg += f" {len(packed_new)} released to packing."
-                                st.success(msg)
-                            except Exception as e:
-                                st.error(f"Queue push failed: {e}")
+                            bad = set()
+                            for _col in ('Date of Order', 'Ship By Date'):
+                                if _col in combined.columns:
+                                    for _v in combined[_col]:
+                                        _s = str(_v).strip()
+                                        if not _s or _s.lower() in ('nan', 'none', 'nat'):
+                                            continue
+                                        try:
+                                            pd.to_datetime(_s)
+                                        except Exception:
+                                            bad.add(f"{_col} '{_s}'")
+                            if bad:
+                                st.error("Invalid date(s) — fix before sending: "
+                                         + "; ".join(sorted(bad)[:6]))
+                            else:
+                                try:
+                                    sent, skipped = sage_queue_push(sage_df)
+                                    msg = f"Queued {len(sent)} order(s) for Sage."
+                                    if skipped:
+                                        msg += (f" {len(skipped)} already in the queue "
+                                                "(unchanged orders are never re-posted).")
+                                    packed_new, _ = create_open_orders(sage_df)
+                                    if packed_new:
+                                        msg += f" {len(packed_new)} released to packing."
+                                    st.success(msg)
+                                except Exception as e:
+                                    st.error(f"Queue push failed: {e}")
                     else:
                         st.caption("Supabase not configured - see sage_bridge/README.md")
                 with ec3:
