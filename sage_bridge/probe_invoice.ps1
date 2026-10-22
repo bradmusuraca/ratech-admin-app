@@ -6,10 +6,17 @@
 $ErrorActionPreference = 'Continue'
 $SAGE_BASE = if ($env:SAGE_BASE_DIR) { $env:SAGE_BASE_DIR } else { 'C:\Program Files (x86)\Sage' }
 
-# Preload the API folder so dependent types resolve without a handler
-Get-ChildItem "$SAGE_BASE\Peachtree\API\*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
-    try { [Reflection.Assembly]::LoadFrom($_.FullName) | Out-Null } catch { }
+$script:resolveHandler = {
+    param($sender, $e)
+    $name = ($e.Name -split ',')[0]
+    $hit = Get-ChildItem $SAGE_BASE -Recurse -Filter "$name.dll" -ErrorAction SilentlyContinue |
+           Select-Object -First 1
+    if ($hit) { return [Reflection.Assembly]::LoadFrom($hit.FullName) }
+    return $null
 }
+[AppDomain]::CurrentDomain.add_AssemblyResolve($script:resolveHandler)
+
+[Reflection.Assembly]::LoadFrom("$SAGE_BASE\Peachtree\API\Sage.Peachtree.API.dll") | Out-Null
 $asm = [AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.GetName().Name -eq 'Sage.Peachtree.API' } | Select-Object -First 1
 if (-not $asm) { Write-Host "API assembly not found under $SAGE_BASE" -ForegroundColor Red; exit 1 }
 
@@ -31,9 +38,10 @@ foreach ($n in @(
     'Sage.Peachtree.API.SalesInvoice',
     'Sage.Peachtree.API.SalesInvoiceSalesOrderLineCollection',
     'Sage.Peachtree.API.SalesInvoiceSalesOrderLine',
-    'Sage.Peachtree.API.SalesInvoiceLine',
-    'Sage.Peachtree.API.SalesInvoiceFactory',
-    'Sage.Peachtree.API.SalesOrderLine'
+    'Sage.Peachtree.API.SalesInvoiceSalesLineCollection',
+    'Sage.Peachtree.API.SalesInvoiceSalesLine',
+    'Sage.Peachtree.API.SalesOrderLine',
+    'Sage.Peachtree.API.SalesOrder'
 )) {
     Dump-Type ($asm.GetType($n))
 }
