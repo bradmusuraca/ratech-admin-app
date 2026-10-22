@@ -27,7 +27,7 @@ from sage_queue import (is_configured as sage_queue_configured,
                         update_packed, queue_qty_update, queue_invoice,
                         queue_assembly_build, delete_open_order,
                         queue_order_void, queue_inventory_adjustment,
-                        transactions_from_sage_df)
+                        note_line_adjustment, transactions_from_sage_df)
 import streamlit.components.v1 as components
 
 load_dotenv()
@@ -1774,10 +1774,14 @@ elif page == "Create Invoices":
                                         queue_inventory_adjustment(
                                             str(c['item']), float(adj_q),
                                             f"stock for {o.get('customer_po') or o['order_key']}")
+                                        note_line_adjustment(o['order_key'], str(l['item_id']),
+                                                             str(c['item']), float(adj_q))
                                         st.success(f"Queued +{adj_q:g} for {c['item']} — "
                                                    "re-save packed qty after it imports.")
                                     except Exception as e:
                                         st.error(f"Could not queue adjustment: {e}")
+                        if l.get('adjust_note'):
+                            st.caption(f"✓ {l['adjust_note']} — warning clears when the build imports")
                 df = pd.DataFrame([{
                     'Item': l.get('item_id'),
                     'Description': ('⚙ ' if l.get('assembly') else '')

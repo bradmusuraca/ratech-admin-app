@@ -313,6 +313,7 @@ function Set-LineWarning($orderKey, [string]$itemId, [string]$msg, $components =
             } else {
                 if ($l.PSObject.Properties['stock_warning']) { $l.PSObject.Properties.Remove('stock_warning') }
                 if ($l.PSObject.Properties['stock_components']) { $l.PSObject.Properties.Remove('stock_components') }
+                if ($l.PSObject.Properties['adjust_note']) { $l.PSObject.Properties.Remove('adjust_note') }
             }
             $changed = $true
         }

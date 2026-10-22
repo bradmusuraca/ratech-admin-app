@@ -12,6 +12,7 @@ Table: see sage_bridge/supabase_setup.sql
 import os
 import hashlib
 import json
+from datetime import datetime
 import requests
 
 TABLE = 'sage_order_queue'
@@ -176,6 +177,26 @@ def update_packed(order_key, lines, status, packed_by=''):
               'updated_at': 'now()'},
         timeout=20)
     resp.raise_for_status()
+
+
+def note_line_adjustment(order_key, asm_item_id, comp_item_id, qty):
+    """Stamp a persistent 'adjustment queued' note on a packing line so the
+    action is still visible after the page reruns."""
+    resp = requests.get(_url(OPEN_TABLE, order_key=f'eq.{order_key}',
+                           select='lines'), headers=_headers(), timeout=20)
+    resp.raise_for_status()
+    rows = resp.json()
+    if not rows:
+        return
+    lines = rows[0]['lines']
+    for l in lines:
+        if str(l.get('item_id', '')).strip().upper() == asm_item_id.strip().upper():
+            l['adjust_note'] = (f"+{qty:g} queued for {comp_item_id} "
+                                f"at {datetime.now().strftime('%H:%M')}")
+    requests.patch(_url(OPEN_TABLE, order_key=f'eq.{order_key}'),
+                   headers=_headers(),
+                   json={'lines': lines, 'updated_at': 'now()'},
+                   timeout=20).raise_for_status()
 
 
 def delete_open_order(order_key):
