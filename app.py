@@ -138,7 +138,10 @@ def check_login(username, password):
     return {
         'username': username,
         'name': u.get('name', username),
-        'pages': [p for p in u.get('pages', ALL_PAGES) if p in ALL_PAGES] or ALL_PAGES,
+        'pages': [p for p in (
+            {'Open Sales Orders': 'Create Invoices'}.get(p, p)
+            for p in u.get('pages', ALL_PAGES))
+            if p in ALL_PAGES] or ALL_PAGES,
     }
 
 
