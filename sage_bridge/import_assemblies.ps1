@@ -46,9 +46,10 @@ if (-not $autoit) {
     exit 1
 }
 
-# Stage: move builds aside so the bridge can start a fresh file.
-# Keep the header on the pending file (import expects matching columns).
-Move-Item $BUILDS $PENDING -Force
+# Stage data rows only - the Sage template is configured WITHOUT
+# "first row contains headings", so it reads every line as data.
+$data | Set-Content $PENDING
+Set-Content $BUILDS $HEADER   # reset builds file so bridge appends continue
 Log "staged $($data.Count) build row(s) to assembly_pending.csv"
 
 $proc = Start-Process $autoit -ArgumentList "`"$AU3`"" -Wait -PassThru `
@@ -65,7 +66,7 @@ if ($proc.ExitCode -eq 0) {
     # Restore pending rows to the builds file so nothing is lost even if
     # the pending file gets clobbered later.
     if (Test-Path $BUILDS) {
-        Get-Content $PENDING | Select-Object -Skip 1 | Add-Content $BUILDS
+        Get-Content $PENDING | Add-Content $BUILDS
     } else {
         Move-Item $PENDING $BUILDS -Force
     }
