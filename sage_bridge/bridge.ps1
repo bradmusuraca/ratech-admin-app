@@ -352,7 +352,11 @@ function Get-ItemKeyMap($company) {
         $script:itemKeyMap = @{}
         $il = $company.Factories.InventoryItemFactory.List()
         $il.Load()
-        foreach ($i in $il) { $script:itemKeyMap["$($i.Key)"] = "$($i.ID)" }
+        foreach ($i in $il) {
+            $k = "$($i.Key)"
+            if ($k -match 'Key\((\d+)\)') { $script:itemKeyMap[$Matches[1]] = "$($i.ID)" }
+            elseif ($k -match '^\d+$')     { $script:itemKeyMap[$k] = "$($i.ID)" }
+        }
         Write-Host "  [.] item map loaded ($($script:itemKeyMap.Count))" -ForegroundColor DarkGray
     }
     return $script:itemKeyMap
@@ -364,7 +368,9 @@ function Get-LineItemId($line, $map) {
     if (-not $iid) { try { $iid = "$($line.InventoryItemReference.ID)" } catch { } }
     if (-not $iid) {
         $ref = "$($line.InventoryItemReference)"
-        if ($map.ContainsKey($ref)) { $iid = $map[$ref] }
+        if ($ref -match 'Key\((\d+)\)' -and $map.ContainsKey($Matches[1])) {
+            $iid = $map[$Matches[1]]
+        }
         if (-not $iid) { $iid = $ref }
     }
     return $iid
@@ -469,7 +475,10 @@ function New-SalesInvoice($company, [string]$soNo, $packLines) {
         $invLn.Amount = [decimal]$qty * [decimal]$invLn.UnitPrice
         $shipped++
     }
-    if (-not $shipped) { throw "No invoice lines matched the packed items (SO lines: $($seen -join ', '); wanted: $($want.Keys -join ', '))" }
+    if (-not $shipped) {
+        $sample = ($map.Keys | Select-Object -First 3) -join ', '
+        throw "No invoice lines matched the packed items (SO lines: $($seen -join ', '); wanted: $($want.Keys -join ', '); map sample: $sample)"
+    }
     try { $inv.ReferenceNumber = "$($company.Services.ReferenceNumber.TakeNextInvoiceNumber())" } catch { }
     $inv.Save()
     $script:soList = $null   # SO may have closed - invalidate the list
