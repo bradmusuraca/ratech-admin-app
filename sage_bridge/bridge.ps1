@@ -278,6 +278,14 @@ function Get-ItemOnHand($company, [string]$itemId, $refCache) {
     return $null
 }
 
+# Flip a packing row's status (e.g. back to 'open' when a build/invoice
+# is blocked, or 'complete' once the invoice posts).
+function Set-OrderStatus($orderKey, [string]$status) {
+    $body = @{ status = $status; updated_at = 'now()' } | ConvertTo-Json
+    Invoke-RestMethod -Uri "$SUPABASE_URL/rest/v1/open_orders`?order_key=eq.$orderKey" `
+        -Method Patch -Headers (Headers) -Body $body -TimeoutSec 20 | Out-Null
+}
+
 # Write/clear a stock warning on an open_orders line so the app can
 # show it next to the packed quantity.
 function Set-LineWarning($orderKey, [string]$itemId, [string]$msg) {
@@ -324,7 +332,9 @@ function Test-InvoiceStock($company, $payload, $refCache) {
         $need = [decimal]$l.quantity
         if ($need -le 0) { continue }
         try { $onh = Get-ItemOnHand $company $id $refCache } catch { $onh = $null }
-        if ($null -ne $onh -and $onh -lt $need) { $short += "${id}: need $need, on-hand $onh" }
+        if ($null -ne $onh -and $onh -lt $need) {
+            $short += "${id}: need $($need.ToString('0.##')), on-hand $($onh.ToString('0.##'))"
+        }
     }
     return $short
 }
@@ -341,7 +351,7 @@ function Test-AssemblyStock($company, $lines, $bom, $refCache) {
             $need = $c.Value * [decimal]$l.qty
             try { $onh = Get-ItemOnHand $company $c.Key $refCache } catch { $onh = $null }
             if ($null -ne $onh -and $onh -lt $need) {
-                $short += "$($c.Key): need $need, have $onh"
+                $short += "$($c.Key): need $($need.ToString('0.##')), have $($onh.ToString('0.##'))"
             }
         }
     }
@@ -590,6 +600,7 @@ while ($true) {
                         foreach ($l in $row.payload.lines) {
                             Set-LineWarning $row.payload.parent_order "$($l.item_id)" $msg
                         }
+                        try { Set-OrderStatus $row.payload.parent_order 'open' } catch { }
                         Write-Host "[!] $($key.Substring(0,8)) skipped - $msg" -ForegroundColor Yellow
                     } else {
                         $warn = Write-AssemblyBuild $row.payload.lines $bom "$($row.payload.parent_order)"
@@ -605,10 +616,12 @@ while ($true) {
                     if ($short) {
                         # build not posted yet (or skipped) - hold for next sweep
                         Finish-Order $key 'pending' $null "waiting on assembly stock: $($short -join '; ')"
+                        try { Set-OrderStatus $row.payload.parent_order 'open' } catch { }
                         Write-Host "[~] $($key.Substring(0,8)) held - $($short -join '; ')" -ForegroundColor DarkYellow
                     } else {
                         $invNo = New-SalesInvoice $sess.Company "$($row.payload.sage_order_no)" $row.payload.lines
                         Finish-Order $key 'done' $invNo
+                        try { Set-OrderStatus $row.payload.parent_order 'complete' } catch { }
                         Write-Host "[+] $($key.Substring(0,8)) -> Sage invoice $invNo (from SO $($row.payload.sage_order_no))"
                     }
                 } elseif ($row.job_type -eq 'adjust_inventory') {
@@ -647,6 +660,10 @@ while ($true) {
             } catch {
                 Finish-Order $key 'error' $null "$_"
                 Write-Host "[!] $($key.Substring(0,8)) FAILED: $_" -ForegroundColor Red
+                # Failed job on a known packing order - put it back in the list
+                if ($row.payload.parent_order) {
+                    try { Set-OrderStatus $row.payload.parent_order 'open' } catch { }
+                }
             }
         }
         try { Close-MissingOrders $sess.Company } catch {
