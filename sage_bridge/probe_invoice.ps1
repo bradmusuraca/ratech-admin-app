@@ -8,11 +8,25 @@
 $ErrorActionPreference = 'Continue'
 $SAGE_BASE = if ($env:SAGE_BASE_DIR) { $env:SAGE_BASE_DIR } else { 'C:\Program Files (x86)\Sage' }
 
+$script:resolveHandler = {
+    param($sender, $e)
+    $name = ($e.Name -split ',')[0]
+    $hit = Get-ChildItem $SAGE_BASE -Recurse -Filter "$name.dll" -ErrorAction SilentlyContinue |
+           Select-Object -First 1
+    if ($hit) { return [Reflection.Assembly]::LoadFrom($hit.FullName) }
+    return $null
+}
+[AppDomain]::CurrentDomain.add_AssemblyResolve($script:resolveHandler)
+
 [Reflection.Assembly]::LoadFrom("$SAGE_BASE\Peachtree\API\Sage.Peachtree.API.dll") | Out-Null
 $asm = [AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.GetName().Name -eq 'Sage.Peachtree.API' }
 
+$allTypes = @()
+try { $allTypes = $asm.GetTypes() }
+catch { $allTypes = @($_.Exception.Types | Where-Object { $_ }) }
+
 Write-Host "=== invoice-related types ===" -ForegroundColor Cyan
-$asm.GetTypes() | Where-Object { $_.Name -match 'SalesInvoice|InvoiceLine|ApplyTo' } |
+$allTypes | Where-Object { $_.Name -match 'SalesInvoice|InvoiceLine|ApplyTo' } |
     Sort-Object Name | ForEach-Object { Write-Host "  $($_.FullName)" }
 
 function Dump-Type([type]$t) {
@@ -29,7 +43,7 @@ function Dump-Type([type]$t) {
 
 $get = {
     param([string]$name)
-    $asm.GetTypes() | Where-Object { $_.Name -eq $name } | Select-Object -First 1
+    $allTypes | Where-Object { $_.Name -eq $name } | Select-Object -First 1
 }
 
 Dump-Type ($get.Invoke('SalesInvoiceSalesOrderLineCollection'))
