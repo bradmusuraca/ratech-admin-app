@@ -406,7 +406,11 @@ function Write-AssemblyBuild($lines, $bom, $parentKey = '') {
 function Write-InventoryAdjust($lines) {
     # INV_ADJ_CSV in .env can relocate the staging file.
     $csv = if ($env:INV_ADJ_CSV) { $env:INV_ADJ_CSV } else { Join-Path $PSScriptRoot 'inventory_adjustments.csv' }
-    $header = 'Item ID,Reference,Date,GL Acct-Source,Quantity,Unit Cost,Reason to Adjust'
+    # Number of Distributions is a REQUIRED Sage field (always 1 per row).
+    # GL Acct-Source is required too - set INV_ADJ_GL_ACCT in .env to the
+    # account adjustments should post against.
+    $glAcct = "$($env:INV_ADJ_GL_ACCT)"
+    $header = 'Item ID,Reference,Date,GL Acct-Source,Quantity,Unit Cost,Reason to Adjust,Number of Distributions'
     if (-not (Test-Path $csv) -or (Get-Content $csv -TotalCount 1) -ne $header) {
         $rest = if (Test-Path $csv) { Get-Content $csv | Select-Object -Skip 1 } else { @() }
         Write-WithRetry $csv (@($header) + @($rest)) -Overwrite
@@ -416,7 +420,7 @@ function Write-InventoryAdjust($lines) {
         $qty = [decimal]$l.qty
         if ($qty -eq 0) { continue }
         $reason = ("$($l.reason)" -replace ',', ';')
-        $rows += "$($l.item_id),ADJ,$(Get-Date -Format 'M/d/yyyy'),,$qty,,$reason"
+        $rows += "$($l.item_id),ADJ,$(Get-Date -Format 'M/d/yyyy'),$glAcct,$qty,,$reason,1"
     }
     if ($rows) { Write-WithRetry $csv $rows }
     return $rows.Count
