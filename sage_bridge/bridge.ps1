@@ -656,7 +656,9 @@ while ($true) {
                         })
                         $compShort = @(Test-AssemblyStock $sess.Company $adjLines $bom $refCache)
                         foreach ($s in $short) {
-                            $comps = @($s) + @($compShort | Where-Object { $_.line -eq $s.item })
+                            # Only components are adjustable here - the
+                            # assembly's own stock comes from the build job.
+                            $comps = @($compShort | Where-Object { $_.line -eq $s.item })
                             Set-LineWarning $row.payload.parent_order $s.item "waiting on assembly stock: $desc" $comps
                         }
                         Write-Host "[~] $($key.Substring(0,8)) held - $desc" -ForegroundColor DarkYellow
