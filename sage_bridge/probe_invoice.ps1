@@ -62,9 +62,13 @@ $lm = $lt.GetMethods() | Where-Object { $_.Name -eq 'Load' } |
 foreach ($t in $lm) {
     Write-Host "`n=== Load param type: $($t.FullName) ===" -ForegroundColor Cyan
     try {
-        $t.GetProperties() | ForEach-Object { Write-Host "  prop $($_.PropertyType.Name) $($_.Name)" }
-        $t.GetConstructors() | ForEach-Object { Write-Host "  ctor($($_.GetParameters() | ForEach-Object { $_.ParameterType.Name }))" }
-        $t.GetMethods() | Where-Object { -not $_.IsSpecialName -and $_.IsStatic -eq $false } |
-            ForEach-Object { Write-Host "  method $($_.Name)($($_.GetParameters() | ForEach-Object { $_.ParameterType.Name }))" }
+        $t.GetConstructors('Instance,Public,NonPublic') | ForEach-Object {
+            $vis = if ($_.IsPublic) { 'public' } else { 'nonpub' }
+            Write-Host "  $vis ctor($($_.GetParameters() | ForEach-Object { $_.ParameterType.Name }))"
+        }
+        $t.GetProperties('Static,Public') | ForEach-Object { Write-Host "  static prop $($_.PropertyType.Name) $($_.Name)" }
+        $t.GetFields('Static,Public') | ForEach-Object { Write-Host "  static field $($_.FieldType.Name) $($_.Name)" }
+        $t.GetMethods('Static,Public') | Where-Object { -not $_.IsSpecialName } |
+            ForEach-Object { Write-Host "  static method $($_.Name)($($_.GetParameters() | ForEach-Object { $_.ParameterType.Name }))" }
     } catch { Write-Host "  (dump failed: $_)" }
 }
