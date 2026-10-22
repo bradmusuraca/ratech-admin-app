@@ -410,14 +410,25 @@ function Get-CostMap {
     $p = Join-Path $PSScriptRoot 'itemlist.csv'
     if (-not (Test-Path $p)) { return $null }
     $map = @{}
-    $col = (Import-Csv $p | Select-Object -First 1).PSObject.Properties.Name |
-           Where-Object { $_ -match 'unit.?cost|item.?cost|last.?cost' } |
-           Select-Object -First 1
-    if (-not $col) { return $null }
-    Import-Csv $p | ForEach-Object {
-        $id = "$($_.'Item ID')".Trim().ToUpper()
-        $raw = "$($_."$col")" -replace '[^\d.\-]', ''
-        if ($id -and $raw -ne '') { $map[$id] = [decimal]$raw }
+    $first = Get-Content $p -TotalCount 1
+    if ($first -match 'item') {
+        # Headed export - find the cost column by name.
+        $col = (Import-Csv $p | Select-Object -First 1).PSObject.Properties.Name |
+               Where-Object { $_ -match 'unit.?cost|item.?cost|last.?cost' } |
+               Select-Object -First 1
+        if (-not $col) { return $null }
+        Import-Csv $p | ForEach-Object {
+            $id = "$($_.'Item ID')".Trim().ToUpper()
+            $raw = "$($_."$col")" -replace '[^\d.\-]', ''
+            if ($id -and $raw -ne '') { $map[$id] = [decimal]$raw }
+        }
+    } else {
+        # Headerless 2-column export: Item ID, Unit Cost
+        Import-Csv $p -Header 'ItemID','UnitCost' | ForEach-Object {
+            $id = "$($_.ItemID)".Trim().ToUpper()
+            $raw = "$($_.UnitCost)" -replace '[^\d.\-]', ''
+            if ($id -and $raw -ne '') { $map[$id] = [decimal]$raw }
+        }
     }
     return $map
 }
