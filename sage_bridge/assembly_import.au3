@@ -24,8 +24,15 @@ Global $sDir = @ScriptDir
 ; inventory adjustments)
 Global $sNeedle = "Assembl"
 Global $sLogName = "assembly_import.log"
+Global $sMode = "import"             ; 3rd arg "export" presses EXPO&RT instead
+Global $sTitleNeedle = ""            ; 4th arg: separate needle for the window
+                                     ; title check (list needle matches the
+                                     ; template NAME, title shows the journal)
 If $CmdLine[0] >= 1 Then $sNeedle = $CmdLine[1]
 If $CmdLine[0] >= 2 Then $sLogName = $CmdLine[2]
+If $CmdLine[0] >= 3 Then $sMode = StringLower($CmdLine[3])
+If $CmdLine[0] >= 4 Then $sTitleNeedle = $CmdLine[4]
+If $sTitleNeedle = "" Then $sTitleNeedle = $sNeedle
 Global $sLog = $sDir & "\" & $sLogName
 
 _Log("=== import run start ===")
@@ -142,12 +149,30 @@ If Not $bSelected Then
     _Log("WARN: no template control took the selection")
 EndIf
 
-; IMPORT button's accelerator is Alt+P (window text shows 'IMPORT&P')
+; IMPORT button's accelerator is Alt+P (window text shows 'IMPORT&P');
+; the EXPORT button is the same pattern with an X in it ('EXPO&RT' /
+; 'E&XPORT' depending on version) - pull the hotkey out of the text.
 WinActivate($hIE)
 Sleep(300)
-_Log("pressing Alt+P (IMPORT)")
 _Log("IE text now: " & StringReplace(WinGetText($hIE), @CRLF, " | "))
-Send("!p")
+If $sMode = "export" Then
+    Local $sKey = ""
+    Local $aTok = StringRegExp(WinGetText($hIE), "[A-Z]+&[A-Z]+", 3)
+    If IsArray($aTok) Then
+        For $t In $aTok
+            If StringInStr($t, "XPO") Then
+                $sKey = StringMid($t, StringInStr($t, "&") + 1, 1)
+                ExitLoop
+            EndIf
+        Next
+    EndIf
+    If $sKey = "" Then $sKey = "r"
+    _Log("pressing Alt+" & $sKey & " (EXPORT)")
+    Send("!" & $sKey)
+Else
+    _Log("pressing Alt+P (IMPORT)")
+    Send("!p")
+EndIf
 Sleep(800)
 
 ; ---- template window (Fields/Options tabs + filename) ----
@@ -156,7 +181,7 @@ Local $hTpl = 0
 For $i = 0 To 20
     Local $aT = WinList()
     For $j = 1 To $aT[0][0]
-        If $aT[$j][0] <> "" And (StringInStr($aT[$j][0], $sNeedle) Or StringInStr($aT[$j][0], "Journal")) Then
+        If $aT[$j][0] <> "" And (StringInStr($aT[$j][0], $sTitleNeedle) Or StringInStr($aT[$j][0], "Journal")) Then
             $hTpl = $aT[$j][1]
             ExitLoop 2
         EndIf
@@ -174,7 +199,7 @@ _Log("template window open: " & WinGetTitle($hTpl))
 ; Safety: bail if the wrong template opened rather than driving a
 ; different journal's import with our file.
 Local $sTplTitle = WinGetTitle($hTpl)
-If Not StringInStr($sTplTitle, $sNeedle) And Not StringInStr($sTplTitle, "BOM") Then
+If Not StringInStr($sTplTitle, $sTitleNeedle) And Not StringInStr($sTplTitle, "BOM") Then
     _Log("FAIL: wrong template opened (" & $sTplTitle & ") - aborting")
     WinClose($hTpl)
     Exit 5
@@ -226,6 +251,16 @@ For $i = 0 To 150   ; up to ~75 s
             Sleep(1000)
             ExitLoop
         EndIf
+        ; export overwrite prompt: "file exists - replace?" -> Yes
+        If StringInStr($sTxt, "exist") And (StringInStr($sTxt, "replace") Or StringInStr($sTxt, "overwrite")) Then
+            _Log("overwrite prompt: " & StringReplace($sTxt, @CRLF, " | "))
+            WinActivate($aT[$j][1])
+            Send("y")
+            Sleep(500)
+            Send("!y")
+            Sleep(1000)
+            ExitLoop
+        EndIf
         ; per-record import error: Sage offers OK=skip record / Cancel=halt.
         ; Skip the bad record and keep going - the row is reported at exit.
         If StringInStr($sTxt, "error occurred importing") Then
@@ -237,8 +272,8 @@ For $i = 0 To 150   ; up to ~75 s
             ExitLoop
         EndIf
         ; completion dialog
-        If StringInStr($aT[$j][0], "Sage") Or StringInStr($sTxt, "import") Then
-            If StringInStr($sTxt, "complete") Or StringInStr($sTxt, "finished") Then
+        If StringInStr($aT[$j][0], "Sage") Or StringInStr($sTxt, "import") Or StringInStr($sTxt, "export") Then
+            If StringInStr($sTxt, "complete") Or StringInStr($sTxt, "finished") Or StringInStr($sTxt, "exported") Then
                 _Log("result dialog: " & StringReplace($sTxt, @CRLF, " | "))
                 WinActivate($aT[$j][1])
                 Send("{ENTER}")

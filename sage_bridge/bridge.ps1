@@ -728,6 +728,16 @@ while ($true) {
                         if ($null -ne $onh -and $onh -lt $need) { $short += "$($l.item_id): removing $need, on-hand $onh" }
                     }
                     if ($short) { throw "insufficient on-hand: $($short -join '; ')" }
+                    # Refresh last-unit-cost from Sage's Item List export so
+                    # adjustment Amounts use current cost, not a stale file.
+                    $exp = Join-Path $PSScriptRoot 'export_itemlist.ps1'
+                    if (Test-Path $exp) {
+                        try {
+                            Write-Host "  [.] refreshing item costs (itemlist export)..." -ForegroundColor DarkGray
+                            & $exp
+                            $costs = Get-CostMap
+                        } catch { Write-Host "  [!] itemlist export failed - using existing file: $_" -ForegroundColor Yellow }
+                    }
                     $adjWarn = Write-InventoryAdjust $row.payload.lines $costs
                     Finish-Order $key 'done' $null $adjWarn
                     $script:adjNeedsImport = $true
