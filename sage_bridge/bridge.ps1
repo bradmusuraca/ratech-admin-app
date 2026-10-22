@@ -406,11 +406,13 @@ function Write-AssemblyBuild($lines, $bom, $parentKey = '') {
 function Write-InventoryAdjust($lines) {
     # INV_ADJ_CSV in .env can relocate the staging file.
     $csv = if ($env:INV_ADJ_CSV) { $env:INV_ADJ_CSV } else { Join-Path $PSScriptRoot 'inventory_adjustments.csv' }
-    # Number of Distributions is a REQUIRED Sage field (always 1 per row).
-    # GL Acct-Source is required too - set INV_ADJ_GL_ACCT in .env to the
-    # account adjustments should post against.
+    # Required Sage fields: Number of Distributions (always 1), GL Acct-Source
+    # (INV_ADJ_GL_ACCT in .env) and Amount. Unit Cost is ignored on import.
+    # Amount is normally left blank - Sage calculates it from the item's
+    # cost; if a unit_cost is ever passed in the payload we emit
+    # -(qty*cost), the sign Sage expects for the source-account credit.
     $glAcct = "$($env:INV_ADJ_GL_ACCT)"
-    $header = 'Item ID,Reference,Date,GL Acct-Source,Quantity,Unit Cost,Reason to Adjust,Number of Distributions'
+    $header = 'Item ID,Reference,Date,GL Acct-Source,Quantity,Unit Cost,Reason to Adjust,Number of Distributions,Amount'
     if (-not (Test-Path $csv) -or (Get-Content $csv -TotalCount 1) -ne $header) {
         $rest = if (Test-Path $csv) { Get-Content $csv | Select-Object -Skip 1 } else { @() }
         Write-WithRetry $csv (@($header) + @($rest)) -Overwrite
@@ -420,7 +422,8 @@ function Write-InventoryAdjust($lines) {
         $qty = [decimal]$l.qty
         if ($qty -eq 0) { continue }
         $reason = ("$($l.reason)" -replace ',', ';')
-        $rows += "$($l.item_id),ADJ,$(Get-Date -Format 'M/d/yyyy'),$glAcct,$qty,,$reason,1"
+        $amt = if ($l.unit_cost) { -($qty * [decimal]$l.unit_cost) } else { '' }
+        $rows += "$($l.item_id),ADJ,$(Get-Date -Format 'M/d/yyyy'),$glAcct,$qty,,$reason,1,$amt"
     }
     if ($rows) { Write-WithRetry $csv $rows }
     return $rows.Count

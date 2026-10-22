@@ -10,7 +10,7 @@
 #
 # The Sage "Inventory Adjustments Journal" import template must be configured
 # once: fields Item ID, Reference, Date, GL Acct-Source, Quantity, Unit Cost,
-# Reason to Adjust, Number of Distributions - in that order - and the
+# Reason to Adjust, Number of Distributions, Amount - in that order - and the
 # Options-tab filename pointed at
 # inventory_adjustments_pending.csv in this folder.
 #
@@ -32,7 +32,7 @@ $PENDING  = if ($env:INV_ADJ_PENDING_CSV) { $env:INV_ADJ_PENDING_CSV } else { Jo
 $ARCHIVE  = Join-Path $DIR 'imported'
 $LOG      = Join-Path $DIR 'adjustment_import.log'
 $AU3      = Join-Path $DIR 'assembly_import.au3'
-$HEADER   = 'Item ID,Reference,Date,GL Acct-Source,Quantity,Unit Cost,Reason to Adjust,Number of Distributions'
+$HEADER   = 'Item ID,Reference,Date,GL Acct-Source,Quantity,Unit Cost,Reason to Adjust,Number of Distributions,Amount'
 
 function Log([string]$m) {
     "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  $m" | Add-Content $LOG
