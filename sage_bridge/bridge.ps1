@@ -262,7 +262,9 @@ function Write-WithRetry($path, $lines, [switch]$Overwrite) {
 }
 
 function Write-AssemblyBuild($lines, $bom) {
-    $csv = Join-Path $PSScriptRoot 'assembly_builds.csv'
+    # ASM_BUILDS_CSV in .env can relocate the staging file (e.g. off the
+    # Desktop if a security product keeps blocking writes there).
+    $csv = if ($env:ASM_BUILDS_CSV) { $env:ASM_BUILDS_CSV } else { Join-Path $PSScriptRoot 'assembly_builds.csv' }
     $header = 'Assembly Item ID,Reference,Date,Reason to Build,Quantity Built,Number of distributions,Quantity,Component Item ID,Revision Number Used'
     if (-not (Test-Path $csv)) { Write-WithRetry $csv $header -Overwrite }
     $rows = @()

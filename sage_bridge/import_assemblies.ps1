@@ -12,9 +12,17 @@
 # is pending or when Sage isn't open.
 
 $ErrorActionPreference = 'Stop'
+$envFile = Join-Path $PSScriptRoot '.env'
+if (Test-Path $envFile) {
+    Get-Content $envFile | ForEach-Object {
+        if ($_ -match '^\s*#' -or $_ -notmatch '=') { return }
+        $k, $v = $_ -split '=', 2
+        [Environment]::SetEnvironmentVariable($k.Trim(), $v.Trim(), 'Process')
+    }
+}
 $DIR      = $PSScriptRoot
-$BUILDS   = Join-Path $DIR 'assembly_builds.csv'
-$PENDING  = Join-Path $DIR 'assembly_pending.csv'
+$BUILDS   = if ($env:ASM_BUILDS_CSV)  { $env:ASM_BUILDS_CSV }  else { Join-Path $DIR 'assembly_builds.csv' }
+$PENDING  = if ($env:ASM_PENDING_CSV) { $env:ASM_PENDING_CSV } else { Join-Path $DIR 'assembly_pending.csv' }
 $ARCHIVE  = Join-Path $DIR 'imported'
 $LOG      = Join-Path $DIR 'assembly_import.log'
 $AU3      = Join-Path $DIR 'assembly_import.au3'
