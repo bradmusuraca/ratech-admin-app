@@ -54,7 +54,17 @@ foreach ($n in @(
 $f = $asm.GetType('Sage.Peachtree.API.Factories.SalesOrderFactory')
 $rt = $f.GetMethods() | Where-Object { $_.Name -eq 'List' } | ForEach-Object { $_.ReturnType }
 foreach ($t in $rt) { Dump-Type $t }
-# also dump filter-expression static factory constructors
-$fe = $asm.GetType('Sage.Peachtree.API.Collections.Generic.FilterExpression')
-Write-Host "`n=== FilterExpression ctor/statics ===" -ForegroundColor Cyan
-$fe.GetMethods('Static,Public') | ForEach-Object { Write-Host "  $($_.Name)($($_.GetParameters() | ForEach-Object { $_.ParameterType.Name }))" }
+
+# find the LoadModifiers type used by the list's Load()
+$lt = $rt | Select-Object -First 1
+$lm = $lt.GetMethods() | Where-Object { $_.Name -eq 'Load' } |
+    ForEach-Object { $_.GetParameters() } | ForEach-Object { $_.ParameterType }
+foreach ($t in $lm) {
+    Write-Host "`n=== Load param type: $($t.FullName) ===" -ForegroundColor Cyan
+    try {
+        $t.GetProperties() | ForEach-Object { Write-Host "  prop $($_.PropertyType.Name) $($_.Name)" }
+        $t.GetConstructors() | ForEach-Object { Write-Host "  ctor($($_.GetParameters() | ForEach-Object { $_.ParameterType.Name }))" }
+        $t.GetMethods() | Where-Object { -not $_.IsSpecialName -and $_.IsStatic -eq $false } |
+            ForEach-Object { Write-Host "  method $($_.Name)($($_.GetParameters() | ForEach-Object { $_.ParameterType.Name }))" }
+    } catch { Write-Host "  (dump failed: $_)" }
+}
