@@ -423,6 +423,7 @@ while ($true) {
                 } elseif ($row.job_type -eq 'build_assembly') {
                     $warn = Write-AssemblyBuild $row.payload.lines $bom
                     Finish-Order $key 'done' $null $warn
+                    $script:asmNeedsImport = $true
                     Write-Host "[+] $($key.Substring(0,8)) -> assembly build row(s) added to assembly_builds.csv$(if($warn){" ($warn)"})"
                 } elseif ($row.job_type -eq 'create_invoice') {
                     $invNo = New-SalesInvoice $sess.Company "$($row.payload.sage_order_no)" $row.payload.lines
@@ -454,6 +455,17 @@ while ($true) {
         }
         try { Close-MissingOrders $sess.Company } catch {
             Write-Host "  [!] missing-order check failed: $_" -ForegroundColor Yellow
+        }
+        # On-change import: launch the AutoIt importer once per sweep if any
+        # build rows were written. The 5-min scheduled task remains as a
+        # backstop for runs that fail (Sage busy, dialogs, etc).
+        if ($script:asmNeedsImport) {
+            $script:asmNeedsImport = $false
+            $imp = Join-Path $PSScriptRoot 'import_assemblies.ps1'
+            if (Test-Path $imp) {
+                Write-Host "  [.] launching assembly import" -ForegroundColor DarkGray
+                Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$imp`"" -WorkingDirectory $PSScriptRoot
+            }
         }
     } catch {
         Write-Host "[!] sweep failed: $_" -ForegroundColor Red

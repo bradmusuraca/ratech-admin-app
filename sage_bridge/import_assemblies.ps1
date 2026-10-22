@@ -30,6 +30,13 @@ if (-not (Test-Path $BUILDS)) { exit 0 }
 $data = (Get-Content $BUILDS | Select-Object -Skip 1 | Where-Object { $_.Trim() })
 if (-not $data) { exit 0 }
 
+# The bridge launches us on-change too - never run two importers, the
+# second would clobber assembly_pending.csv mid-import.
+if (Get-Process AutoIt3 -ErrorAction SilentlyContinue) {
+    Log 'SKIP: another import is already running - rows stay pending'
+    exit 0
+}
+
 # Sage must be running for the UI drive to work
 if (-not (Get-Process peachw -ErrorAction SilentlyContinue)) {
     Log 'SKIP: Sage (peachw.exe) not running - builds stay pending'
