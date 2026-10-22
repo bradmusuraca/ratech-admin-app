@@ -473,7 +473,11 @@ function New-SalesInvoice($company, [string]$soNo, $packLines) {
     try { $inv.ReferenceNumber = "$($company.Services.ReferenceNumber.TakeNextInvoiceNumber())" } catch { }
     $inv.Save()
     $script:soList = $null   # SO may have closed - invalidate the list
-    return "$($inv.ReferenceNumber)"
+    $refNo = "$($inv.ReferenceNumber)"
+    if (-not $refNo) {
+        try { $refNo = "$($company.Factories.SalesInvoiceFactory.Load($inv.Key).ReferenceNumber)" } catch { }
+    }
+    return $refNo
 }
 
 function Update-SalesOrder($company, [string]$soNo, $lines) {
