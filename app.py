@@ -1850,9 +1850,6 @@ elif page == "Create Invoices":
                                       packed_by=packed_by)
                         if builds:
                             queue_assembly_build(o['order_key'], builds)
-                            st.info(f"Queued {len(builds)} assembly build(s) — "
-                                    "bridge writes them to assembly_builds.csv "
-                                    "for Sage import.")
                         if any_short and o.get('sage_order_no'):
                             queue_qty_update(o['order_key'], o['sage_order_no'],
                                              new_lines)
