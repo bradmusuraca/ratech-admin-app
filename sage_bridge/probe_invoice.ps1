@@ -6,12 +6,17 @@
 $ErrorActionPreference = 'Continue'
 $SAGE_BASE = if ($env:SAGE_BASE_DIR) { $env:SAGE_BASE_DIR } else { 'C:\Program Files (x86)\Sage' }
 
+# Precompute the dll map ONCE - doing Get-ChildItem inside the handler
+# re-triggers assembly resolution and stack-overflows.
+$script:dllMap = @{}
+Get-ChildItem $SAGE_BASE -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue |
+    ForEach-Object { $script:dllMap[$_.BaseName.ToLower()] = $_.FullName }
 $script:resolveHandler = {
     param($sender, $e)
-    $name = ($e.Name -split ',')[0]
-    $hit = Get-ChildItem $SAGE_BASE -Recurse -Filter "$name.dll" -ErrorAction SilentlyContinue |
-           Select-Object -First 1
-    if ($hit) { return [Reflection.Assembly]::LoadFrom($hit.FullName) }
+    $name = ($e.Name -split ',')[0].ToLower()
+    if ($script:dllMap.ContainsKey($name)) {
+        return [Reflection.Assembly]::LoadFrom($script:dllMap[$name])
+    }
     return $null
 }
 [AppDomain]::CurrentDomain.add_AssemblyResolve($script:resolveHandler)
