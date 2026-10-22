@@ -209,6 +209,7 @@ Sleep(1000)
 ; ---- handle pre-import prompts, then wait for completion ----
 Local $bDone = False
 Local $bBackedUp = False
+Local $iErrors = 0
 For $i = 0 To 150   ; up to ~75 s
     Local $aT = WinList()
     For $j = 1 To $aT[0][0]
@@ -225,9 +226,19 @@ For $i = 0 To 150   ; up to ~75 s
             Sleep(1000)
             ExitLoop
         EndIf
-        ; completion / error dialog (title mentions Sage or text matches)
+        ; per-record import error: Sage offers OK=skip record / Cancel=halt.
+        ; Skip the bad record and keep going - the row is reported at exit.
+        If StringInStr($sTxt, "error occurred importing") Then
+            $iErrors += 1
+            _Log("IMPORT ERROR dialog: " & StringReplace($sTxt, @CRLF, " | "))
+            WinActivate($aT[$j][1])
+            Send("{ENTER}")    ; OK = skip this record
+            Sleep(800)
+            ExitLoop
+        EndIf
+        ; completion dialog
         If StringInStr($aT[$j][0], "Sage") Or StringInStr($sTxt, "import") Then
-            If StringInStr($sTxt, "complete") Or StringInStr($sTxt, "finished") Or StringInStr($sTxt, "error") Then
+            If StringInStr($sTxt, "complete") Or StringInStr($sTxt, "finished") Then
                 _Log("result dialog: " & StringReplace($sTxt, @CRLF, " | "))
                 WinActivate($aT[$j][1])
                 Send("{ENTER}")
@@ -239,7 +250,9 @@ For $i = 0 To 150   ; up to ~75 s
     Sleep(500)
 Next
 
-If Not $bDone Then
+If $iErrors > 0 Then
+    _Log("import finished with " & $iErrors & " rejected record(s)")
+ElseIf Not $bDone Then
     ; no explicit completion dialog - Enter dismisses most Sage popups
     Send("{ENTER}")
     Sleep(500)
@@ -253,6 +266,7 @@ Sleep(500)
 If WinExists("Select Import/Export") Then WinClose("Select Import/Export")
 
 _Log("=== import run end ===")
+If $iErrors > 0 Then Exit 6
 Exit 0
 
 

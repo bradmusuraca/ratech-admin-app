@@ -40,6 +40,9 @@ $types | Where-Object { $_.Name -match 'Factory|Filter' } |
     ForEach-Object { Write-Host "  $($_.FullName)" }
 
 foreach ($n in @(
+    'Sage.Peachtree.API.StockItem',
+    'Sage.Peachtree.API.AssemblyItem',
+    'Sage.Peachtree.API.InventoryItem',
     'Sage.Peachtree.API.Factories.SalesOrderFactory',
     'Sage.Peachtree.API.Factories.ISupportsFilters',
     'Sage.Peachtree.API.Collections.Generic.FilterExpression',

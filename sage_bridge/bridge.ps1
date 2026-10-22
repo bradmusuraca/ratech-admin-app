@@ -342,7 +342,7 @@ function Test-AssemblyStock($company, $lines, $bom, $refCache) {
     return $short
 }
 
-function Write-AssemblyBuild($lines, $bom) {
+function Write-AssemblyBuild($lines, $bom, $parentKey = '') {
     # ASM_BUILDS_CSV in .env can relocate the staging file (e.g. off the
     # Desktop if a security product keeps blocking writes there).
     $csv = if ($env:ASM_BUILDS_CSV) { $env:ASM_BUILDS_CSV } else { Join-Path $PSScriptRoot 'assembly_builds.csv' }
@@ -356,9 +356,10 @@ function Write-AssemblyBuild($lines, $bom) {
         $comps = if ($bom) { $bom[$aid] } else { $null }
         if (-not $comps -or $qty -le 0) { $missing += $aid; continue }
         $rev = "$($bom["${aid}_rev"])"
+        $ref = if ($parentKey) { 'SOB-' + $parentKey.Substring(0, [Math]::Min(8, $parentKey.Length)) } else { 'SO-BUILD' }
         foreach ($c in $comps.GetEnumerator()) {
             $cq = $c.Value * $qty
-            $rows += "$aid,SO-BUILD,$(Get-Date -Format 'M/d/yyyy'),Packed SO build,$qty,$($comps.Count),$cq,$($c.Key),$rev"
+            $rows += "$aid,$ref,$(Get-Date -Format 'M/d/yyyy'),Packed SO build,$qty,$($comps.Count),$cq,$($c.Key),$rev"
         }
     }
     if ($rows) { Write-WithRetry $csv $rows }
@@ -585,7 +586,7 @@ while ($true) {
                         }
                         Write-Host "[!] $($key.Substring(0,8)) skipped - $msg" -ForegroundColor Yellow
                     } else {
-                        $warn = Write-AssemblyBuild $row.payload.lines $bom
+                        $warn = Write-AssemblyBuild $row.payload.lines $bom "$($row.payload.parent_order)"
                         Finish-Order $key 'done' $null $warn
                         foreach ($l in $row.payload.lines) {
                             Set-LineWarning $row.payload.parent_order "$($l.item_id)" $null

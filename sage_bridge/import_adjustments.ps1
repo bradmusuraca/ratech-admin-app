@@ -82,12 +82,12 @@ if ($proc.ExitCode -eq 0) {
     Move-Item $PENDING (Join-Path $ARCHIVE "adjustments_$stamp.csv") -Force
     Log "OK: imported and archived adjustments_$stamp.csv"
 } else {
-    Log "FAIL: import exit $($proc.ExitCode) - rows left in inventory_adjustments_pending.csv"
-    # Restore pending rows to the builds file so nothing is lost even if
-    # the pending file gets clobbered later.
-    if (Test-Path $BUILDS) {
-        Get-Content $PENDING | Add-Content $BUILDS
-    } else {
-        Move-Item $PENDING $BUILDS -Force
-    }
+    # Rejected/partial import: archive for review - do NOT restore to the
+    # builds file, since rows before an error may have imported and
+    # re-adding them would duplicate the adjustment.
+    $failDir = Join-Path $DIR 'failed'
+    New-Item -ItemType Directory -Path $failDir -Force | Out-Null
+    $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+    Move-Item $PENDING (Join-Path $failDir "adjustments_$stamp.csv") -Force
+    Log "FAIL: import exit $($proc.ExitCode) - rows archived to failed\adjustments_$stamp.csv"
 }

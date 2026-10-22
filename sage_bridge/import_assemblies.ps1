@@ -77,12 +77,41 @@ if ($proc.ExitCode -eq 0) {
     Move-Item $PENDING (Join-Path $ARCHIVE "assembly_$stamp.csv") -Force
     Log "OK: imported and archived assembly_$stamp.csv"
 } else {
-    Log "FAIL: import exit $($proc.ExitCode) - rows left in assembly_pending.csv"
-    # Restore pending rows to the builds file so nothing is lost even if
-    # the pending file gets clobbered later.
-    if (Test-Path $BUILDS) {
-        Get-Content $PENDING | Add-Content $BUILDS
-    } else {
-        Move-Item $PENDING $BUILDS -Force
+    # Rejected/partial import: move rows aside for review - NOT back to the
+    # builds file (records before an error may have imported, and re-adding
+    # everything would duplicate them).
+    $failDir = Join-Path $DIR 'failed'
+    New-Item -ItemType Directory -Path $failDir -Force | Out-Null
+    $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+    Move-Item $PENDING (Join-Path $failDir "assembly_$stamp.csv") -Force
+    Log "FAIL: import exit $($proc.ExitCode) - rows archived to failed\assembly_$stamp.csv"
+
+    # Reopen the parent order(s) so the packer sees the failure: status back
+    # to open, warning + built_qty reset on the assembly lines (they weren't
+    # built - the packed qty would otherwise look done).
+    $asmItems = @($data | ForEach-Object { ($_ -split ',')[0] } | Select-Object -Unique)
+    $prefixes = @($data | ForEach-Object { ($_ -split ',')[1] } |
+        Where-Object { $_ -match 'SOB-([0-9a-f]{8})' } |
+        ForEach-Object { $Matches[1] } | Select-Object -Unique)
+    foreach ($pfx in $prefixes) {
+        try {
+            $h = @{ apikey = $env:SUPABASE_KEY; Authorization = "Bearer $env:SUPABASE_KEY" }
+            $uri = "$env:SUPABASE_URL/rest/v1/open_orders`?order_key=like.$pfx*&select=order_key,status,lines"
+            $row = (Invoke-RestMethod -Uri $uri -Headers $h -TimeoutSec 20) | Select-Object -First 1
+            if (-not $row) { Log "  no open_orders row matching $pfx*"; continue }
+            foreach ($l in $row.lines) {
+                if ($asmItems -contains "$($l.item_id)") {
+                    $l | Add-Member -NotePropertyName stock_warning `
+                        -NotePropertyValue 'Sage rejected the assembly build - fix stock and re-save; rows kept in failed\' -Force
+                    $l.built_qty = 0
+                }
+            }
+            $body = @{ status = 'open'; lines = @($row.lines); updated_at = 'now()' } | ConvertTo-Json -Depth 8 -Compress
+            Invoke-RestMethod -Uri "$env:SUPABASE_URL/rest/v1/open_orders`?order_key=eq.$($row.order_key)" `
+                -Method Patch -Headers $h -Body $body -TimeoutSec 20 | Out-Null
+            Log "  reopened order $($row.order_key) with build-failure warning"
+        } catch {
+            Log "  WARN: could not reopen order $pfx*: $_"
+        }
     }
 }
