@@ -411,9 +411,13 @@ function New-SalesInvoice($company, [string]$soNo, $packLines) {
     } catch { }
 
     $shipped = 0
+    $seen = @()
     foreach ($soLn in $so.SalesOrderLines) {
-        $iid = "$($soLn.InventoryItemReference.Key.ID)"
+        $iid = ''
+        try { $iid = "$($soLn.InventoryItemReference.Key.ID)" } catch { }
+        if (-not $iid) { try { $iid = "$($soLn.InventoryItemReference.ID)" } catch { } }
         if (-not $iid) { $iid = "$($soLn.InventoryItemReference)" }
+        $seen += $iid
         $qty = $null
         foreach ($k in $want.Keys) {
             if ($iid.Trim().ToUpper() -match [regex]::Escape($k) -or $k -match [regex]::Escape($iid.Trim().ToUpper())) {
@@ -426,7 +430,7 @@ function New-SalesInvoice($company, [string]$soNo, $packLines) {
         $invLn.Amount = [decimal]$qty * [decimal]$invLn.UnitPrice
         $shipped++
     }
-    if (-not $shipped) { throw "No invoice lines matched the packed items" }
+    if (-not $shipped) { throw "No invoice lines matched the packed items (SO lines: $($seen -join ', '); wanted: $($want.Keys -join ', '))" }
     try { $inv.ReferenceNumber = "$($company.Services.ReferenceNumber.TakeNextInvoiceNumber())" } catch { }
     $inv.Save()
     $script:soList = $null   # SO may have closed - invalidate the list
@@ -439,16 +443,24 @@ function Update-SalesOrder($company, [string]$soNo, $lines) {
     $so = $company.Factories.SalesOrderFactory.Load($hit.Key)
     $want = @{}
     foreach ($l in $lines) { $want["$($l.item_id)"] = [decimal]$l.quantity }
+    $seen = @()
+    $matched = 0
     foreach ($ln in $so.SalesOrderLines) {
-        $iid = "$($ln.InventoryItemReference.Key.ID)"
+        $iid = ''
+        try { $iid = "$($ln.InventoryItemReference.Key.ID)" } catch { }
+        if (-not $iid) { try { $iid = "$($ln.InventoryItemReference.ID)" } catch { } }
         if (-not $iid) { $iid = "$($ln.InventoryItemReference)" }
+        $seen += $iid
         foreach ($k in $want.Keys) {
             if ($iid -match [regex]::Escape($k) -or $k -match [regex]::Escape($iid)) {
                 $ln.Quantity = $want[$k]
+                $matched++
             }
         }
     }
     $so.Save()
+    if (-not $matched) { return "no SO lines matched (SO lines: $($seen -join ', '); wanted: $($want.Keys -join ', '))" }
+    return $null
 }
 
 Write-Host "Sage bridge v3 polling every $POLL_SECONDS s - Ctrl+C to stop"
@@ -470,8 +482,8 @@ while ($true) {
             if (-not (Claim-Order $key)) { Write-Host "  [.] claim skipped (0 rows updated)" -ForegroundColor DarkGray; continue }
             try {
                 if ($row.job_type -eq 'qty_update') {
-                    Update-SalesOrder $sess.Company "$($row.payload.sage_order_no)" $row.payload.lines
-                    Finish-Order $key 'done'
+                    $warn = Update-SalesOrder $sess.Company "$($row.payload.sage_order_no)" $row.payload.lines
+                    Finish-Order $key 'done' $null $warn
                     Write-Host "[+] $($key.Substring(0,8)) -> updated SO $($row.payload.sage_order_no) quantities"
                 } elseif ($row.job_type -eq 'build_assembly') {
                     $short = Test-AssemblyStock $sess.Company $row.payload.lines $bom $refCache
