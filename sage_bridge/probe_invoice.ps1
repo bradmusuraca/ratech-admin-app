@@ -42,12 +42,19 @@ $types | Where-Object { $_.Name -match 'Factory|Filter' } |
 foreach ($n in @(
     'Sage.Peachtree.API.Factories.SalesOrderFactory',
     'Sage.Peachtree.API.Factories.ISupportsFilters',
-    'Sage.Peachtree.API.Factories.EntityFactoryBase`1',
     'Sage.Peachtree.API.Collections.Generic.FilterExpression',
-    'Sage.Peachtree.API.Collections.Generic.BinaryFilterExpression',
     'Sage.Peachtree.API.Collections.Generic.PropertyFilterExpression',
     'Sage.Peachtree.API.Collections.Generic.StringConstantFilterExpression',
     'Sage.Peachtree.API.Collections.Generic.ConstantFilterExpression'
 )) {
     Dump-Type ($asm.GetType($n))
 }
+
+# what does SalesOrderFactory.List() return? dump that collection type
+$f = $asm.GetType('Sage.Peachtree.API.Factories.SalesOrderFactory')
+$rt = $f.GetMethods() | Where-Object { $_.Name -eq 'List' } | ForEach-Object { $_.ReturnType }
+foreach ($t in $rt) { Dump-Type $t }
+# also dump filter-expression static factory constructors
+$fe = $asm.GetType('Sage.Peachtree.API.Collections.Generic.FilterExpression')
+Write-Host "`n=== FilterExpression ctor/statics ===" -ForegroundColor Cyan
+$fe.GetMethods('Static,Public') | ForEach-Object { Write-Host "  $($_.Name)($($_.GetParameters() | ForEach-Object { $_.ParameterType.Name }))" }
