@@ -379,7 +379,7 @@ function Get-SoList($company) {
             # what every consumer (delete/update/invoice/close-missing) wants
             $fe   = [Sage.Peachtree.API.Collections.Generic.FilterExpression]
             $flt  = $fe::Equal($fe::Property('IsClosed'), $fe::Constant([bool]$false))
-            $mods = New-Object Sage.Peachtree.API.Collections.Generic.LoadModifiers
+            $mods = [Sage.Peachtree.API.Collections.Generic.LoadModifiers]::Create()
             $mods.Filters = $flt
             $script:soList.Load($mods)
             Write-Host "  [.] SO list loaded ($($script:soList.Count) open)" -ForegroundColor DarkGray
