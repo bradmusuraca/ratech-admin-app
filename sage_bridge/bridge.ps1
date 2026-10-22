@@ -10,6 +10,13 @@
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ErrorActionPreference = 'Stop'
 
+# Sage's managed API is 32-bit. If launched from 64-bit PowerShell, hand off
+# to the SysWOW64 shell instead of dying on BadImageFormatException.
+if ([Environment]::Is64BitProcess -and (Test-Path "$env:windir\SysWOW64\WindowsPowerShell\v1.0\powershell.exe")) {
+    & "$env:windir\SysWOW64\WindowsPowerShell\v1.0\powershell.exe" -ExecutionPolicy Bypass -File $PSCommandPath
+    exit $LASTEXITCODE
+}
+
 # ---- config ----
 $envFile = Join-Path $PSScriptRoot '.env'
 if (Test-Path $envFile) {
