@@ -88,7 +88,7 @@ for _k, _v in (('invoices', []), ('inbox_items', []), ('loaded_uids', set()),
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
-ALL_PAGES = ["Order Processing", "Open Sales Orders", "Customers",
+ALL_PAGES = ["Order Processing", "Create Invoices", "Customers",
              "Inventory Management", "Settings"]
 
 
@@ -1696,8 +1696,8 @@ if page == "Order Processing":
                         except Exception as e:
                             st.error(f"Could not load queue: {e}")
 
-elif page == "Open Sales Orders":
-    st.header("📦 Open Sales Orders")
+elif page == "Create Invoices":
+    st.header("📦 Create Invoices")
     st.caption("Packing list: enter the quantity actually packaged on each "
                "line, then mark the order. Short orders are pushed back to "
                "Sage automatically.")

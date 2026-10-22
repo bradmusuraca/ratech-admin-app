@@ -293,6 +293,36 @@ function Set-LineWarning($orderKey, [string]$itemId, [string]$msg) {
     }
 }
 
+# Lazily-loaded set of assembly item IDs (per sweep).
+$script:asmIds = $null
+function Get-AssemblyIds($company) {
+    if (-not $script:asmIds) {
+        $script:asmIds = @{}
+        $al = $company.Factories.AssemblyItemFactory.List()
+        $al.Load()
+        $al | ForEach-Object { $script:asmIds["$($_.ID)".Trim().ToUpper()] = $true }
+    }
+    return $script:asmIds
+}
+
+# Check packed ASSEMBLY lines against the item's on-hand. If a build hasn't
+# posted yet (import still running, or skipped for components) the assembly
+# item won't cover the shipped qty - the caller holds the invoice for the
+# next sweep instead of letting Sage drive it negative.
+function Test-InvoiceStock($company, $payload, $refCache) {
+    $asm = Get-AssemblyIds $company
+    $short = @()
+    foreach ($l in $payload.lines) {
+        $id = "$($l.item_id)".Trim().ToUpper()
+        if (-not $asm.ContainsKey($id)) { continue }
+        $need = [decimal]$l.quantity
+        if ($need -le 0) { continue }
+        try { $onh = Get-ItemOnHand $company $id $refCache } catch { $onh = $null }
+        if ($null -ne $onh -and $onh -lt $need) { $short += "$id: need $need, on-hand $onh" }
+    }
+    return $short
+}
+
 # Check BOM components against on-hand stock BEFORE writing build rows.
 # Returns a list of shortfall descriptions ('item: need X, have Y').
 function Test-AssemblyStock($company, $lines, $bom, $refCache) {
@@ -546,9 +576,16 @@ while ($true) {
                         Write-Host "[+] $($key.Substring(0,8)) -> assembly build row(s) added to assembly_builds.csv$(if($warn){" ($warn)"})"
                     }
                 } elseif ($row.job_type -eq 'create_invoice') {
-                    $invNo = New-SalesInvoice $sess.Company "$($row.payload.sage_order_no)" $row.payload.lines
-                    Finish-Order $key 'done' $invNo
-                    Write-Host "[+] $($key.Substring(0,8)) -> Sage invoice $invNo (from SO $($row.payload.sage_order_no))"
+                    $short = Test-InvoiceStock $sess.Company $row.payload $refCache
+                    if ($short) {
+                        # build not posted yet (or skipped) - hold for next sweep
+                        Finish-Order $key 'pending' $null "waiting on assembly stock: $($short -join '; ')"
+                        Write-Host "[~] $($key.Substring(0,8)) held - $($short -join '; ')" -ForegroundColor DarkYellow
+                    } else {
+                        $invNo = New-SalesInvoice $sess.Company "$($row.payload.sage_order_no)" $row.payload.lines
+                        Finish-Order $key 'done' $invNo
+                        Write-Host "[+] $($key.Substring(0,8)) -> Sage invoice $invNo (from SO $($row.payload.sage_order_no))"
+                    }
                 } elseif ($row.job_type -eq 'void_order') {
                     $warn = Remove-SalesOrder $sess.Company "$($row.payload.sage_order_no)"
                     Finish-Order $key 'done' $null $warn
