@@ -6,22 +6,14 @@
 $ErrorActionPreference = 'Continue'
 $SAGE_BASE = if ($env:SAGE_BASE_DIR) { $env:SAGE_BASE_DIR } else { 'C:\Program Files (x86)\Sage' }
 
-# Precompute the dll map ONCE - doing Get-ChildItem inside the handler
-# re-triggers assembly resolution and stack-overflows.
-$script:dllMap = @{}
-Get-ChildItem $SAGE_BASE -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue |
-    ForEach-Object { $script:dllMap[$_.BaseName.ToLower()] = $_.FullName }
-$script:resolveHandler = {
-    param($sender, $e)
-    $name = ($e.Name -split ',')[0].ToLower()
-    if ($script:dllMap.ContainsKey($name)) {
-        return [Reflection.Assembly]::LoadFrom($script:dllMap[$name])
+# No resolver handler - preload every Sage dll instead (two passes so
+# assemblies whose deps load late still succeed).
+$dlls = Get-ChildItem $SAGE_BASE -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue
+1..2 | ForEach-Object {
+    $dlls | ForEach-Object {
+        try { [Reflection.Assembly]::LoadFrom($_.FullName) | Out-Null } catch { }
     }
-    return $null
 }
-[AppDomain]::CurrentDomain.add_AssemblyResolve($script:resolveHandler)
-
-[Reflection.Assembly]::LoadFrom("$SAGE_BASE\Peachtree\API\Sage.Peachtree.API.dll") | Out-Null
 $asm = [AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.GetName().Name -eq 'Sage.Peachtree.API' } | Select-Object -First 1
 if (-not $asm) { Write-Host "API assembly not found under $SAGE_BASE" -ForegroundColor Red; exit 1 }
 
