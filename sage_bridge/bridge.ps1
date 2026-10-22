@@ -406,8 +406,11 @@ function Write-AssemblyBuild($lines, $bom, $parentKey = '') {
 function Write-InventoryAdjust($lines) {
     # INV_ADJ_CSV in .env can relocate the staging file.
     $csv = if ($env:INV_ADJ_CSV) { $env:INV_ADJ_CSV } else { Join-Path $PSScriptRoot 'inventory_adjustments.csv' }
-    $header = 'Item ID,Reference,Date,GL Acct-Cost,Quantity,Unit Cost,Reason to Adjust'
-    if (-not (Test-Path $csv)) { Write-WithRetry $csv $header -Overwrite }
+    $header = 'Item ID,Reference,Date,GL Acct-Source,Quantity,Unit Cost,Reason to Adjust'
+    if (-not (Test-Path $csv) -or (Get-Content $csv -TotalCount 1) -ne $header) {
+        $rest = if (Test-Path $csv) { Get-Content $csv | Select-Object -Skip 1 } else { @() }
+        Write-WithRetry $csv (@($header) + @($rest)) -Overwrite
+    }
     $rows = @()
     foreach ($l in $lines) {
         $qty = [decimal]$l.qty
