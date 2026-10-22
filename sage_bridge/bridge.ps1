@@ -344,36 +344,26 @@ function Write-AssemblyBuild($lines, $bom) {
 $script:soList = $null
 
 # Line references stringify as EntityReference<...>:Key(N) - not the item ID.
-# Map each reference token to the real item ID, loaded lazily per sweep.
-$script:itemKeyMap = $null
+# Keep the loaded item list and resolve each line's reference via GetItemByKey.
+$script:itemList = $null
 function Get-ItemKeyMap($company) {
-    if ($null -eq $script:itemKeyMap) {
-        Write-Host "  [.] loading item map..." -ForegroundColor DarkGray
-        $script:itemKeyMap = @{}
-        $il = $company.Factories.InventoryItemFactory.List()
-        $il.Load()
-        foreach ($i in $il) {
-            $k = "$($i.Key)"
-            if ($k -match 'Key\((\d+)\)') { $script:itemKeyMap[$Matches[1]] = "$($i.ID)" }
-            elseif ($k -match '^\d+$')     { $script:itemKeyMap[$k] = "$($i.ID)" }
-        }
-        Write-Host "  [.] item map loaded ($($script:itemKeyMap.Count))" -ForegroundColor DarkGray
+    if ($null -eq $script:itemList) {
+        Write-Host "  [.] loading item list..." -ForegroundColor DarkGray
+        $script:itemList = $company.Factories.InventoryItemFactory.List()
+        $script:itemList.Load()
+        Write-Host "  [.] item list loaded ($($script:itemList.Count))" -ForegroundColor DarkGray
     }
-    return $script:itemKeyMap
+    return $script:itemList
 }
 
-function Get-LineItemId($line, $map) {
-    $iid = ''
-    try { $iid = "$($line.InventoryItemReference.Key.ID)" } catch { }
-    if (-not $iid) { try { $iid = "$($line.InventoryItemReference.ID)" } catch { } }
-    if (-not $iid) {
-        $ref = "$($line.InventoryItemReference)"
-        if ($ref -match 'Key\((\d+)\)' -and $map.ContainsKey($Matches[1])) {
-            $iid = $map[$Matches[1]]
-        }
-        if (-not $iid) { $iid = $ref }
-    }
-    return $iid
+function Get-LineItemId($line, $list) {
+    try { $iid = "$($line.InventoryItemReference.Key.ID)"; if ($iid) { return $iid } } catch { }
+    try { $iid = "$($line.InventoryItemReference.ID)";     if ($iid) { return $iid } } catch { }
+    try {
+        $hit = $list.GetItemByKey($line.InventoryItemReference)
+        if ($hit) { return "$($hit.ID)" }
+    } catch { }
+    return "$($line.InventoryItemReference)"
 }
 
 function Get-SoList($company) {
@@ -475,10 +465,7 @@ function New-SalesInvoice($company, [string]$soNo, $packLines) {
         $invLn.Amount = [decimal]$qty * [decimal]$invLn.UnitPrice
         $shipped++
     }
-    if (-not $shipped) {
-        $sample = ($map.Keys | Select-Object -First 3) -join ', '
-        throw "No invoice lines matched the packed items (SO lines: $($seen -join ', '); wanted: $($want.Keys -join ', '); map sample: $sample)"
-    }
+    if (-not $shipped) { throw "No invoice lines matched the packed items (SO lines: $($seen -join ', '); wanted: $($want.Keys -join ', '))" }
     try { $inv.ReferenceNumber = "$($company.Services.ReferenceNumber.TakeNextInvoiceNumber())" } catch { }
     $inv.Save()
     $script:soList = $null   # SO may have closed - invalidate the list
@@ -520,7 +507,7 @@ while ($true) {
         $bom = Get-BomMap
         $script:asmIds = $null
         $script:soList = $null   # fresh session - drop any stale cached list
-        $script:itemKeyMap = $null
+        $script:itemList = $null
         $pendingRows = @(Get-Pending)
         Write-Host "  [.] pending rows: $($pendingRows.Count)" -ForegroundColor DarkGray
         foreach ($row in $pendingRows) {
