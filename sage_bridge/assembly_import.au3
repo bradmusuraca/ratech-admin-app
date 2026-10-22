@@ -176,13 +176,21 @@ EndIf
 WinActivate($hTpl)
 Sleep(400)
 
-; The template remembers its Options-tab filename; just run it.
-; Try Import button, then OK.
-If Not ControlClick($hTpl, "", "[CLASS:Button; TEXT:&Import]") Then
-    If Not ControlClick($hTpl, "", "[CLASS:Button; TEXT:Import]") Then
-        ControlClick($hTpl, "", "[CLASS:Button; TEXT:OK]")
-    EndIf
+; Template window buttons are custom BITMAPBUTTONs; accelerators are
+; visible in the window text as 'NAME&X'. Find Import's and press it.
+Local $sTplText = WinGetText($hTpl)
+_Log("template window text: " & StringReplace($sTplText, @CRLF, " | "))
+_Log("template classes: " & StringReplace(WinGetClassList($hTpl), @LF, " | "))
+
+Local $aKey = StringRegExp($sTplText, "Import&([A-Za-z0-9])", 3)
+If IsArray($aKey) Then
+    _Log("pressing Alt+" & $aKey[0] & " (Import accelerator)")
+    Send("!" & $aKey[0])
+Else
+    _Log("no Import accelerator found - trying Alt+P")
+    Send("!p")
 EndIf
+Sleep(1000)
 
 ; ---- wait for completion dialog, log text, dismiss ----
 Local $bDone = False
