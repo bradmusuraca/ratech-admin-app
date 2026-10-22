@@ -342,6 +342,34 @@ function Write-AssemblyBuild($lines, $bom) {
 # Callers that create or delete an SO must set $script:soList = $null
 # afterwards so the cache doesn't serve stale data to later jobs.
 $script:soList = $null
+
+# Line references stringify as EntityReference<...>:Key(N) - not the item ID.
+# Map each reference token to the real item ID, loaded lazily per sweep.
+$script:itemKeyMap = $null
+function Get-ItemKeyMap($company) {
+    if ($null -eq $script:itemKeyMap) {
+        Write-Host "  [.] loading item map..." -ForegroundColor DarkGray
+        $script:itemKeyMap = @{}
+        $il = $company.Factories.InventoryItemFactory.List()
+        $il.Load()
+        foreach ($i in $il) { $script:itemKeyMap["$($i.Key)"] = "$($i.ID)" }
+        Write-Host "  [.] item map loaded ($($script:itemKeyMap.Count))" -ForegroundColor DarkGray
+    }
+    return $script:itemKeyMap
+}
+
+function Get-LineItemId($line, $map) {
+    $iid = ''
+    try { $iid = "$($line.InventoryItemReference.Key.ID)" } catch { }
+    if (-not $iid) { try { $iid = "$($line.InventoryItemReference.ID)" } catch { } }
+    if (-not $iid) {
+        $ref = "$($line.InventoryItemReference)"
+        if ($map.ContainsKey($ref)) { $iid = $map[$ref] }
+        if (-not $iid) { $iid = $ref }
+    }
+    return $iid
+}
+
 function Get-SoList($company) {
     if ($null -eq $script:soList) {
         Write-Host "  [.] loading SO list..." -ForegroundColor DarkGray
@@ -425,11 +453,9 @@ function New-SalesInvoice($company, [string]$soNo, $packLines) {
 
     $shipped = 0
     $seen = @()
+    $map = Get-ItemKeyMap $company
     foreach ($soLn in $so.SalesOrderLines) {
-        $iid = ''
-        try { $iid = "$($soLn.InventoryItemReference.Key.ID)" } catch { }
-        if (-not $iid) { try { $iid = "$($soLn.InventoryItemReference.ID)" } catch { } }
-        if (-not $iid) { $iid = "$($soLn.InventoryItemReference)" }
+        $iid = Get-LineItemId $soLn $map
         $seen += $iid
         $qty = $null
         foreach ($k in $want.Keys) {
@@ -458,11 +484,9 @@ function Update-SalesOrder($company, [string]$soNo, $lines) {
     foreach ($l in $lines) { $want["$($l.item_id)"] = [decimal]$l.quantity }
     $seen = @()
     $matched = 0
+    $map = Get-ItemKeyMap $company
     foreach ($ln in $so.SalesOrderLines) {
-        $iid = ''
-        try { $iid = "$($ln.InventoryItemReference.Key.ID)" } catch { }
-        if (-not $iid) { try { $iid = "$($ln.InventoryItemReference.ID)" } catch { } }
-        if (-not $iid) { $iid = "$($ln.InventoryItemReference)" }
+        $iid = Get-LineItemId $ln $map
         $seen += $iid
         foreach ($k in $want.Keys) {
             if ($iid -match [regex]::Escape($k) -or $k -match [regex]::Escape($iid)) {
@@ -487,6 +511,7 @@ while ($true) {
         $bom = Get-BomMap
         $script:asmIds = $null
         $script:soList = $null   # fresh session - drop any stale cached list
+        $script:itemKeyMap = $null
         $pendingRows = @(Get-Pending)
         Write-Host "  [.] pending rows: $($pendingRows.Count)" -ForegroundColor DarkGray
         foreach ($row in $pendingRows) {
