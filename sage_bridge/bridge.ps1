@@ -378,7 +378,7 @@ function Get-SoList($company) {
             # only open SOs: closed/invoiced ones read as "missing", which is
             # what every consumer (delete/update/invoice/close-missing) wants
             $fe   = [Sage.Peachtree.API.Collections.Generic.FilterExpression]
-            $flt  = $fe::Equal($fe::Property('IsClosed'), $fe::Constant([bool]$false))
+            $flt  = $fe::Equal($fe::Property('SalesOrder.IsClosed'), $fe::Constant([bool]$false))
             $mods = [Sage.Peachtree.API.Collections.Generic.LoadModifiers]::Create()
             $mods.Filters = $flt
             $script:soList.Load($mods)
