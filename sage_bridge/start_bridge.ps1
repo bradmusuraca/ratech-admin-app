@@ -10,6 +10,7 @@ $running = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorA
            Where-Object { $_.CommandLine -match 'bridge\.ps1' }
 if ($running) { exit 0 }
 
+$bridge = Join-Path $PSScriptRoot 'bridge.ps1'
 Start-Process "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
-    -ArgumentList '-ExecutionPolicy Bypass -WindowStyle Hidden -File C:\Users\John\Desktop\sage_bridge\bridge.ps1' `
-    -WorkingDirectory 'C:\Users\John\Desktop\sage_bridge'
+    -ArgumentList "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$bridge`"" `
+    -WorkingDirectory $PSScriptRoot
