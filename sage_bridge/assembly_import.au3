@@ -182,13 +182,20 @@ Local $sTplText = WinGetText($hTpl)
 _Log("template window text: " & StringReplace($sTplText, @CRLF, " | "))
 _Log("template classes: " & StringReplace(WinGetClassList($hTpl), @LF, " | "))
 
-Local $aKey = StringRegExp($sTplText, "Import&([A-Za-z0-9])", 3)
-If IsArray($aKey) Then
-    _Log("pressing Alt+" & $aKey[0] & " (Import accelerator)")
-    Send("!" & $aKey[0])
+; The editor's run button is &OK (Alt+O); Enter also works since the
+; default button class is DefButton.
+If StringInStr($sTplText, "&OK") Then
+    _Log("pressing Alt+O (&OK runs the import)")
+    Send("!o")
 Else
-    _Log("no Import accelerator found - trying Alt+P")
-    Send("!p")
+    Local $aKey = StringRegExp($sTplText, "Import&([A-Za-z0-9])", 3)
+    If IsArray($aKey) Then
+        _Log("pressing Alt+" & $aKey[0] & " (Import accelerator)")
+        Send("!" & $aKey[0])
+    Else
+        _Log("no OK/Import accelerator found - sending Enter")
+        Send("{ENTER}")
+    EndIf
 EndIf
 Sleep(1000)
 
