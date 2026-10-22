@@ -1722,6 +1722,9 @@ elif page == "Open Sales Orders":
                 title += f" · packed by {o['packed_by']}"
             with st.expander(title, expanded=(o['status'] != 'complete')):
                 raw_lines = o.get('lines') or []
+                for l in raw_lines:
+                    if l.get('stock_warning'):
+                        st.warning(f"⚠️ {l.get('item_id')}: {l['stock_warning']}")
                 df = pd.DataFrame([{
                     'Item': l.get('item_id'),
                     'Description': ('⚙ ' if l.get('assembly') else '')

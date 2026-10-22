@@ -261,6 +261,57 @@ function Write-WithRetry($path, $lines, [switch]$Overwrite) {
     }
 }
 
+# Read an item's on-hand quantity. Property name varies across API
+# versions - try the common ones.
+function Get-ItemOnHand($company, [string]$itemId, $refCache) {
+    $key = Resolve-Ref $company.Factories.InventoryItemFactory $itemId $refCache.Item
+    $item = $company.Factories.InventoryItemFactory.Load($key)
+    foreach ($p in 'QuantityOnHand','OnHandQuantity','QtyOnHand','OnHandQty') {
+        try { $v = $item.$p; if ($null -ne $v) { return [decimal]$v } } catch { }
+    }
+    return $null
+}
+
+# Write/clear a stock warning on an open_orders line so the app can
+# show it next to the packed quantity.
+function Set-LineWarning($orderKey, [string]$itemId, [string]$msg) {
+    $uri = "$SUPABASE_URL/rest/v1/open_orders`?order_key=eq.$orderKey&select=lines"
+    $row = (Invoke-RestMethod -Uri $uri -Headers (Headers) -TimeoutSec 20) | Select-Object -First 1
+    if (-not $row) { return }
+    $changed = $false
+    foreach ($l in $row.lines) {
+        if ("$($l.item_id)".Trim().ToUpper() -eq $itemId.Trim().ToUpper()) {
+            if ($msg) { $l | Add-Member -NotePropertyName stock_warning -NotePropertyValue $msg -Force }
+            elseif ($l.PSObject.Properties['stock_warning']) { $l.PSObject.Properties.Remove('stock_warning') }
+            $changed = $true
+        }
+    }
+    if ($changed) {
+        $body = @{ lines = @($row.lines) } | ConvertTo-Json -Depth 8 -Compress
+        Invoke-RestMethod -Uri "$SUPABASE_URL/rest/v1/open_orders`?order_key=eq.$orderKey" `
+            -Method Patch -Headers (Headers) -Body $body -TimeoutSec 20 | Out-Null
+    }
+}
+
+# Check BOM components against on-hand stock BEFORE writing build rows.
+# Returns a list of shortfall descriptions ('item: need X, have Y').
+function Test-AssemblyStock($company, $lines, $bom, $refCache) {
+    $short = @()
+    foreach ($l in $lines) {
+        $aid = "$($l.item_id)".Trim().ToUpper()
+        $comps = if ($bom) { $bom[$aid] } else { $null }
+        if (-not $comps -or [decimal]$l.qty -le 0) { continue }
+        foreach ($c in $comps.GetEnumerator()) {
+            $need = $c.Value * [decimal]$l.qty
+            try { $onh = Get-ItemOnHand $company $c.Key $refCache } catch { $onh = $null }
+            if ($null -ne $onh -and $onh -lt $need) {
+                $short += "$($c.Key): need $need, have $onh"
+            }
+        }
+    }
+    return $short
+}
+
 function Write-AssemblyBuild($lines, $bom) {
     # ASM_BUILDS_CSV in .env can relocate the staging file (e.g. off the
     # Desktop if a security product keeps blocking writes there).
@@ -423,10 +474,23 @@ while ($true) {
                     Finish-Order $key 'done'
                     Write-Host "[+] $($key.Substring(0,8)) -> updated SO $($row.payload.sage_order_no) quantities"
                 } elseif ($row.job_type -eq 'build_assembly') {
-                    $warn = Write-AssemblyBuild $row.payload.lines $bom
-                    Finish-Order $key 'done' $null $warn
-                    $script:asmNeedsImport = $true
-                    Write-Host "[+] $($key.Substring(0,8)) -> assembly build row(s) added to assembly_builds.csv$(if($warn){" ($warn)"})"
+                    $short = Test-AssemblyStock $sess.Company $row.payload.lines $bom $refCache
+                    if ($short) {
+                        $msg = "insufficient components - lower Packed qty or build in Sage: $($short -join '; ')"
+                        Finish-Order $key 'done' $null $msg
+                        foreach ($l in $row.payload.lines) {
+                            Set-LineWarning $row.payload.parent_order "$($l.item_id)" $msg
+                        }
+                        Write-Host "[!] $($key.Substring(0,8)) skipped - $msg" -ForegroundColor Yellow
+                    } else {
+                        $warn = Write-AssemblyBuild $row.payload.lines $bom
+                        Finish-Order $key 'done' $null $warn
+                        foreach ($l in $row.payload.lines) {
+                            Set-LineWarning $row.payload.parent_order "$($l.item_id)" $null
+                        }
+                        $script:asmNeedsImport = $true
+                        Write-Host "[+] $($key.Substring(0,8)) -> assembly build row(s) added to assembly_builds.csv$(if($warn){" ($warn)"})"
+                    }
                 } elseif ($row.job_type -eq 'create_invoice') {
                     $invNo = New-SalesInvoice $sess.Company "$($row.payload.sage_order_no)" $row.payload.lines
                     Finish-Order $key 'done' $invNo
