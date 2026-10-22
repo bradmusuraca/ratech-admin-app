@@ -318,7 +318,7 @@ function Test-InvoiceStock($company, $payload, $refCache) {
         $need = [decimal]$l.quantity
         if ($need -le 0) { continue }
         try { $onh = Get-ItemOnHand $company $id $refCache } catch { $onh = $null }
-        if ($null -ne $onh -and $onh -lt $need) { $short += "$id: need $need, on-hand $onh" }
+        if ($null -ne $onh -and $onh -lt $need) { $short += "${id}: need $need, on-hand $onh" }
     }
     return $short
 }
