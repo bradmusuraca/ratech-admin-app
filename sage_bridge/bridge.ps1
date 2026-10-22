@@ -401,9 +401,30 @@ function Write-AssemblyBuild($lines, $bom, $parentKey = '') {
     return $null
 }
 
+# itemlist.csv = Sage "Item List" export (File > Select Import/Export >
+# Inventory Items > Item List > Export) - supplies each item's last unit
+# cost so adjustment rows can carry an explicit Amount. Sage posts blank
+# amounts as 0, so a stale/missing export under-values the adjustment.
+# Returns @{ itemId -> unitCost } or $null.
+function Get-CostMap {
+    $p = Join-Path $PSScriptRoot 'itemlist.csv'
+    if (-not (Test-Path $p)) { return $null }
+    $map = @{}
+    $col = (Import-Csv $p | Select-Object -First 1).PSObject.Properties.Name |
+           Where-Object { $_ -match 'unit.?cost|item.?cost|last.?cost' } |
+           Select-Object -First 1
+    if (-not $col) { return $null }
+    Import-Csv $p | ForEach-Object {
+        $id = "$($_.'Item ID')".Trim().ToUpper()
+        $raw = "$($_."$col")" -replace '[^\d.\-]', ''
+        if ($id -and $raw -ne '') { $map[$id] = [decimal]$raw }
+    }
+    return $map
+}
+
 # Queue +/- on-hand adjustments for the Inventory Adjustments Journal import.
 # Field order must match the Sage template's checked fields exactly.
-function Write-InventoryAdjust($lines) {
+function Write-InventoryAdjust($lines, $costs) {
     # INV_ADJ_CSV in .env can relocate the staging file.
     $csv = if ($env:INV_ADJ_CSV) { $env:INV_ADJ_CSV } else { Join-Path $PSScriptRoot 'inventory_adjustments.csv' }
     # Required Sage fields: Number of Distributions (always 1), GL Acct-Source
@@ -418,15 +439,22 @@ function Write-InventoryAdjust($lines) {
         Write-WithRetry $csv (@($header) + @($rest)) -Overwrite
     }
     $rows = @()
+    $missing = @()
     foreach ($l in $lines) {
         $qty = [decimal]$l.qty
         if ($qty -eq 0) { continue }
         $reason = ("$($l.reason)" -replace ',', ';')
-        $amt = if ($l.unit_cost) { -($qty * [decimal]$l.unit_cost) } else { '' }
-        $rows += "$($l.item_id),ADJ,$(Get-Date -Format 'M/d/yyyy'),$glAcct,$qty,,$reason,1,$amt"
+        $iid = "$($l.item_id)".Trim().ToUpper()
+        $ucost = if ($l.unit_cost) { [decimal]$l.unit_cost }
+                 elseif ($costs -and $costs.ContainsKey($iid)) { $costs[$iid] }
+                 else { $null }
+        if ($null -eq $ucost) { $missing += $iid }
+        $amt = if ($null -ne $ucost) { -($qty * $ucost) } else { '' }
+        $rows += "$($l.item_id),ADJ,$(Get-Date -Format 'M/d/yyyy'),$glAcct,$qty,$ucost,$reason,1,$amt"
     }
     if ($rows) { Write-WithRetry $csv $rows }
-    return $rows.Count
+    if ($missing) { return "no unit cost for $($missing -join ', ') - re-export itemlist.csv; Amount left blank" }
+    return $null
 }
 
 # Delete a sales order in Sage (app-side delete button queues this).
@@ -610,6 +638,7 @@ while ($true) {
         }
         $refCache = @{ Customer = @{}; Item = @{}; Account = @{} }
         $bom = Get-BomMap
+        $costs = Get-CostMap
         $script:asmIds = $null
         $script:soList = $null   # fresh view per sweep - drop stale cached list
         $script:itemList = $null
@@ -688,10 +717,10 @@ while ($true) {
                         if ($null -ne $onh -and $onh -lt $need) { $short += "$($l.item_id): removing $need, on-hand $onh" }
                     }
                     if ($short) { throw "insufficient on-hand: $($short -join '; ')" }
-                    Write-InventoryAdjust $row.payload.lines | Out-Null
-                    Finish-Order $key 'done'
+                    $adjWarn = Write-InventoryAdjust $row.payload.lines $costs
+                    Finish-Order $key 'done' $null $adjWarn
                     $script:adjNeedsImport = $true
-                    Write-Host "[+] $($key.Substring(0,8)) -> inventory adjustment row(s) queued"
+                    Write-Host "[+] $($key.Substring(0,8)) -> inventory adjustment row(s) queued$(if($adjWarn){" ($adjWarn)"})"
                 } elseif ($row.job_type -eq 'void_order') {
                     $warn = Remove-SalesOrder $sess.Company "$($row.payload.sage_order_no)"
                     Finish-Order $key 'done' $null $warn

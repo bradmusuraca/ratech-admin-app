@@ -59,6 +59,23 @@ To import them without manual File → Import:
    Requires Sage to be running with the company open; safe to run
    when nothing is pending. Log: `assembly_import.log`.
 
+## Inventory adjustments (headless import)
+
+Adjustments queued from the app's Inventory page are written to
+`inventory_adjustments.csv` and imported via `import_adjustments.ps1`
+(same AutoIt driver, `Adjustment` template needle).
+
+Two extra pieces:
+
+- The adjustments import template needs the fields in
+  `inventory_adjustments_pending.csv` order, including the required
+  `Number of Distributions` (always 1) and `Amount` columns.
+- `Amount` is filled from `itemlist.csv` — a Sage **Item List** export
+  (File → Select Import/Export → Inventory Items → Item List → Export,
+  fields Item ID + Unit Cost, saved to `C:\sage_bridge\itemlist.csv`).
+  Blank Amount posts as 0, so re-export it when costs change.
+- Set `INV_ADJ_GL_ACCT` in `.env` to the GL source account.
+
 ## Python variant (optional)
 
 `sage_client.py` / `bridge.py` / `probe.py` target the older COM
