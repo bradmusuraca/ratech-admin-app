@@ -222,13 +222,27 @@ def queue_order_void(order_key, sage_order_no):
     resp.raise_for_status()
 
 
+def _supersede_pending(parent_order, job_type):
+    """Mark still-pending jobs of this type for the order 'superseded' so a
+    stale held/queued job can't fire alongside the fresh one (e.g. build 5
+    after the user lowers packed qty to 2 and re-saves)."""
+    requests.patch(
+        _url(**{'payload->>parent_order': f'eq.{parent_order}',
+                'job_type': f'eq.{job_type}', 'status': 'eq.pending'}),
+        headers=_headers(), json={'status': 'superseded'}, timeout=20
+    ).raise_for_status()
+
+
 def queue_assembly_build(order_key, lines):
     """Queue assembly build(s): the bridge appends rows to assembly_builds.csv
     in Sage's Inventory Assemblies Journal import format."""
+    _supersede_pending(order_key, 'build_assembly')
     upd_key = f"{order_key[:20]}-asm-{hashlib.sha1(str(lines).encode()).hexdigest()[:8]}"
+    # merge-duplicates upserts: re-queueing after a done/error run revives
+    # the row (ignore-duplicates would silently drop the resend).
     resp = requests.post(
         _url(),
-        headers={**_headers(), 'Prefer': 'resolution=ignore-duplicates,return=representation'},
+        headers={**_headers(), 'Prefer': 'resolution=merge-duplicates,return=representation'},
         json=[{
             'order_key': upd_key,
             'job_type': 'build_assembly',
@@ -247,10 +261,11 @@ def queue_invoice(order_key, sage_order_no, lines):
     """Queue a Sage sales invoice created from the sales order using the
     packed (shipped) quantities. Invoicing ships the SO - a fully-shipped
     order closes automatically in Sage."""
+    _supersede_pending(order_key, 'create_invoice')
     inv_key = f"{order_key[:20]}-inv-{hashlib.sha1(str(lines).encode()).hexdigest()[:8]}"
     resp = requests.post(
         _url(),
-        headers={**_headers(), 'Prefer': 'resolution=ignore-duplicates,return=representation'},
+        headers={**_headers(), 'Prefer': 'resolution=merge-duplicates,return=representation'},
         json=[{
             'order_key': inv_key,
             'job_type': 'create_invoice',
@@ -287,10 +302,11 @@ def queue_inventory_adjustment(item_id, qty_delta, reason):
 def queue_qty_update(order_key, sage_order_no, lines):
     """Queue a Sage-side quantity update for a short-packed order."""
     import hashlib as _h
+    _supersede_pending(order_key, 'qty_update')
     upd_key = f"{order_key[:20]}-upd-{_h.sha1(str(lines).encode()).hexdigest()[:8]}"
     resp = requests.post(
         _url(),
-        headers={**_headers(), 'Prefer': 'resolution=ignore-duplicates,return=representation'},
+        headers={**_headers(), 'Prefer': 'resolution=merge-duplicates,return=representation'},
         json=[{
             'order_key': upd_key,
             'job_type': 'qty_update',

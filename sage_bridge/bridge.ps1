@@ -640,6 +640,7 @@ function Update-SalesOrder($company, [string]$soNo, $lines) {
 Write-Host "Sage bridge v3 polling every $POLL_SECONDS s - Ctrl+C to stop"
 $sess = $null
 $idleSweeps = 0
+$script:holdMsg = @{}
 while ($true) {
     # Keep the Sage session open across sweeps - the begin/request/open
     # handshake is the slow part. Reopen only after a failure.
@@ -674,16 +675,23 @@ while ($true) {
                 } elseif ($row.job_type -eq 'build_assembly') {
                     $short = Test-AssemblyStock $sess.Company $row.payload.lines $bom $refCache
                     if ($short) {
+                        # Hold (not done): re-checks each sweep so the build
+                        # fires as soon as the components post. A re-saved
+                        # packed qty queues a newer job that supersedes this
+                        # one, so a stale qty can't fire later.
                         $desc = ($short | ForEach-Object { "$($_.item): need $($_.need.ToString('0.##')), have $($_.have.ToString('0.##'))" }) -join '; '
                         $msg = "insufficient components - lower Packed qty or build in Sage: $desc"
-                        Finish-Order $key 'done' $null $msg
+                        Finish-Order $key 'pending' $null $msg
                         foreach ($l in $row.payload.lines) {
                             $lid = "$($l.item_id)".Trim().ToUpper()
                             $comps = @($short | Where-Object { $_.line -eq $lid })
                             Set-LineWarning $row.payload.parent_order "$($l.item_id)" $msg $comps
                         }
                         try { Set-OrderStatus $row.payload.parent_order 'open' } catch { }
-                        Write-Host "[!] $($key.Substring(0,8)) skipped - $msg" -ForegroundColor Yellow
+                        if ($script:holdMsg[$key] -ne $desc) {
+                            $script:holdMsg[$key] = $desc
+                            Write-Host "[~] $($key.Substring(0,8)) held - $desc" -ForegroundColor DarkYellow
+                        }
                     } else {
                         $warn = Write-AssemblyBuild $row.payload.lines $bom "$($row.payload.parent_order)"
                         Finish-Order $key 'done' $null $warn
@@ -712,7 +720,10 @@ while ($true) {
                             $comps = @($compShort | Where-Object { $_.line -eq $s.item })
                             Set-LineWarning $row.payload.parent_order $s.item "waiting on assembly stock: $desc" $comps
                         }
-                        Write-Host "[~] $($key.Substring(0,8)) held - $desc" -ForegroundColor DarkYellow
+                        if ($script:holdMsg[$key] -ne $desc) {
+                            $script:holdMsg[$key] = $desc
+                            Write-Host "[~] $($key.Substring(0,8)) held - $desc" -ForegroundColor DarkYellow
+                        }
                     } else {
                         $invNo = New-SalesInvoice $sess.Company "$($row.payload.sage_order_no)" $row.payload.lines
                         Finish-Order $key 'done' $invNo
