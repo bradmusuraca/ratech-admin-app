@@ -275,7 +275,7 @@ function Write-AssemblyBuild($lines, $bom) {
         $rev = "$($bom["${aid}_rev"])"
         foreach ($c in $comps.GetEnumerator()) {
             $cq = $c.Value * $qty
-            $rows += "$aid,SO-BUILD,$(Get-Date -Format 'M/d/yy'),Packed SO build,$qty,$($comps.Count),$cq,$($c.Key),$rev"
+            $rows += "$aid,SO-BUILD,$(Get-Date -Format 'M/d/yyyy'),Packed SO build,$qty,$($comps.Count),$cq,$($c.Key),$rev"
         }
     }
     if ($rows) { Write-WithRetry $csv $rows }
