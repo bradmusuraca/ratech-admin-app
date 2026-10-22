@@ -23,7 +23,7 @@ $SUPABASE_URL   = $env:SUPABASE_URL.TrimEnd('/')
 $SUPABASE_KEY   = $env:SUPABASE_KEY
 $COMPANY_NAME   = $env:SAGE_COMPANY_NAME   # substring match on CompanyIdentifier CompanyName/DatabaseName/Path
 $APP_ID         = if ($env:SAGE_APP_ID) { $env:SAGE_APP_ID } else { 'Ratech.OrderBridge.1.0' }
-$POLL_SECONDS   = 60
+$POLL_SECONDS   = 15
 if ($env:POLL_SECONDS) { $POLL_SECONDS = [int]$env:POLL_SECONDS }
 $TABLE          = 'sage_order_queue'
 $SAGE_BASE      = if ($env:SAGE_BASE_DIR) { $env:SAGE_BASE_DIR } else { 'C:\Program Files (x86)\Sage' }
@@ -570,19 +570,29 @@ function Update-SalesOrder($company, [string]$soNo, $lines) {
 }
 
 Write-Host "Sage bridge v3 polling every $POLL_SECONDS s - Ctrl+C to stop"
+$sess = $null
+$idleSweeps = 0
 while ($true) {
-    Write-Host "[.] sweep start $(Get-Date -Format 'HH:mm:ss')" -ForegroundColor DarkGray
-    $sess = $null
+    # Keep the Sage session open across sweeps - the begin/request/open
+    # handshake is the slow part. Reopen only after a failure.
     try {
-        $sess = Open-SageCompany
-        Write-Host "  [.] sage open OK" -ForegroundColor DarkGray
+        if (-not $sess) {
+            $sess = Open-SageCompany
+            Write-Host "  [.] sage open OK" -ForegroundColor DarkGray
+        }
         $refCache = @{ Customer = @{}; Item = @{}; Account = @{} }
         $bom = Get-BomMap
         $script:asmIds = $null
-        $script:soList = $null   # fresh session - drop any stale cached list
+        $script:soList = $null   # fresh view per sweep - drop stale cached list
         $script:itemList = $null
         $pendingRows = @(Get-Pending)
-        Write-Host "  [.] pending rows: $($pendingRows.Count)" -ForegroundColor DarkGray
+        if ($pendingRows.Count) {
+            Write-Host "[.] sweep $(Get-Date -Format 'HH:mm:ss') - pending rows: $($pendingRows.Count)" -ForegroundColor DarkGray
+            $idleSweeps = 0
+        } else {
+            $idleSweeps++
+            if ($idleSweeps % 40 -eq 1) { Write-Host "[.] idle heartbeat $(Get-Date -Format 'HH:mm:ss')" -ForegroundColor DarkGray }
+        }
         foreach ($row in $pendingRows) {
             $key = $row.order_key
             Write-Host "  [.] claim $key ($($row.job_type))..." -ForegroundColor DarkGray
@@ -690,8 +700,9 @@ while ($true) {
         }
     } catch {
         Write-Host "[!] sweep failed: $_" -ForegroundColor Red
-    } finally {
-        if ($sess) { try { $sess.Session.End() } catch { } }
+        # Session may be broken - reopen fresh next sweep
+        try { if ($sess) { $sess.Session.End() } } catch { }
+        $sess = $null
     }
     Start-Sleep -Seconds $POLL_SECONDS
 }
