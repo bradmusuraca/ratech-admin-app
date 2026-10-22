@@ -326,6 +326,60 @@ function Close-MissingOrders($company) {
     }
 }
 
+# Create a sales invoice from a sales order using the packed (shipped)
+# quantities. AddSalesOrderLine() links each invoice line back to its SO
+# line - Sage ships that quantity and closes the SO when fully shipped.
+# Freight is left 0: shipping costs are added in Sage later.
+function New-SalesInvoice($company, [string]$soNo, $packLines) {
+    $hit = (Get-SoList $company) | Where-Object { "$($_.ReferenceNumber)" -eq $soNo } | Select-Object -First 1
+    if (-not $hit) { throw "Sales order '$soNo' not found (already invoiced or deleted)" }
+    $so = $company.Factories.SalesOrderFactory.Load($hit.Key)
+
+    $want = @{}
+    foreach ($l in $packLines) { $want["$($l.item_id)".Trim().ToUpper()] = [decimal]$l.quantity }
+
+    $inv = $company.Factories.SalesInvoiceFactory.Create()
+    $inv.CustomerReference = $so.CustomerReference
+    $inv.CustomerPurchaseOrderNumber = $so.CustomerPurchaseOrderNumber
+    $inv.Date = Get-Date
+    try { $inv.ShipDate = Get-Date } catch { }
+    if ($so.ShipVia) { $inv.ShipVia = $so.ShipVia }
+    try { $inv.TermsDescription = $so.TermsDescription } catch { }
+    try { $inv.FreightAmount = 0 } catch { }
+    try { $inv.SalesTaxCodeReference = $so.SalesTaxCodeReference } catch { }
+    try {
+        $inv.ShipToAddress.Name = $so.ShipToAddress.Name
+        $inv.ShipToAddress.Address.Address1 = $so.ShipToAddress.Address.Address1
+        $inv.ShipToAddress.Address.Address2 = $so.ShipToAddress.Address.Address2
+        $inv.ShipToAddress.Address.City = $so.ShipToAddress.Address.City
+        $inv.ShipToAddress.Address.State = $so.ShipToAddress.Address.State
+        $inv.ShipToAddress.Address.Zip = $so.ShipToAddress.Address.Zip
+        $inv.ShipToAddress.Address.Country = $so.ShipToAddress.Address.Country
+    } catch { }
+
+    $shipped = 0
+    foreach ($soLn in $so.SalesOrderLines) {
+        $iid = "$($soLn.InventoryItemReference.Key.ID)"
+        if (-not $iid) { $iid = "$($soLn.InventoryItemReference)" }
+        $qty = $null
+        foreach ($k in $want.Keys) {
+            if ($iid.Trim().ToUpper() -match [regex]::Escape($k) -or $k -match [regex]::Escape($iid.Trim().ToUpper())) {
+                $qty = $want[$k]
+            }
+        }
+        if ($null -eq $qty -or $qty -le 0) { continue }
+        $invLn = $inv.AddSalesOrderLine($soLn)
+        $invLn.Quantity = [decimal]$qty
+        $invLn.Amount = [decimal]$qty * [decimal]$invLn.UnitPrice
+        $shipped++
+    }
+    if (-not $shipped) { throw "No invoice lines matched the packed items" }
+    try { $inv.ReferenceNumber = "$($company.Services.ReferenceNumber.TakeNextInvoiceNumber())" } catch { }
+    $inv.Save()
+    $script:soList = $null   # SO may have closed - invalidate the list
+    return "$($inv.ReferenceNumber)"
+}
+
 function Update-SalesOrder($company, [string]$soNo, $lines) {
     $hit = (Get-SoList $company) | Where-Object { "$($_.ReferenceNumber)" -eq $soNo } | Select-Object -First 1
     if (-not $hit) { throw "Sales order '$soNo' not found" }
@@ -370,6 +424,10 @@ while ($true) {
                     $warn = Write-AssemblyBuild $row.payload.lines $bom
                     Finish-Order $key 'done' $null $warn
                     Write-Host "[+] $($key.Substring(0,8)) -> assembly build row(s) added to assembly_builds.csv$(if($warn){" ($warn)"})"
+                } elseif ($row.job_type -eq 'create_invoice') {
+                    $invNo = New-SalesInvoice $sess.Company "$($row.payload.sage_order_no)" $row.payload.lines
+                    Finish-Order $key 'done' $invNo
+                    Write-Host "[+] $($key.Substring(0,8)) -> Sage invoice $invNo (from SO $($row.payload.sage_order_no))"
                 } elseif ($row.job_type -eq 'void_order') {
                     $warn = Remove-SalesOrder $sess.Company "$($row.payload.sage_order_no)"
                     Finish-Order $key 'done' $null $warn

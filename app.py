@@ -24,7 +24,7 @@ from sage_queue import (is_configured as sage_queue_configured,
                         queue_orders as sage_queue_push,
                         queue_status as sage_queue_status,
                         create_open_orders, list_open_orders,
-                        update_packed, queue_qty_update,
+                        update_packed, queue_qty_update, queue_invoice,
                         queue_assembly_build, delete_open_order,
                         queue_order_void,
                         transactions_from_sage_df)
@@ -1801,6 +1801,13 @@ elif page == "Open Sales Orders":
                             st.warning("Marked short — Sage SO number not known yet; "
                                        "the office will need to enter this manually.")
                         else:
+                            if o.get('sage_order_no'):
+                                try:
+                                    queue_invoice(o['order_key'],
+                                                  o['sage_order_no'], new_lines)
+                                    st.info("Invoice queued for Sage.")
+                                except Exception as e:
+                                    st.warning(f"Could not queue invoice: {e}")
                             st.success("Marked complete.")
                         st.rerun()
                     except Exception as e:

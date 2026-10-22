@@ -222,6 +222,27 @@ def queue_assembly_build(order_key, lines):
     return upd_key
 
 
+def queue_invoice(order_key, sage_order_no, lines):
+    """Queue a Sage sales invoice created from the sales order using the
+    packed (shipped) quantities. Invoicing ships the SO - a fully-shipped
+    order closes automatically in Sage."""
+    inv_key = f"{order_key[:20]}-inv-{hashlib.sha1(str(lines).encode()).hexdigest()[:8]}"
+    resp = requests.post(
+        _url(),
+        headers={**_headers(), 'Prefer': 'resolution=ignore-duplicates,return=representation'},
+        json=[{
+            'order_key': inv_key,
+            'job_type': 'create_invoice',
+            'status': 'pending',
+            'payload': {'sage_order_no': sage_order_no,
+                        'parent_order': order_key,
+                        'lines': [{'item_id': l['item_id'],
+                                   'quantity': l['qty_packed']} for l in lines]},
+        }], timeout=20)
+    resp.raise_for_status()
+    return inv_key
+
+
 def queue_qty_update(order_key, sage_order_no, lines):
     """Queue a Sage-side quantity update for a short-packed order."""
     import hashlib as _h
