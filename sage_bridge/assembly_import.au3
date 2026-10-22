@@ -19,7 +19,14 @@ Opt("MouseCoordMode", 1)
 Opt("WinWaitDelay", 250)
 
 Global $sDir = @ScriptDir
-Global $sLog = $sDir & "\assembly_import.log"
+; args: <template-needle> <logfile>  (needle must appear in the template's
+; name AND its window title - 'Assembl' for assemblies, 'Adjustment' for
+; inventory adjustments)
+Global $sNeedle = "Assembl"
+Global $sLogName = "assembly_import.log"
+If $CmdLine[0] >= 1 Then $sNeedle = $CmdLine[1]
+If $CmdLine[0] >= 2 Then $sLogName = $CmdLine[2]
+Global $sLog = $sDir & "\" & $sLogName
 
 _Log("=== import run start ===")
 
@@ -110,8 +117,8 @@ EndIf
 ; Other listbox(es) = templates; select the assemblies journal
 For $k = 0 To $nLB - 1
     If $k = $iMin And $nLB > 1 Then ContinueLoop
-    If _SelectLB($hIE, $aLB[$k][0], "Assembl") Then
-        _Log("selected assembly template in listbox " & $k)
+    If _SelectLB($hIE, $aLB[$k][0], $sNeedle) Then
+        _Log("selected '" & $sNeedle & "' template in listbox " & $k)
         $bSelected = True
         ExitLoop
     EndIf
@@ -149,7 +156,7 @@ Local $hTpl = 0
 For $i = 0 To 20
     Local $aT = WinList()
     For $j = 1 To $aT[0][0]
-        If $aT[$j][0] <> "" And (StringInStr($aT[$j][0], "Assembl") Or StringInStr($aT[$j][0], "Journal")) Then
+        If $aT[$j][0] <> "" And (StringInStr($aT[$j][0], $sNeedle) Or StringInStr($aT[$j][0], "Journal")) Then
             $hTpl = $aT[$j][1]
             ExitLoop 2
         EndIf
@@ -167,7 +174,7 @@ _Log("template window open: " & WinGetTitle($hTpl))
 ; Safety: bail if the wrong template opened rather than driving a
 ; different journal's import with our file.
 Local $sTplTitle = WinGetTitle($hTpl)
-If Not StringInStr($sTplTitle, "Assembl") And Not StringInStr($sTplTitle, "BOM") Then
+If Not StringInStr($sTplTitle, $sNeedle) And Not StringInStr($sTplTitle, "BOM") Then
     _Log("FAIL: wrong template opened (" & $sTplTitle & ") - aborting")
     WinClose($hTpl)
     Exit 5

@@ -366,6 +366,24 @@ function Write-AssemblyBuild($lines, $bom) {
     return $null
 }
 
+# Queue +/- on-hand adjustments for the Inventory Adjustments Journal import.
+# Field order must match the Sage template's checked fields exactly.
+function Write-InventoryAdjust($lines) {
+    # INV_ADJ_CSV in .env can relocate the staging file.
+    $csv = if ($env:INV_ADJ_CSV) { $env:INV_ADJ_CSV } else { Join-Path $PSScriptRoot 'inventory_adjustments.csv' }
+    $header = 'Item ID,Reference,Date,GL Acct-Cost,Quantity,Unit Cost,Reason to Adjust'
+    if (-not (Test-Path $csv)) { Write-WithRetry $csv $header -Overwrite }
+    $rows = @()
+    foreach ($l in $lines) {
+        $qty = [decimal]$l.qty
+        if ($qty -eq 0) { continue }
+        $reason = ("$($l.reason)" -replace ',', ';')
+        $rows += "$($l.item_id),ADJ,$(Get-Date -Format 'M/d/yyyy'),,$qty,,$reason"
+    }
+    if ($rows) { Write-WithRetry $csv $rows }
+    return $rows.Count
+}
+
 # Delete a sales order in Sage (app-side delete button queues this).
 # Returns a warning string or $null.
 # Sales-order list is 40k+ rows - load once per sweep, lazily.
@@ -586,6 +604,20 @@ while ($true) {
                         Finish-Order $key 'done' $invNo
                         Write-Host "[+] $($key.Substring(0,8)) -> Sage invoice $invNo (from SO $($row.payload.sage_order_no))"
                     }
+                } elseif ($row.job_type -eq 'adjust_inventory') {
+                    # Guard: a negative delta can't remove more than on-hand.
+                    $short = @()
+                    foreach ($l in $row.payload.lines) {
+                        $need = -[decimal]$l.qty
+                        if ($need -le 0) { continue }
+                        try { $onh = Get-ItemOnHand $sess.Company "$($l.item_id)" $refCache } catch { $onh = $null }
+                        if ($null -ne $onh -and $onh -lt $need) { $short += "$($l.item_id): removing $need, on-hand $onh" }
+                    }
+                    if ($short) { throw "insufficient on-hand: $($short -join '; ')" }
+                    Write-InventoryAdjust $row.payload.lines | Out-Null
+                    Finish-Order $key 'done'
+                    $script:adjNeedsImport = $true
+                    Write-Host "[+] $($key.Substring(0,8)) -> inventory adjustment row(s) queued"
                 } elseif ($row.job_type -eq 'void_order') {
                     $warn = Remove-SalesOrder $sess.Company "$($row.payload.sage_order_no)"
                     Finish-Order $key 'done' $null $warn
@@ -621,6 +653,14 @@ while ($true) {
             $imp = Join-Path $PSScriptRoot 'import_assemblies.ps1'
             if (Test-Path $imp) {
                 Write-Host "  [.] launching assembly import" -ForegroundColor DarkGray
+                Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$imp`"" -WorkingDirectory $PSScriptRoot
+            }
+        }
+        if ($script:adjNeedsImport) {
+            $script:adjNeedsImport = $false
+            $imp = Join-Path $PSScriptRoot 'import_adjustments.ps1'
+            if (Test-Path $imp) {
+                Write-Host "  [.] launching adjustments import" -ForegroundColor DarkGray
                 Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$imp`"" -WorkingDirectory $PSScriptRoot
             }
         }

@@ -26,7 +26,7 @@ from sage_queue import (is_configured as sage_queue_configured,
                         create_open_orders, list_open_orders,
                         update_packed, queue_qty_update, queue_invoice,
                         queue_assembly_build, delete_open_order,
-                        queue_order_void,
+                        queue_order_void, queue_inventory_adjustment,
                         transactions_from_sage_df)
 import streamlit.components.v1 as components
 
@@ -88,7 +88,7 @@ for _k, _v in (('invoices', []), ('inbox_items', []), ('loaded_uids', set()),
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
-ALL_PAGES = ["Order Processing", "Create Invoices", "Customers",
+ALL_PAGES = ["Order Processing", "Create Invoices", "Inventory", "Customers",
              "Inventory Management", "Settings"]
 
 
@@ -1815,6 +1815,43 @@ elif page == "Create Invoices":
                         st.rerun()
                     except Exception as e:
                         st.error(f"Could not save: {e}")
+
+elif page == "Inventory":
+    st.header("🧮 Inventory")
+    st.markdown("Queue a quantity adjustment (**+/−**) — the Sage bridge "
+                "writes it to the Inventory Adjustments Journal and imports it.")
+    with st.form("inv_adj_form", clear_on_submit=True):
+        adj_item = st.text_input("Item ID")
+        adj_qty = st.number_input("Quantity change (+/-)", step=1.0, format="%g")
+        adj_reason = st.text_input("Reason", placeholder="e.g. physical count correction")
+        if st.form_submit_button("Queue adjustment", type="primary"):
+            if not adj_item.strip() or not adj_qty:
+                st.error("Item ID and a nonzero quantity are required.")
+            elif not sage_queue_configured():
+                st.error("Supabase is not configured.")
+            else:
+                try:
+                    queue_inventory_adjustment(
+                        adj_item.strip(), float(adj_qty),
+                        adj_reason.strip() or "manual adjustment")
+                    st.success("Adjustment queued — the bridge will write and "
+                               "import it on its next sweep.")
+                except Exception as e:
+                    st.error(f"Could not queue adjustment: {e}")
+    if sage_queue_configured():
+        try:
+            adj_jobs = [r for r in sage_queue_status(50)
+                        if r.get('order_key', '').startswith('adj-')][:10]
+            if adj_jobs:
+                st.subheader("Recent adjustments")
+                st.dataframe(pd.DataFrame([{
+                    'Queued': r.get('created_at', '')[:16].replace('T', ' '),
+                    'Status': r.get('status'),
+                    'Result': r.get('error') or r.get('sage_order_no') or '',
+                } for r in adj_jobs]), use_container_width=True,
+                hide_index=True)
+        except Exception:
+            pass
 
 elif page == "Customers":
     st.header("👥 Customers")

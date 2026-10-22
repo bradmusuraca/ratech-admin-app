@@ -243,6 +243,26 @@ def queue_invoice(order_key, sage_order_no, lines):
     return inv_key
 
 
+def queue_inventory_adjustment(item_id, qty_delta, reason):
+    """Queue a Sage inventory adjustment journal row for one item
+    (+/- on-hand delta). Each request is a distinct job."""
+    import uuid
+    key = f"adj-{uuid.uuid4().hex[:16]}"
+    resp = requests.post(
+        _url(),
+        headers={**_headers(), 'Prefer': 'resolution=ignore-duplicates,return=representation'},
+        json=[{
+            'order_key': key,
+            'job_type': 'adjust_inventory',
+            'status': 'pending',
+            'payload': {'lines': [{'item_id': item_id,
+                                   'qty': qty_delta,
+                                   'reason': reason}]},
+        }], timeout=20)
+    resp.raise_for_status()
+    return key
+
+
 def queue_qty_update(order_key, sage_order_no, lines):
     """Queue a Sage-side quantity update for a short-packed order."""
     import hashlib as _h
