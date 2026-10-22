@@ -32,13 +32,14 @@ function Dump-Type([type]$t) {
 }
 
 foreach ($n in @(
-    'Sage.Peachtree.API.SalesInvoice',
-    'Sage.Peachtree.API.SalesInvoiceSalesOrderLineCollection',
-    'Sage.Peachtree.API.SalesInvoiceSalesOrderLine',
-    'Sage.Peachtree.API.SalesInvoiceSalesLineCollection',
-    'Sage.Peachtree.API.SalesInvoiceSalesLine',
-    'Sage.Peachtree.API.SalesOrderLine',
-    'Sage.Peachtree.API.SalesOrder'
+    'Sage.Peachtree.API.SalesOrderFactory',
+    'Sage.Peachtree.API.ISalesOrderFactory',
+    'Sage.Peachtree.API.Factory`1',
+    'Sage.Peachtree.API.IFactory`1',
+    'Sage.Peachtree.API.IFactory',
+    'Sage.Peachtree.API.Filter',
+    'Sage.Peachtree.API.Expression',
+    'Sage.Peachtree.API.FilterExpression'
 )) {
     Dump-Type ($asm.GetType($n))
 }
