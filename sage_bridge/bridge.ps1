@@ -346,8 +346,21 @@ function Get-SoList($company) {
     if ($null -eq $script:soList) {
         Write-Host "  [.] loading SO list..." -ForegroundColor DarkGray
         $script:soList = $company.Factories.SalesOrderFactory.List()
-        $script:soList.Load()
-        Write-Host "  [.] SO list loaded ($($script:soList.Count))" -ForegroundColor DarkGray
+        try {
+            # only open SOs: closed/invoiced ones read as "missing", which is
+            # what every consumer (delete/update/invoice/close-missing) wants
+            $fe   = [Sage.Peachtree.API.Collections.Generic.FilterExpression]
+            $flt  = $fe::Equal($fe::Property('IsClosed'), $fe::Constant([bool]$false))
+            $mods = New-Object Sage.Peachtree.API.Collections.Generic.LoadModifiers
+            $mods.Filters = $flt
+            $script:soList.Load($mods)
+            Write-Host "  [.] SO list loaded ($($script:soList.Count) open)" -ForegroundColor DarkGray
+        } catch {
+            Write-Host "  [!] filtered load failed ($_); loading all" -ForegroundColor Yellow
+            $script:soList = $company.Factories.SalesOrderFactory.List()
+            $script:soList.Load()
+            Write-Host "  [.] SO list loaded ($($script:soList.Count))" -ForegroundColor DarkGray
+        }
     }
     return $script:soList
 }
