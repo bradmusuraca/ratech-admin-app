@@ -45,7 +45,7 @@ if (-not $autoit) {
     exit 4
 }
 
-$proc = Start-Process $autoit -ArgumentList "`"$AU3`" itemlist itemlist_export.log export `"Item List`"" `
+$proc = Start-Process $autoit -ArgumentList "`"$AU3`" `"Item List`" itemlist_export.log export `"Item List`"" `
         -Wait -PassThru -WorkingDirectory $DIR -WindowStyle Hidden
 Log "autoit exit code $($proc.ExitCode)"
 exit $proc.ExitCode
