@@ -576,8 +576,8 @@ function Close-MissingOrders($company) {
 # Create a sales invoice from a sales order using the packed (shipped)
 # quantities. AddSalesOrderLine() links each invoice line back to its SO
 # line - Sage ships that quantity and closes the SO when fully shipped.
-# Freight is left 0: shipping costs are added in Sage later.
-function New-SalesInvoice($company, [string]$soNo, $packLines) {
+# $freight/$freightService come from a carrier quote selected in the app.
+function New-SalesInvoice($company, [string]$soNo, $packLines, $freight, $freightService) {
     $hit = (Get-SoList $company) | Where-Object { "$($_.ReferenceNumber)" -eq $soNo } | Select-Object -First 1
     if (-not $hit) { throw "Sales order '$soNo' not found (already invoiced or deleted)" }
     $so = $company.Factories.SalesOrderFactory.Load($hit.Key)
@@ -592,7 +592,8 @@ function New-SalesInvoice($company, [string]$soNo, $packLines) {
     try { $inv.ShipDate = Get-Date } catch { }
     if ($so.ShipVia) { $inv.ShipVia = $so.ShipVia }
     try { $inv.TermsDescription = $so.TermsDescription } catch { }
-    try { $inv.FreightAmount = 0 } catch { }
+    if ($freightService) { try { $inv.ShipVia = "$freightService" } catch { } }
+    try { $inv.FreightAmount = if ($null -ne $freight) { [decimal]$freight } else { 0 } } catch { }
     try { $inv.SalesTaxCodeReference = $so.SalesTaxCodeReference } catch { }
     try {
         $inv.ShipToAddress.Name = $so.ShipToAddress.Name
@@ -746,7 +747,7 @@ while ($true) {
                             Write-Host "[~] $($key.Substring(0,8)) held - $desc" -ForegroundColor DarkYellow
                         }
                     } else {
-                        $invNo = New-SalesInvoice $sess.Company "$($row.payload.sage_order_no)" $row.payload.lines
+                        $invNo = New-SalesInvoice $sess.Company "$($row.payload.sage_order_no)" $row.payload.lines $row.payload.freight $row.payload.freight_service
                         Finish-Order $key 'done' $invNo
                         try { Set-OrderStatus $row.payload.parent_order 'complete' } catch { }
                         Write-Host "[+] $($key.Substring(0,8)) -> Sage invoice $invNo (from SO $($row.payload.sage_order_no))"

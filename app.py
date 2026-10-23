@@ -27,7 +27,9 @@ from sage_queue import (is_configured as sage_queue_configured,
                         update_packed, queue_qty_update, queue_invoice,
                         queue_assembly_build, delete_open_order,
                         queue_order_void, queue_inventory_adjustment,
-                        note_line_adjustment, transactions_from_sage_df)
+                        note_line_adjustment, transactions_from_sage_df,
+                        get_order_ship_to)
+from fedex import is_configured as fedex_configured, get_rates as fedex_get_rates
 import streamlit.components.v1 as components
 
 load_dotenv()
@@ -1810,6 +1812,39 @@ elif page == "Create Invoices":
                 any_short = bool((packed < req).any())
                 packed_by = ((st.session_state.user or {}).get('name', '')
                              if st.session_state.get('user') else '')
+
+                # --- Freight: quote FedEx negotiated rates, the selected
+                # service's price rides onto the Sage invoice at Mark Complete.
+                fr_q = st.session_state.setdefault('freight_quotes', {})
+                if o['status'] != 'complete' and fedex_configured():
+                    fc1, fc2, fc3 = st.columns([1, 1, 3])
+                    wt = fc1.number_input("Weight (lb)", min_value=0.1, step=0.5,
+                                          value=10.0, key=f"frwt_{o['order_key']}")
+                    resid = fc2.checkbox("Residential", key=f"frre_{o['order_key']}")
+                    if fc3.button("🚚 Get FedEx rates", key=f"frq_{o['order_key']}"):
+                        try:
+                            st_to = get_order_ship_to(o['order_key'])
+                            with st.spinner("Quoting FedEx..."):
+                                fr_q[o['order_key']] = {
+                                    'weight': wt,
+                                    'ship_to': st_to,
+                                    'quotes': fedex_get_rates(st_to, wt, resid)}
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"FedEx quote failed: {e}")
+                    fq = fr_q.get(o['order_key'])
+                    if fq and fq.get('quotes'):
+                        st.caption(f"FedEx rates to {fq['ship_to'].get('city', '')}, "
+                                   f"{fq['ship_to'].get('state', '')} "
+                                   f"{fq['ship_to'].get('zip', '')} · {fq['weight']:g} lb")
+                        lbl = {f"{q['name']} — ${q['amount']:.2f}"
+                               + (f" ({q['transit']})" if q.get('transit') else ""): q
+                               for q in fq['quotes']}
+                        st.radio("Freight service", ['(no freight)'] + list(lbl),
+                                 key=f"frr_{o['order_key']}",
+                                 label_visibility='collapsed')
+                    elif fq is not None:
+                        st.caption("No account rates returned for this lane.")
                 bc1, bc2 = st.columns([4, 1])
                 with bc1:
                     mark = st.button(
@@ -1872,8 +1907,22 @@ elif page == "Create Invoices":
                         else:
                             if o.get('sage_order_no'):
                                 try:
+                                    # Fold the selected FedEx service onto the
+                                    # invoice job ('(no freight)' => None).
+                                    freight = None
+                                    fq = fr_q.get(o['order_key'])
+                                    pick = st.session_state.get(f"frr_{o['order_key']}")
+                                    if fq and pick and pick != '(no freight)':
+                                        lbl = {f"{q['name']} — ${q['amount']:.2f}"
+                                               + (f" ({q['transit']})" if q.get('transit') else ""): q
+                                               for q in fq['quotes']}
+                                        q = lbl.get(pick)
+                                        if q:
+                                            freight = {'amount': q['amount'],
+                                                       'service': q['service']}
                                     queue_invoice(o['order_key'],
-                                                  o['sage_order_no'], new_lines)
+                                                  o['sage_order_no'], new_lines,
+                                                  freight=freight)
                                     st.info("Invoice queued for Sage.")
                                 except Exception as e:
                                     st.warning(f"Could not queue invoice: {e}")

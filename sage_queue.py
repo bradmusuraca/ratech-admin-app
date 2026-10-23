@@ -257,12 +257,40 @@ def queue_assembly_build(order_key, lines):
     return upd_key
 
 
-def queue_invoice(order_key, sage_order_no, lines):
+def get_order_ship_to(order_key):
+    """Ship-to fields from the order's original 'create' job payload."""
+    resp = requests.get(
+        _url(order_key=f'eq.{order_key}', job_type='eq.create',
+             select='payload', limit='1'),
+        headers=_headers(), timeout=20)
+    resp.raise_for_status()
+    rows = resp.json()
+    if not rows:
+        return {}
+    p = rows[0].get('payload') or {}
+    return {'name': p.get('ship_to_name', ''),
+            'line1': p.get('ship_to_line1', ''),
+            'line2': p.get('ship_to_line2', ''),
+            'city': p.get('ship_to_city', ''),
+            'state': p.get('ship_to_state', ''),
+            'zip': p.get('ship_to_zip', ''),
+            'country': p.get('ship_to_country', 'US')}
+
+
+def queue_invoice(order_key, sage_order_no, lines, freight=None):
     """Queue a Sage sales invoice created from the sales order using the
     packed (shipped) quantities. Invoicing ships the SO - a fully-shipped
-    order closes automatically in Sage."""
+    order closes automatically in Sage.
+    freight: optional {'amount': float, 'service': str} from a carrier quote."""
     _supersede_pending(order_key, 'create_invoice')
     inv_key = f"{order_key[:20]}-inv-{hashlib.sha1(str(lines).encode()).hexdigest()[:8]}"
+    payload = {'sage_order_no': sage_order_no,
+               'parent_order': order_key,
+               'lines': [{'item_id': l['item_id'],
+                          'quantity': l['qty_packed']} for l in lines]}
+    if freight and freight.get('amount') is not None:
+        payload['freight'] = float(freight['amount'])
+        payload['freight_service'] = str(freight.get('service', ''))
     resp = requests.post(
         _url(),
         headers={**_headers(), 'Prefer': 'resolution=merge-duplicates,return=representation'},
@@ -270,10 +298,7 @@ def queue_invoice(order_key, sage_order_no, lines):
             'order_key': inv_key,
             'job_type': 'create_invoice',
             'status': 'pending',
-            'payload': {'sage_order_no': sage_order_no,
-                        'parent_order': order_key,
-                        'lines': [{'item_id': l['item_id'],
-                                   'quantity': l['qty_packed']} for l in lines]},
+            'payload': payload,
         }], timeout=20)
     resp.raise_for_status()
     return inv_key
