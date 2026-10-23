@@ -17,6 +17,9 @@ if ([Environment]::Is64BitProcess -and (Test-Path "$env:windir\SysWOW64\WindowsP
     exit $LASTEXITCODE
 }
 
+# Runs hidden under a scheduled task - keep a log file as the output.
+try { Start-Transcript -Path (Join-Path $PSScriptRoot 'bridge_out.log') -Append | Out-Null } catch { }
+
 # ---- config ----
 $envFile = Join-Path $PSScriptRoot '.env'
 if (Test-Path $envFile) {
