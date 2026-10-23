@@ -289,42 +289,6 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
         ds = re.findall(r'\d{1,2}/\d{1,2}/\d{2,4}', m.group(1))
         return (ds[0] if ds else None, ds[1] if len(ds) > 1 else None)
 
-    def items_look_valid(items_list):
-        """Validate parsed items: no empty descriptions,
-        Total must equal Quantity x Unit Price,
-        and required header fields must be populated."""
-        if not items_list:
-            return False
-        # Whitespace-insensitive copy of the source text: every parsed part
-        # number must appear in the document, otherwise Gemini invented it
-        # (totals can still look right, so qty*price checks don't catch this).
-        norm_text = re.sub(r'\s+', '', extracted_text).lower()
-        for it in items_list:
-            if not str(it.get('Description', '')).strip():
-                return False
-            q = safe_float(it.get('Quantity', 0))
-            p = safe_float(it.get('Unit Price', it.get('Price', 0)))
-            t = safe_float(it.get('Total', 0))
-            if t and abs(q * p - t) > 0.05:
-                return False
-            pn = str(it.get('Inventory Item', '')).strip()
-            if pn and re.sub(r'\s+', '', pn).lower() not in norm_text:
-                return False
-        # Header fields - Gemini sometimes leaves these blank or swaps dates
-        first = items_list[0]
-        for field in ('Purchase Order Number', 'Date of Order', 'Ship By Date',
-                      'Ship To', 'Invoice Address', 'Vendor'):
-            if not str(first.get(field, '')).strip():
-                return False
-        # Summit-specific: verify dates against the raw text
-        if is_summit:
-            od, sb = summit_dates(extracted_text)
-            if od and str(first.get('Date of Order', '')).strip() != od:
-                return False
-            if sb and str(first.get('Ship By Date', '')).strip() != sb:
-                return False
-        return True
-
     # Simple emailed orders (e.g. "26) 9132") - trivially parseable,
     # so skip Gemini entirely and parse directly
     if is_simple_email:
@@ -348,18 +312,20 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
             items.append(item)
         return items
 
-    # Always try Gemini first if API key is provided
-    if gemini_api_key:
+    known_format = is_summit or is_dts or is_ss_truck or is_ford
+
+    # Known layouts always use the hand-tuned deterministic parsers below -
+    # a model will happily copy the wrong column (e.g. DTS's "CR 13988"
+    # internal number instead of "13988") and pass every sanity check.
+    # Gemini is primary only for unknown formats, and the last resort for
+    # known formats whose regex finds nothing.
+    if gemini_api_key and not known_format:
         print("DEBUG: Using Gemini API for parsing")
         gemini_items = parse_order_with_gemini(extracted_text, gemini_api_key)
         if gemini_items:
-            if (is_summit or is_dts or is_ss_truck or is_ford) and not items_look_valid(gemini_items):
-                print("DEBUG: Gemini output failed validation, using deterministic parser")
-            else:
-                print(f"DEBUG: Gemini returned {len(gemini_items)} items")
-                return gemini_items
-        else:
-            print("DEBUG: Gemini returned no items, falling back to regex")
+            print(f"DEBUG: Gemini returned {len(gemini_items)} items")
+            return gemini_items
+        print("DEBUG: Gemini returned no items, falling back to regex")
 
     # Fallback to regex-based parsing
     print("DEBUG: Using regex fallback")
@@ -556,10 +522,10 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
         if need_match:
             order_info['Ship By Date'] = need_match.group(1)
 
-        # Vendor = Vendor SO # column (4th |-separated field on the PO# line)
-        so_match = re.search(r'PO #:.*\|.*\|.*\|\s*([A-Za-z0-9]+)\s*\|', extracted_text)
-        if so_match:
-            order_info['Vendor'] = so_match.group(1)
+        # Vendor SO # column holds DTS-internal codes like 'STOCK', never a
+        # usable customer number - leave Vendor blank so resolve_vendor()
+        # fills it from the customer list via the 'DRIVE TRAIN SPECIALISTS'
+        # name in the header.
 
         # Shipping instruction is the last |-separated field on the PO# line
         ship_match = re.search(r'PO #:.*\|.*\|.*\|.*\|\s*([^|_\n]+)', extracted_text)
@@ -623,7 +589,9 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
                 continue
             pm = part_re.match(l)
             if cur is not None and pm:
-                cur['part'] = f"{pm.group(1)} {pm.group(2)}"
+                # 'CR 13988' is DTS's internal number: the leading letters are
+                # their mfr prefix, our part number is the numeric tail.
+                cur['part'] = pm.group(2)
             elif cur is not None and l.strip():
                 cur['desc'].append(html.unescape(html.unescape(l.strip())))
 
@@ -883,6 +851,14 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
                         items.append(item)
                 except (ValueError, IndexError):
                     continue
+
+    # Known formats get a Gemini last resort when the deterministic parser
+    # found nothing (layout drift beats missing the order entirely).
+    if not items and gemini_api_key and known_format:
+        print("DEBUG: regex found no items, trying Gemini as last resort")
+        gemini_items = parse_order_with_gemini(extracted_text, gemini_api_key)
+        if gemini_items:
+            return gemini_items
 
     return items
 
