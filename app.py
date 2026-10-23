@@ -202,6 +202,9 @@ def guess_customer(text, channel=''):
         for _, row in load_customers().iterrows():
             terms = str(row.get('Aliases', '')).split(';')
             terms.append(str(row.get('Customer Name', '')))
+            # 'Their Code For Us' (e.g. DTS's "Account: 5137422111") is a
+            # reliable match when it appears in the document header.
+            terms.append(str(row.get('Their Code For Us', '')))
             for term in terms:
                 term = term.strip().lower()
                 # Word boundaries: bare substring matching lets a short alias

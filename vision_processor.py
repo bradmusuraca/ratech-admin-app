@@ -295,6 +295,10 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
         and required header fields must be populated."""
         if not items_list:
             return False
+        # Whitespace-insensitive copy of the source text: every parsed part
+        # number must appear in the document, otherwise Gemini invented it
+        # (totals can still look right, so qty*price checks don't catch this).
+        norm_text = re.sub(r'\s+', '', extracted_text).lower()
         for it in items_list:
             if not str(it.get('Description', '')).strip():
                 return False
@@ -302,6 +306,9 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
             p = safe_float(it.get('Unit Price', it.get('Price', 0)))
             t = safe_float(it.get('Total', 0))
             if t and abs(q * p - t) > 0.05:
+                return False
+            pn = str(it.get('Inventory Item', '')).strip()
+            if pn and re.sub(r'\s+', '', pn).lower() not in norm_text:
                 return False
         # Header fields - Gemini sometimes leaves these blank or swaps dates
         first = items_list[0]
