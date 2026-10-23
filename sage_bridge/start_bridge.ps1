@@ -6,8 +6,11 @@
 # To see live bridge output instead, run bridge.ps1 manually in a
 # visible PowerShell window (the watchdog leaves it alone).
 
+# Match '\bridge.ps1' with a leading backslash - plain 'bridge\.ps1' also
+# matches THIS script's own name (start_bridge.ps1) and the watchdog would
+# think a bridge is already running. Excluding our own PID too for safety.
 $running = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
-           Where-Object { $_.CommandLine -match 'bridge\.ps1' }
+           Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -match '\\bridge\.ps1' }
 if ($running) { exit 0 }
 
 $bridge = Join-Path $PSScriptRoot 'bridge.ps1'
