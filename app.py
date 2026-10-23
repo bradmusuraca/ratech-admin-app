@@ -460,6 +460,10 @@ def parse_shipstation_csv(raw_bytes):
             channel = 'ShipStation'
         qty_str = str(r.get('Quantity', '')).strip()
         total_str = str(r.get('Order Total', '')).strip()
+        # Amazon listings carry an 'AM' SKU prefix; Sage items use 'ATV'
+        item_sku = str(r.get('Item SKU', '')).strip()
+        if channel == 'Amazon':
+            item_sku = re.sub(r'^AM', 'ATV', item_sku)
         # Column H (Order Total) is the line amount; derive unit price so
         # Quantity x Unit Price = Total stays consistent
         unit_price = ''
@@ -481,7 +485,7 @@ def parse_shipstation_csv(raw_bytes):
             'Comments': (f"{channel} order via ShipStation | Batch: {r.get('Batch', '')}"
                          + (" | NOTE: multi-line order - Order Total may be the order's grand total, verify line pricing"
                             if multi_line else "")),
-            'Inventory Item': str(r.get('Item SKU', '')).strip(),
+            'Inventory Item': item_sku,
             'Description': str(r.get('Item Name', '')).strip(),
             'Quantity': qty_str,
             'Unit Price': unit_price,
@@ -550,6 +554,10 @@ def build_shipstation_order_invoice(order, doc_key, store_map=None):
             price_f = float(it.get('unitPrice'))
         except (TypeError, ValueError):
             price_f = None
+        # Amazon listings carry an 'AM' SKU prefix; Sage items use 'ATV'
+        sku = str(it.get('sku') or '').strip()
+        if channel == 'Amazon':
+            sku = re.sub(r'^AM', 'ATV', sku)
         rows.append({
             'Purchase Order Number': num,
             'Date of Order': _fmt_ss_date(order.get('orderDate')),
@@ -560,7 +568,7 @@ def build_shipstation_order_invoice(order, doc_key, store_map=None):
             'Shipping Instructions': order.get('requestedShippingService')
                                      or order.get('serviceCode') or '',
             'Comments': f"{channel} order via ShipStation API | status: {order.get('orderStatus', '')}",
-            'Inventory Item': str(it.get('sku') or '').strip(),
+            'Inventory Item': sku,
             'Description': str(it.get('name') or '').strip(),
             'Quantity': qty,
             'Unit Price': price_f if price_f is not None else '',
