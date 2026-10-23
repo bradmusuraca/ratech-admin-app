@@ -43,6 +43,10 @@ try:
     for _k, _v in st.secrets.items():
         if isinstance(_v, str) and _k not in os.environ:
             os.environ[_k] = _v
+        elif isinstance(_v, dict):  # keys nested one level under a [section]
+            for _k2, _v2 in _v.items():
+                if isinstance(_v2, str) and _k2 not in os.environ:
+                    os.environ[_k2] = _v2
 except Exception:
     pass
 
@@ -904,6 +908,7 @@ st.sidebar.divider()
 st.sidebar.caption("Connections")
 for _label, _ok in [
     ("Vision OCR", os.getenv('GOOGLE_CREDENTIALS')),
+    ("FedEx", os.getenv('FEDEX_CLIENT_ID')),
     ("Gemini parser", os.getenv('GEMINI_API_KEY')),
     ("Email inbox", os.getenv('EMAIL_USER') and os.getenv('EMAIL_PASSWORD')),
     ("ShipStation", os.getenv('SHIPSTATION_API_KEY') and os.getenv('SHIPSTATION_API_SECRET')),
