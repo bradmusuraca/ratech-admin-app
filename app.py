@@ -1398,7 +1398,9 @@ if page == "Order Processing":
 
         for idx, inv in enumerate(st.session_state.invoices):
             wkey = str(inv['key'])
-            resolve_vendor(inv)
+            # NOTE: resolve_vendor() deliberately runs only AFTER the
+            # data_editor below - it bumps editor_version (new widget key),
+            # which would discard a cell edit submitted on this same rerun.
             try:
                 card = st.container(border=True)
             except TypeError:
