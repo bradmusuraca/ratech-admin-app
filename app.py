@@ -1821,6 +1821,10 @@ elif page == "Create Invoices":
                 fr_q = st.session_state.setdefault('freight_quotes', {})
                 fr_res = st.session_state.setdefault('freight_resid', {})
                 fr_lbl = st.session_state.setdefault('freight_labels', {})
+                if o['status'] != 'complete' and not fedex_configured():
+                    st.caption("📦 FedEx freight not configured - set "
+                               "FEDEX_CLIENT_ID / FEDEX_CLIENT_SECRET / "
+                               "FEDEX_ACCOUNT_NUMBER in Secrets")
                 if o['status'] != 'complete' and fedex_configured():
                     fc1, fc2, fc3 = st.columns([1, 1, 3])
                     wt = fc1.number_input("Weight (lb)", min_value=0.1, step=0.5,
