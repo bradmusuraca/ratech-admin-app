@@ -11,7 +11,9 @@ $running = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorA
 if ($running) { exit 0 }
 
 $bridge = Join-Path $PSScriptRoot 'bridge.ps1'
+$log    = Join-Path $PSScriptRoot 'bridge_out.log'
 # 32-bit PowerShell - the Sage managed API won't load in a 64-bit process.
+# All output streams append to bridge_out.log since no window exists.
 Start-Process "C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe" `
-    -ArgumentList "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$bridge`"" `
+    -ArgumentList "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"& '$bridge' *>> '$log'`"" `
     -WorkingDirectory $PSScriptRoot
