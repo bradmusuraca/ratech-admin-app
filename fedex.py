@@ -123,9 +123,26 @@ def validate_address(ship_to):
     }
 
 
-def create_shipment(ship_to, weight_lbs, service, residential=False, ref=''):
-    """Ship API -> {'tracking', 'label_b64'}. Creates a real shipment billed
-    to the account; label comes back as base64 PDF."""
+def _pkg_items(packages, ref=''):
+    """Build requestedPackageLineItems. packages: [{'weight','l','w','h'}]
+    (inches are optional - FedEx rates by dimensional weight when given)."""
+    items = []
+    for i, p in enumerate(packages):
+        it = {'weight': {'units': 'LB', 'value': float(p['weight'])}}
+        if p.get('l') and p.get('w') and p.get('h'):
+            it['dimensions'] = {'length': float(p['l']), 'width': float(p['w']),
+                                'height': float(p['h']), 'units': 'IN'}
+        if ref and i == 0:
+            it['customerReferences'] = [{'customerReferenceType': 'CUSTOMER_REFERENCE',
+                                         'value': str(ref)[:40]}]
+        items.append(it)
+    return items
+
+
+def create_shipment(ship_to, packages, service, residential=False, ref=''):
+    """Ship API -> {'tracking', 'labels': [base64 pdf per package]}.
+    Creates a real shipment billed to the account (multi-package => MPS
+    with one master tracking number and a label per piece)."""
     shipper_phone = os.getenv('FEDEX_SHIPPER_PHONE', '5137422111')
     body = {
         'accountNumber': {'value': os.getenv('FEDEX_ACCOUNT_NUMBER')},
@@ -159,11 +176,7 @@ def create_shipment(ship_to, weight_lbs, service, residential=False, ref=''):
                 'labelStockType': os.getenv('FEDEX_LABEL_STOCK',
                                             'PAPER_85X11_TOP_HALF_LABEL'),
             },
-            'requestedPackageLineItems': [{
-                'weight': {'units': 'LB', 'value': float(weight_lbs)},
-                'customerReferences': ([{'customerReferenceType': 'CUSTOMER_REFERENCE',
-                                        'value': str(ref)[:40]}] if ref else []),
-            }],
+            'requestedPackageLineItems': _pkg_items(packages, ref),
         },
     }
     r = requests.post(
@@ -176,16 +189,19 @@ def create_shipment(ship_to, weight_lbs, service, residential=False, ref=''):
         raise RuntimeError(f"FedEx ship API {r.status_code}: {r.text[:500]}")
     ts = (r.json().get('output', {}).get('transactionShipments') or [{}])[0]
     tracking = ts.get('masterTrackingNumber', '')
-    docs = ((ts.get('pieceResponses') or [{}])[0].get('packageDocuments') or [])
-    label_b64 = next((d.get('encodedLabel') for d in docs if d.get('encodedLabel')), '')
-    return {'tracking': tracking, 'label_b64': label_b64}
+    labels = []
+    for pr in (ts.get('pieceResponses') or []):
+        for d in (pr.get('packageDocuments') or []):
+            if d.get('encodedLabel'):
+                labels.append(d['encodedLabel'])
+    return {'tracking': tracking, 'labels': labels}
 
 
-def get_rates(ship_to, weight_lbs, residential=False):
+def get_rates(ship_to, packages, residential=False):
     """Quote every service for a lane at negotiated (ACCOUNT) rates.
 
     ship_to: dict with name/line1/line2/city/state/zip (as stored in the
-    queue payload). weight_lbs: total package weight. Returns a list of
+    queue payload). packages: [{'weight','l','w','h'}]. Returns a list of
     {'service','name','amount','currency','transit'} sorted cheapest first.
     """
     body = {
@@ -198,9 +214,7 @@ def get_rates(ship_to, weight_lbs, residential=False):
             'pickupType': 'USE_SCHEDULED_PICKUP',
             'packagingType': 'YOUR_PACKAGING',
             'rateRequestType': ['ACCOUNT'],
-            'requestedPackageLineItems': [{
-                'weight': {'units': 'LB', 'value': float(weight_lbs)},
-            }],
+            'requestedPackageLineItems': _pkg_items(packages),
         },
     }
     r = requests.post(

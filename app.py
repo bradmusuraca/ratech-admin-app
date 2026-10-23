@@ -1826,46 +1826,92 @@ elif page == "Create Invoices":
                 fr_q = st.session_state.setdefault('freight_quotes', {})
                 fr_res = st.session_state.setdefault('freight_resid', {})
                 fr_lbl = st.session_state.setdefault('freight_labels', {})
+                fr_to = st.session_state.setdefault('freight_ship_to', {})
                 if o['status'] != 'complete' and not fedex_configured():
                     st.caption("📦 FedEx freight not configured - set "
                                "FEDEX_CLIENT_ID / FEDEX_CLIENT_SECRET / "
                                "FEDEX_ACCOUNT_NUMBER in Secrets")
                 if o['status'] != 'complete' and fedex_configured():
-                    fc1, fc2, fc3 = st.columns([1, 1, 3])
-                    wt = fc1.number_input("Weight (lb)", min_value=0.1, step=0.5,
-                                          value=10.0, key=f"frwt_{o['order_key']}")
-                    resid = fc2.checkbox("Residential",
-                                         value=bool(fr_res.get(o['order_key'])),
-                                         key=f"frre_{o['order_key']}")
-                    if fc3.button("🚚 Get FedEx rates", key=f"frq_{o['order_key']}"):
+                    # Ship-to is editable - the fetched address prefills it and
+                    # corrections feed the quote/label directly.
+                    if o['order_key'] not in fr_to:
                         try:
-                            st_to = get_order_ship_to(o['order_key'])
-                            with st.spinner("Validating address + quoting FedEx..."):
-                                # Validate first: standardizes the address and
-                                # detects residential vs commercial, which is
-                                # what decides Ground vs Home Delivery.
-                                v = fedex_validate_address(st_to)
-                                st_to = {**st_to, **v['address']}
-                                fr_res[o['order_key']] = v['residential']
-                                fr_q[o['order_key']] = {
-                                    'weight': wt,
-                                    'ship_to': st_to,
-                                    'addr_ok': v['ok'],
-                                    'addr_notes': v['notes'],
-                                    'quotes': fedex_get_rates(
-                                        st_to, wt, v['residential'] or resid)}
-                            st.rerun()
+                            fr_to[o['order_key']] = get_order_ship_to(o['order_key'])
+                        except Exception:
+                            fr_to[o['order_key']] = {}
+                    a = fr_to[o['order_key']]
+                    ac1, ac2, ac3, ac4 = st.columns([3, 2, 1, 1])
+                    a['line1'] = ac1.text_input("Ship to", a.get('line1', ''),
+                                                placeholder="Street address",
+                                                key=f"frad1_{o['order_key']}",
+                                                label_visibility='collapsed')
+                    a['city'] = ac2.text_input("City", a.get('city', ''),
+                                               placeholder="City",
+                                               key=f"frad2_{o['order_key']}",
+                                               label_visibility='collapsed')
+                    a['state'] = ac3.text_input("ST", a.get('state', ''),
+                                                placeholder="ST",
+                                                key=f"frad3_{o['order_key']}",
+                                                label_visibility='collapsed')
+                    a['zip'] = ac4.text_input("ZIP", a.get('zip', ''),
+                                              placeholder="ZIP",
+                                              key=f"frad4_{o['order_key']}",
+                                              label_visibility='collapsed')
+                    # One row per box: weight required, dims optional (FedEx
+                    # applies dimensional weight when they're provided).
+                    pk_df = st.data_editor(
+                        pd.DataFrame({'Weight (lb)': [10.0],
+                                      'L (in)': [None], 'W (in)': [None],
+                                      'H (in)': [None]}),
+                        num_rows="dynamic", use_container_width=True,
+                        key=f"frpk_{o['order_key']}")
+                    resid = st.checkbox("Residential",
+                                        value=bool(fr_res.get(o['order_key'])),
+                                        key=f"frre_{o['order_key']}")
+                    if st.button("🚚 Get FedEx rates", key=f"frq_{o['order_key']}"):
+                        try:
+                            pkgs = []
+                            for _, pr in pk_df.iterrows():
+                                w = pd.to_numeric(pr['Weight (lb)'], errors='coerce')
+                                if pd.notna(w) and w > 0:
+                                    pkg = {'weight': float(w)}
+                                    for col, k in (('L (in)', 'l'), ('W (in)', 'w'),
+                                                   ('H (in)', 'h')):
+                                        dv = pd.to_numeric(pr[col], errors='coerce')
+                                        if pd.notna(dv) and dv > 0:
+                                            pkg[k] = float(dv)
+                                    pkgs.append(pkg)
+                            if not pkgs:
+                                st.error("Add at least one package with a weight.")
+                            else:
+                                with st.spinner("Validating address + quoting FedEx..."):
+                                    # Validate first: standardizes the address
+                                    # and detects residential vs commercial,
+                                    # which routes Ground vs Home Delivery.
+                                    v = fedex_validate_address(a)
+                                    a.update(v['address'])
+                                    fr_res[o['order_key']] = v['residential']
+                                    fr_q[o['order_key']] = {
+                                        'packages': pkgs,
+                                        'ship_to': dict(a),
+                                        'addr_ok': v['ok'],
+                                        'addr_notes': v['notes'],
+                                        'quotes': fedex_get_rates(
+                                            a, pkgs, v['residential'] or resid)}
+                                st.rerun()
                         except Exception as e:
                             st.error(f"FedEx quote failed: {e}")
                     fq = fr_q.get(o['order_key'])
                     if fq and fq.get('quotes'):
+                        n_pkg = len(fq.get('packages') or [])
+                        tot_w = sum(p['weight'] for p in fq.get('packages') or [])
                         if fq.get('addr_ok'):
                             st.caption(f"📮 {fq['ship_to'].get('line1', '')}, "
                                        f"{fq['ship_to'].get('city', '')}, "
                                        f"{fq['ship_to'].get('state', '')} "
                                        f"{fq['ship_to'].get('zip', '')}"
-                                       f"{' · residential' if fq.get('ship_to') and fr_res.get(o['order_key']) else ''}"
-                                       f" · {fq['weight']:g} lb")
+                                       f"{' · residential' if fr_res.get(o['order_key']) else ''}"
+                                       f" · {n_pkg} pkg · {tot_w:g} lb")
                         else:
                             st.warning("FedEx could not fully verify this address - "
                                        + '; '.join(fq.get('addr_notes') or ['check it in Sage']))
@@ -1884,7 +1930,7 @@ elif page == "Create Invoices":
                                 try:
                                     with st.spinner("Creating FedEx shipment..."):
                                         sh = fedex_create_shipment(
-                                            fq['ship_to'], fq['weight'],
+                                            fq['ship_to'], fq['packages'],
                                             lbl[pick]['service'],
                                             residential=fr_res.get(o['order_key'], False),
                                             ref=o.get('customer_po') or '')
@@ -1898,12 +1944,25 @@ elif page == "Create Invoices":
                     if lab:
                         st.success(f"Tracking: {lab['tracking']}")
                         import base64 as _b64
-                        st.download_button(
-                            "📥 Download label (PDF)",
-                            data=_b64.b64decode(lab['label_b64']),
-                            file_name=f"fedex-{lab['tracking'] or o['order_key'][:8]}.pdf",
-                            mime="application/pdf",
-                            key=f"frdl_{o['order_key']}")
+                        if len(lab['labels']) == 1:
+                            st.download_button(
+                                "📥 Download label (PDF)",
+                                data=_b64.b64decode(lab['labels'][0]),
+                                file_name=f"fedex-{lab['tracking'] or o['order_key'][:8]}.pdf",
+                                mime="application/pdf",
+                                key=f"frdl_{o['order_key']}")
+                        else:
+                            import io as _io, zipfile as _zf
+                            buf = _io.BytesIO()
+                            with _zf.ZipFile(buf, 'w', _zf.ZIP_DEFLATED) as z:
+                                for n_, l64 in enumerate(lab['labels'], 1):
+                                    z.writestr(f"label-{n_}.pdf", _b64.b64decode(l64))
+                            st.download_button(
+                                f"📥 Download {len(lab['labels'])} labels (ZIP)",
+                                data=buf.getvalue(),
+                                file_name=f"fedex-{lab['tracking'] or o['order_key'][:8]}.zip",
+                                mime="application/zip",
+                                key=f"frdl_{o['order_key']}")
                 bc1, bc2 = st.columns([4, 1])
                 with bc1:
                     mark = st.button(
