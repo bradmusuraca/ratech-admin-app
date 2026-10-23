@@ -192,8 +192,10 @@ def guess_customer(text, channel=''):
     given text. Channel (filename + sender) is checked first — a PO's
     bill-to block can print a different customer's name (e.g. a Ford PO
     that says 'RMS' should resolve to the sender's customer, not the
-    bill-to text)."""
-    for src in (channel, text):
+    bill-to text). The full text is trimmed to the header: a line item
+    like 'Ford Racing ...' deep in the document would otherwise match
+    Ford's alias on a competitor's PO."""
+    for src in (channel, (text or '')[:2000]):
         tl = (src or '').lower()
         if not tl:
             continue
