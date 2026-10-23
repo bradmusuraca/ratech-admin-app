@@ -29,7 +29,10 @@ from sage_queue import (is_configured as sage_queue_configured,
                         queue_order_void, queue_inventory_adjustment,
                         note_line_adjustment, transactions_from_sage_df,
                         get_order_ship_to)
-from fedex import is_configured as fedex_configured, get_rates as fedex_get_rates
+from fedex import (is_configured as fedex_configured,
+                   get_rates as fedex_get_rates,
+                   validate_address as fedex_validate_address,
+                   create_shipment as fedex_create_shipment)
 import streamlit.components.v1 as components
 
 load_dotenv()
@@ -1816,35 +1819,82 @@ elif page == "Create Invoices":
                 # --- Freight: quote FedEx negotiated rates, the selected
                 # service's price rides onto the Sage invoice at Mark Complete.
                 fr_q = st.session_state.setdefault('freight_quotes', {})
+                fr_res = st.session_state.setdefault('freight_resid', {})
+                fr_lbl = st.session_state.setdefault('freight_labels', {})
                 if o['status'] != 'complete' and fedex_configured():
                     fc1, fc2, fc3 = st.columns([1, 1, 3])
                     wt = fc1.number_input("Weight (lb)", min_value=0.1, step=0.5,
                                           value=10.0, key=f"frwt_{o['order_key']}")
-                    resid = fc2.checkbox("Residential", key=f"frre_{o['order_key']}")
+                    resid = fc2.checkbox("Residential",
+                                         value=bool(fr_res.get(o['order_key'])),
+                                         key=f"frre_{o['order_key']}")
                     if fc3.button("🚚 Get FedEx rates", key=f"frq_{o['order_key']}"):
                         try:
                             st_to = get_order_ship_to(o['order_key'])
-                            with st.spinner("Quoting FedEx..."):
+                            with st.spinner("Validating address + quoting FedEx..."):
+                                # Validate first: standardizes the address and
+                                # detects residential vs commercial, which is
+                                # what decides Ground vs Home Delivery.
+                                v = fedex_validate_address(st_to)
+                                st_to = {**st_to, **v['address']}
+                                fr_res[o['order_key']] = v['residential']
                                 fr_q[o['order_key']] = {
                                     'weight': wt,
                                     'ship_to': st_to,
-                                    'quotes': fedex_get_rates(st_to, wt, resid)}
+                                    'addr_ok': v['ok'],
+                                    'addr_notes': v['notes'],
+                                    'quotes': fedex_get_rates(
+                                        st_to, wt, v['residential'] or resid)}
                             st.rerun()
                         except Exception as e:
                             st.error(f"FedEx quote failed: {e}")
                     fq = fr_q.get(o['order_key'])
                     if fq and fq.get('quotes'):
-                        st.caption(f"FedEx rates to {fq['ship_to'].get('city', '')}, "
-                                   f"{fq['ship_to'].get('state', '')} "
-                                   f"{fq['ship_to'].get('zip', '')} · {fq['weight']:g} lb")
+                        if fq.get('addr_ok'):
+                            st.caption(f"📮 {fq['ship_to'].get('line1', '')}, "
+                                       f"{fq['ship_to'].get('city', '')}, "
+                                       f"{fq['ship_to'].get('state', '')} "
+                                       f"{fq['ship_to'].get('zip', '')}"
+                                       f"{' · residential' if fq.get('ship_to') and fr_res.get(o['order_key']) else ''}"
+                                       f" · {fq['weight']:g} lb")
+                        else:
+                            st.warning("FedEx could not fully verify this address - "
+                                       + '; '.join(fq.get('addr_notes') or ['check it in Sage']))
                         lbl = {f"{q['name']} — ${q['amount']:.2f}"
                                + (f" ({q['transit']})" if q.get('transit') else ""): q
                                for q in fq['quotes']}
                         st.radio("Freight service", ['(no freight)'] + list(lbl),
                                  key=f"frr_{o['order_key']}",
                                  label_visibility='collapsed')
+                        # Label printing for the selected service. Deliberate
+                        # click - creates a real, billed shipment. (ShipStation
+                        # orders keep using ShipStation labels instead.)
+                        pick = st.session_state.get(f"frr_{o['order_key']}")
+                        if pick and pick != '(no freight)':
+                            if st.button("🏷 Print FedEx label", key=f"frl_{o['order_key']}"):
+                                try:
+                                    with st.spinner("Creating FedEx shipment..."):
+                                        sh = fedex_create_shipment(
+                                            fq['ship_to'], fq['weight'],
+                                            lbl[pick]['service'],
+                                            residential=fr_res.get(o['order_key'], False),
+                                            ref=o.get('customer_po') or '')
+                                    fr_lbl[o['order_key']] = sh
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Label failed: {e}")
                     elif fq is not None:
                         st.caption("No account rates returned for this lane.")
+                    lab = fr_lbl.get(o['order_key'])
+                    if lab:
+                        st.success(f"Tracking: {lab['tracking']}")
+                        import base64 as _b64
+                        st.download_button(
+                            "📥 Download label (PDF)",
+                            data=_b64.b64decode(lab['label_b64']),
+                            file_name=f"fedex-{lab['tracking'] or o['order_key'][:8]}.pdf",
+                            mime="application/pdf",
+                            key=f"frdl_{o['order_key']}")
                 bc1, bc2 = st.columns([4, 1])
                 with bc1:
                     mark = st.button(
