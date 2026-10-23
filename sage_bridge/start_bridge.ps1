@@ -11,6 +11,7 @@ $running = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorA
 if ($running) { exit 0 }
 
 $bridge = Join-Path $PSScriptRoot 'bridge.ps1'
-Start-Process "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
+# 32-bit PowerShell - the Sage managed API won't load in a 64-bit process.
+Start-Process "C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe" `
     -ArgumentList "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$bridge`"" `
     -WorkingDirectory $PSScriptRoot

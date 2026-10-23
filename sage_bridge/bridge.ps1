@@ -30,7 +30,7 @@ $SUPABASE_URL   = $env:SUPABASE_URL.TrimEnd('/')
 $SUPABASE_KEY   = $env:SUPABASE_KEY
 $COMPANY_NAME   = $env:SAGE_COMPANY_NAME   # substring match on CompanyIdentifier CompanyName/DatabaseName/Path
 $APP_ID         = if ($env:SAGE_APP_ID) { $env:SAGE_APP_ID } else { 'Ratech.OrderBridge.1.0' }
-$POLL_SECONDS   = 15
+$POLL_SECONDS   = 5
 if ($env:POLL_SECONDS) { $POLL_SECONDS = [int]$env:POLL_SECONDS }
 $TABLE          = 'sage_order_queue'
 $SAGE_BASE      = if ($env:SAGE_BASE_DIR) { $env:SAGE_BASE_DIR } else { 'C:\Program Files (x86)\Sage' }
@@ -762,9 +762,13 @@ while ($true) {
                     }
                     if ($short) { throw "insufficient on-hand: $($short -join '; ')" }
                     # Refresh last-unit-cost from Sage's Item List export so
-                    # adjustment Amounts use current cost, not a stale file.
+                    # adjustment Amounts use current cost - but skip the ~60s
+                    # UI drive when the file was refreshed recently.
                     $exp = Join-Path $PSScriptRoot 'export_itemlist.ps1'
-                    if (Test-Path $exp) {
+                    $ilst = Join-Path $PSScriptRoot 'itemlist.csv'
+                    $stale = -not (Test-Path $ilst) -or
+                             ((Get-Date) - (Get-Item $ilst).LastWriteTime).TotalMinutes -gt 15
+                    if ($stale -and (Test-Path $exp)) {
                         try {
                             Write-Host "  [.] refreshing item costs (itemlist export)..." -ForegroundColor DarkGray
                             & $exp
