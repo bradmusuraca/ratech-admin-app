@@ -295,6 +295,26 @@ function Set-OrderStatus($orderKey, [string]$status) {
 
 # Write/clear a stock warning on an open_orders line so the app can
 # show it next to the packed quantity.
+# Roll a skipped/held build's qty back out of built_qty so re-saving the
+# packed qty produces a build delta again (built_qty tracks "queued", and
+# a skipped build queued nothing in Sage).
+function Restore-BuiltQty($orderKey, $lines) {
+    $uri = "$SUPABASE_URL/rest/v1/open_orders`?order_key=eq.$orderKey&select=lines"
+    $row = (Invoke-RestMethod -Uri $uri -Headers (Headers) -TimeoutSec 20) | Select-Object -First 1
+    if (-not $row) { return }
+    foreach ($pl in $lines) {
+        $want = "$($pl.item_id)".Trim().ToUpper()
+        foreach ($l in $row.lines) {
+            if ("$($l.item_id)".Trim().ToUpper() -eq $want) {
+                $l.built_qty = [Math]::Max(0, [decimal]$l.built_qty - [decimal]$pl.qty)
+            }
+        }
+    }
+    $body = @{ lines = @($row.lines); updated_at = 'now()' } | ConvertTo-Json -Depth 8 -Compress
+    Invoke-RestMethod -Uri "$SUPABASE_URL/rest/v1/open_orders`?order_key=eq.$orderKey" `
+        -Method Patch -Headers (Headers) -Body $body -TimeoutSec 20 | Out-Null
+}
+
 function Set-LineWarning($orderKey, [string]$itemId, [string]$msg, $components = $null) {
     $uri = "$SUPABASE_URL/rest/v1/open_orders`?order_key=eq.$orderKey&select=lines"
     $row = (Invoke-RestMethod -Uri $uri -Headers (Headers) -TimeoutSec 20) | Select-Object -First 1
@@ -682,6 +702,7 @@ while ($true) {
                         $desc = ($short | ForEach-Object { "$($_.item): need $($_.need.ToString('0.##')), have $($_.have.ToString('0.##'))" }) -join '; '
                         $msg = "insufficient components - lower Packed qty or build in Sage: $desc"
                         Finish-Order $key 'pending' $null $msg
+                        try { Restore-BuiltQty $row.payload.parent_order $row.payload.lines } catch { }
                         foreach ($l in $row.payload.lines) {
                             $lid = "$($l.item_id)".Trim().ToUpper()
                             $comps = @($short | Where-Object { $_.line -eq $lid })
