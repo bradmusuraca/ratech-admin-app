@@ -1840,47 +1840,62 @@ elif page == "Create Invoices":
                         except Exception:
                             fr_to[o['order_key']] = {}
                     a = fr_to[o['order_key']]
-                    ac1, ac2, ac3, ac4 = st.columns([3, 2, 1, 1])
-                    a['line1'] = ac1.text_input("Ship to", a.get('line1', ''),
-                                                placeholder="Street address",
-                                                key=f"frad1_{o['order_key']}",
-                                                label_visibility='collapsed')
-                    a['city'] = ac2.text_input("City", a.get('city', ''),
-                                               placeholder="City",
-                                               key=f"frad2_{o['order_key']}",
-                                               label_visibility='collapsed')
-                    a['state'] = ac3.text_input("ST", a.get('state', ''),
-                                                placeholder="ST",
-                                                key=f"frad3_{o['order_key']}",
-                                                label_visibility='collapsed')
-                    a['zip'] = ac4.text_input("ZIP", a.get('zip', ''),
-                                              placeholder="ZIP",
-                                              key=f"frad4_{o['order_key']}",
-                                              label_visibility='collapsed')
-                    # One row per box: weight required, dims optional (FedEx
-                    # applies dimensional weight when they're provided).
-                    pk_df = st.data_editor(
-                        pd.DataFrame({'Weight (lb)': [10.0],
-                                      'L (in)': [None], 'W (in)': [None],
-                                      'H (in)': [None]}),
-                        num_rows="dynamic", use_container_width=True,
-                        key=f"frpk_{o['order_key']}")
-                    resid = st.checkbox("Residential",
-                                        value=bool(fr_res.get(o['order_key'])),
-                                        key=f"frre_{o['order_key']}")
-                    if st.button("🚚 Get FedEx rates", key=f"frq_{o['order_key']}"):
+                    st.markdown("**📦 Ship via FedEx**")
+                    fr_col, _sp = st.columns([1, 2])
+                    with fr_col:
+                        a['name'] = st.text_input("Name", a.get('name', ''),
+                                                  key=f"frad0_{o['order_key']}")
+                        a['line1'] = st.text_input("Address", a.get('line1', ''),
+                                                   key=f"frad1_{o['order_key']}")
+                        a['line2'] = st.text_input("Address 2", a.get('line2', ''),
+                                                   key=f"frad2_{o['order_key']}")
+                        _c1, _c2, _c3 = st.columns([3, 1, 2])
+                        a['city'] = _c1.text_input("City", a.get('city', ''),
+                                                   key=f"frad3_{o['order_key']}")
+                        a['state'] = _c2.text_input("ST", a.get('state', ''),
+                                                    key=f"frad4_{o['order_key']}")
+                        a['zip'] = _c3.text_input("ZIP", a.get('zip', ''),
+                                                  key=f"frad5_{o['order_key']}")
+                        resid = st.checkbox("Residential",
+                                            value=bool(fr_res.get(o['order_key'])),
+                                            key=f"frre_{o['order_key']}")
+                        st.divider()
+                        # One block per box: weight required, dims optional
+                        # (FedEx bills by dimensional weight when given).
+                        n_pkg = st.number_input("Packages", min_value=1, max_value=20,
+                                                value=1, step=1,
+                                                key=f"frnp_{o['order_key']}")
+                        pkgs = []
+                        for pi in range(int(n_pkg)):
+                            if n_pkg > 1:
+                                st.caption(f"Package {pi + 1}")
+                            _p = st.columns(4)
+                            pw = _p[0].number_input(
+                                "Weight (lb)" if n_pkg == 1 else "Wt", min_value=0.1,
+                                value=10.0, step=0.5,
+                                key=f"frw{pi}_{o['order_key']}")
+                            pl = _p[1].number_input(
+                                "L" if n_pkg == 1 else "L", min_value=0.0, value=0.0,
+                                step=0.5, key=f"frl{pi}_{o['order_key']}")
+                            pwid = _p[2].number_input(
+                                "W", min_value=0.0, value=0.0, step=0.5,
+                                key=f"frwd{pi}_{o['order_key']}")
+                            ph = _p[3].number_input(
+                                "H", min_value=0.0, value=0.0, step=0.5,
+                                key=f"frh{pi}_{o['order_key']}")
+                            pk = {'weight': pw}
+                            if pl and pwid and ph:
+                                pk.update({'l': pl, 'w': pwid, 'h': ph})
+                            pkgs.append(pk)
+                        if n_pkg > 1:
+                            st.caption(f"{int(n_pkg)} packages · "
+                                       f"{sum(p['weight'] for p in pkgs):g} lb total")
+                        quote = st.button("🚚 Get FedEx rates",
+                                          key=f"frq_{o['order_key']}",
+                                          use_container_width=True)
+                    if quote:
                         try:
-                            pkgs = []
-                            for _, pr in pk_df.iterrows():
-                                w = pd.to_numeric(pr['Weight (lb)'], errors='coerce')
-                                if pd.notna(w) and w > 0:
-                                    pkg = {'weight': float(w)}
-                                    for col, k in (('L (in)', 'l'), ('W (in)', 'w'),
-                                                   ('H (in)', 'h')):
-                                        dv = pd.to_numeric(pr[col], errors='coerce')
-                                        if pd.notna(dv) and dv > 0:
-                                            pkg[k] = float(dv)
-                                    pkgs.append(pkg)
+                            pkgs = [p for p in pkgs if p['weight'] > 0]
                             if not pkgs:
                                 st.error("Add at least one package with a weight.")
                             else:
