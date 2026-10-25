@@ -28,7 +28,8 @@ from sage_queue import (is_configured as sage_queue_configured,
                         queue_assembly_build, delete_open_order,
                         queue_order_void, queue_inventory_adjustment,
                         note_line_adjustment, transactions_from_sage_df,
-                        get_order_ship_to, get_order_payload)
+                        get_order_ship_to, get_order_payload,
+                        store_order_docs, get_order_doc)
 from fedex import (is_configured as fedex_configured,
                    get_rates as fedex_get_rates,
                    validate_address as fedex_validate_address,
@@ -1716,6 +1717,18 @@ if page == "Order Processing":
                                     packed_new, _ = create_open_orders(sage_df)
                                     if packed_new:
                                         msg += f" {len(packed_new)} released to packing."
+                                    # Keep each order's source PDF so the
+                                    # packing page can display it for the
+                                    # packer's ship-to double-check.
+                                    doc_map = {}
+                                    for _inv in st.session_state.invoices:
+                                        if _inv.get('pdf_bytes') and _inv.get('df') is not None:
+                                            for _po in _inv['df']['Purchase Order Number'].astype(str):
+                                                doc_map[_po] = (_inv['name'], _inv['pdf_bytes'])
+                                    try:
+                                        store_order_docs(sage_df, doc_map)
+                                    except Exception:
+                                        pass
                                     st.success(msg)
                                 except Exception as e:
                                     st.error(f"Queue push failed: {e}")
@@ -1916,6 +1929,26 @@ elif page == "Create Invoices":
                         resid = st.checkbox("Residential",
                                             value=bool(fr_res.get(o['order_key'])),
                                             key=f"frre_{o['order_key']}")
+                    with _sp:
+                        # Original order PDF for the ship-to double-check.
+                        _docs = st.session_state.setdefault('order_docs', {})
+                        if o['order_key'] not in _docs:
+                            try:
+                                _docs[o['order_key']] = get_order_doc(o['order_key'])
+                            except Exception:
+                                _docs[o['order_key']] = {}
+                        _doc = _docs[o['order_key']]
+                        if _doc.get('pdf_b64'):
+                            try:
+                                import base64 as _b
+                                import fitz
+                                _pdf = fitz.open(stream=_b.b64decode(_doc['pdf_b64']),
+                                                 filetype='pdf')
+                                _pm = _pdf[0].get_pixmap(dpi=100)
+                                st.image(_pm.tobytes('png'),
+                                         caption=_doc.get('file_name') or 'order document')
+                            except Exception:
+                                st.caption("Couldn't render the stored order PDF.")
                     # One row per box: weight required, dims optional (FedEx
                     # bills by dimensional weight when given). Wide fields.
                     n_pkg = st.number_input("Packages", min_value=1, max_value=20,

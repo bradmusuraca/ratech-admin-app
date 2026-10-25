@@ -35,3 +35,20 @@ create table if not exists open_orders (
 );
 
 alter table open_orders enable row level security;
+
+-- Re-saved jobs get 'superseded' - allow it in the status check.
+alter table sage_order_queue drop constraint if exists sage_order_queue_status_check;
+alter table sage_order_queue add constraint sage_order_queue_status_check
+    check (status in ('pending','processing','done','error','superseded'));
+
+-- Source document (order PDF) kept per order so the packing page can show
+-- the original paperwork next to the freight widget. Base64 text keeps it
+-- in Postgres - no Storage bucket to configure.
+create table if not exists order_docs (
+    order_key      text primary key,
+    file_name      text,
+    pdf_b64        text,
+    created_at     timestamptz not null default now()
+);
+
+alter table order_docs enable row level security;

@@ -17,6 +17,7 @@ import requests
 
 TABLE = 'sage_order_queue'
 OPEN_TABLE = 'open_orders'
+DOCS_TABLE = 'order_docs'
 
 
 def is_configured():
@@ -305,6 +306,39 @@ def queue_invoice(order_key, sage_order_no, lines, freight=None):
         }], timeout=20)
     resp.raise_for_status()
     return inv_key
+
+
+def store_order_docs(sage_df, doc_map):
+    """Save the source PDF per order so the packing page can show the
+    original paperwork. doc_map: customer_po -> (file_name, pdf_bytes)."""
+    import base64
+    rows = []
+    for tx in transactions_from_sage_df(sage_df):
+        doc = doc_map.get(tx['customer_po'])
+        if not doc or not doc[1]:
+            continue
+        rows.append({
+            'order_key': _order_key(tx),
+            'file_name': doc[0],
+            'pdf_b64': base64.b64encode(doc[1]).decode(),
+        })
+    if not rows:
+        return
+    requests.post(
+        _url(DOCS_TABLE),
+        headers={**_headers(), 'Prefer': 'resolution=merge-duplicates'},
+        json=rows, timeout=60).raise_for_status()
+
+
+def get_order_doc(order_key):
+    """Fetch the stored source document for a packing order."""
+    resp = requests.get(
+        _url(DOCS_TABLE, order_key=f'eq.{order_key}',
+             select='file_name,pdf_b64', limit='1'),
+        headers=_headers(), timeout=30)
+    resp.raise_for_status()
+    rows = resp.json()
+    return rows[0] if rows else {}
 
 
 def queue_inventory_adjustment(item_id, qty_delta, reason):
