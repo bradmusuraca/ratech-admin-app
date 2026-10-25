@@ -662,7 +662,19 @@ Write-Host "Sage bridge v3 polling every $POLL_SECONDS s - Ctrl+C to stop"
 $sess = $null
 $idleSweeps = 0
 $script:holdMsg = @{}
+$pauseFile = Join-Path $PSScriptRoot 'PAUSE'
 while ($true) {
+    # PAUSE flag file: release the Sage company (backups, maintenance) and
+    # idle until it is removed. See pause_bridge.ps1.
+    if (Test-Path $pauseFile) {
+        if ($sess) {
+            try { $sess.Session.End() } catch { }
+            $sess = $null
+            Write-Host "[|] PAUSED - Sage session released, waiting for PAUSE file removal" -ForegroundColor DarkYellow
+        }
+        Start-Sleep $POLL_SECONDS
+        continue
+    }
     # Keep the Sage session open across sweeps - the begin/request/open
     # handshake is the slow part. Reopen only after a failure.
     try {
