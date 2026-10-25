@@ -663,10 +663,26 @@ $sess = $null
 $idleSweeps = 0
 $script:holdMsg = @{}
 $pauseFile = Join-Path $PSScriptRoot 'PAUSE'
+
+# Nightly quiet window (PAUSE_START/PAUSE_END in .env, HH:mm): the bridge
+# releases the Sage session every night inside the window so scheduled or
+# manual backups never hit "company in use". Supports overnight windows.
+$pwStart = if ($env:PAUSE_START) { try { [TimeSpan]::Parse($env:PAUSE_START) } catch { $null } } else { $null }
+$pwEnd   = if ($env:PAUSE_END)   { try { [TimeSpan]::Parse($env:PAUSE_END) }   catch { $null } } else { $null }
+function Test-PauseWindow {
+    if ($null -eq $script:pwStart -or $null -eq $script:pwEnd) { return $false }
+    $now = (Get-Date).TimeOfDay
+    if ($script:pwStart -le $script:pwEnd) {
+        return $now -ge $script:pwStart -and $now -lt $script:pwEnd
+    }
+    return $now -ge $script:pwStart -or $now -lt $script:pwEnd  # overnight wrap
+}
+$script:pwStart = $pwStart; $script:pwEnd = $pwEnd
+
 while ($true) {
-    # PAUSE flag file: release the Sage company (backups, maintenance) and
-    # idle until it is removed. See pause_bridge.ps1.
-    if (Test-Path $pauseFile) {
+    # PAUSE flag file or quiet window: release the Sage company (backups,
+    # maintenance) and idle until normal operation resumes.
+    if ((Test-Path $pauseFile) -or (Test-PauseWindow)) {
         if ($sess) {
             try { $sess.Session.End() } catch { }
             $sess = $null
