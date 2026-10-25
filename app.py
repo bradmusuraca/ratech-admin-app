@@ -1935,8 +1935,8 @@ elif page == "Create Invoices":
                         if o['order_key'] not in _docs:
                             try:
                                 _docs[o['order_key']] = get_order_doc(o['order_key'])
-                            except Exception:
-                                _docs[o['order_key']] = {'_err': True}
+                            except Exception as _e:
+                                _docs[o['order_key']] = {'_err': str(_e)}
                         _doc = _docs[o['order_key']]
                         if _doc.get('pdf_b64'):
                             try:
@@ -1950,8 +1950,7 @@ elif page == "Create Invoices":
                             except Exception:
                                 st.caption("Couldn't render the stored order PDF.")
                         elif _doc.get('_err'):
-                            st.caption("Order PDF lookup failed - create the "
-                                       "order_docs table in Supabase.")
+                            st.caption(f"Order PDF lookup failed: {_doc['_err']}")
                         else:
                             st.caption("No PDF stored for this order.")
                     # One row per box: weight required, dims optional (FedEx
