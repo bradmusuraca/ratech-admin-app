@@ -79,6 +79,19 @@ _TRANSIT_LABELS = {
 }
 
 
+def _post(path, body):
+    """POST a FedEx API call; raise with the response body so FedEx's own
+    error (which names the offending field/permission) reaches the UI."""
+    r = requests.post(
+        f"{_base()}{path}",
+        headers={'Authorization': f"Bearer {_token()}",
+                 'Content-Type': 'application/json'},
+        json=body, timeout=30)
+    if r.status_code >= 400:
+        raise RuntimeError(f"FedEx {path} -> {r.status_code}: {r.text[:500]}")
+    return r.json()
+
+
 def _recipient_addr(ship_to, residential):
     streets = [s for s in (ship_to.get('line1'), ship_to.get('line2')) if s]
     return {
@@ -97,13 +110,11 @@ def validate_address(ship_to):
     rate quote (and Home Delivery vs Ground routing) is right."""
     addr = _recipient_addr(ship_to, False)
     addr.pop('residential', None)
-    r = requests.post(
-        f"{_base()}/address/v1/addresses/resolve",
-        headers={'Authorization': f"Bearer {_token()}",
-                 'Content-Type': 'application/json'},
-        json={'addressesToValidate': [{'address': addr}]}, timeout=20)
-    r.raise_for_status()
-    res = (r.json().get('output', {}).get('resolvedAddresses') or [{}])[0]
+    if not addr['streetLines'] or not addr['city'] or not addr['postalCode']:
+        raise ValueError("ship-to address is incomplete (need street, city, ZIP)")
+    j = _post('/address/v1/addresses/resolve',
+              {'addressesToValidate': [{'address': addr}]})
+    res = (j.get('output', {}).get('resolvedAddresses') or [{}])[0]
     cls = (res.get('classification') or '').upper()
     std = res.get('standardizedAddress') or {}
     notes = [m.get('message', '') for m in (res.get('customerMessages') or [])
@@ -217,15 +228,10 @@ def get_rates(ship_to, packages, residential=False):
             'requestedPackageLineItems': _pkg_items(packages),
         },
     }
-    r = requests.post(
-        f"{_base()}/rate/v1/rates/quotes",
-        headers={'Authorization': f"Bearer {_token()}",
-                 'Content-Type': 'application/json'},
-        json=body, timeout=30)
-    r.raise_for_status()
+    j = _post('/rate/v1/rates/quotes', body)
 
     out = []
-    for d in (r.json().get('output', {}).get('rateReplyDetails') or []):
+    for d in (j.get('output', {}).get('rateReplyDetails') or []):
         svc = d.get('serviceType', '')
         amount = currency = transit = None
         for rs in (d.get('ratedShipmentDetails') or []):
