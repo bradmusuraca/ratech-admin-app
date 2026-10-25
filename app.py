@@ -1817,23 +1817,32 @@ elif page == "Create Invoices":
                 def _line_amt(item, pk):
                     p = pd.to_numeric(pk, errors='coerce')
                     pr = _unit.get(str(item), float('nan'))
-                    return round(float(p) * float(pr), 2) if pd.notna(p) and pd.notna(pr) else ''
+                    return (round(float(p) * float(pr), 2)
+                            if pd.notna(p) and pd.notna(pr) else None)
+                # Prefill Packed from the editor's last state (unsaved edits)
+                # so Line Total Amount is right the moment you leave a cell.
+                _lp = st.session_state.get(f"lastpack_{o['order_key']}")
+                def _pk(i, l):
+                    if _lp and i < len(_lp) and _lp[i] not in (None, ''):
+                        return _lp[i]
+                    return l.get('qty_packed')
                 df = pd.DataFrame([{
                     'Item': l.get('item_id'),
                     'Description': ('⚙ ' if l.get('assembly') else '')
                                    + str(l.get('description') or ''),
                     'Required': l.get('qty_required'),
-                    'Packed': l.get('qty_packed'),
-                    'Line Total': _line_amt(l.get('item_id'), l.get('qty_packed')),
-                } for l in raw_lines])
+                    'Packed': _pk(i, l),
+                    'Line Total Amount': _line_amt(l.get('item_id'), _pk(i, l)),
+                } for i, l in enumerate(raw_lines)])
                 _dis = (list(df.columns) if o['status'] == 'complete'
-                        else ['Line Total'])
+                        else ['Line Total Amount'])
                 ed = st.data_editor(
                     df, use_container_width=True,
                     key=f"open_{o['order_key']}",
                     disabled=_dis,
-                    column_config={'Line Total': st.column_config.NumberColumn(
+                    column_config={'Line Total Amount': st.column_config.NumberColumn(
                         format='$%.2f')})
+                st.session_state[f"lastpack_{o['order_key']}"] = list(ed['Packed'])
                 req = pd.to_numeric(ed['Required'], errors='coerce').fillna(0)
                 packed = pd.to_numeric(ed['Packed'], errors='coerce').fillna(0)
                 any_short = bool((packed < req).any())
@@ -1844,7 +1853,7 @@ elif page == "Create Invoices":
                 inv_total = 0.0
                 for _, _r in ed.iterrows():
                     _a = _line_amt(_r['Item'], _r['Packed'])
-                    if _a != '':
+                    if _a is not None:
                         inv_total += float(_a)
                 fr_q0 = st.session_state.get('freight_quotes', {}).get(o['order_key'])
                 _fr = None
