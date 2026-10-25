@@ -1804,25 +1804,8 @@ elif page == "Create Invoices":
                                         st.error(f"Could not queue adjustment: {e}")
                         if l.get('adjust_note'):
                             st.caption(f"✓ {l['adjust_note']} — warning clears when the build imports")
-                df = pd.DataFrame([{
-                    'Item': l.get('item_id'),
-                    'Description': ('⚙ ' if l.get('assembly') else '')
-                                   + str(l.get('description') or ''),
-                    'Required': l.get('qty_required'),
-                    'Packed': l.get('qty_packed'),
-                } for l in raw_lines])
-                ed = st.data_editor(
-                    df, use_container_width=True,
-                    key=f"open_{o['order_key']}",
-                    disabled=(o['status'] == 'complete'))
-                req = pd.to_numeric(ed['Required'], errors='coerce').fillna(0)
-                packed = pd.to_numeric(ed['Packed'], errors='coerce').fillna(0)
-                any_short = bool((packed < req).any())
-                packed_by = ((st.session_state.user or {}).get('name', '')
-                             if st.session_state.get('user') else '')
-
-                # Invoice preview: packed qty x unit price per line + total.
-                # Prices come from the order's create-job payload (cached).
+                # Invoice preview prices come from the order's create-job
+                # payload (cached per order).
                 o_pl = st.session_state.setdefault('order_payloads', {})
                 if o['order_key'] not in o_pl:
                     try:
@@ -1831,28 +1814,51 @@ elif page == "Create Invoices":
                         o_pl[o['order_key']] = {}
                 _unit = {str(l.get('item_id', '')): pd.to_numeric(l.get('unit_price'), errors='coerce')
                          for l in (o_pl[o['order_key']].get('lines') or [])}
-                _parts, inv_total = [], 0.0
+                def _line_amt(item, pk):
+                    p = pd.to_numeric(pk, errors='coerce')
+                    pr = _unit.get(str(item), float('nan'))
+                    return round(float(p) * float(pr), 2) if pd.notna(p) and pd.notna(pr) else ''
+                df = pd.DataFrame([{
+                    'Item': l.get('item_id'),
+                    'Description': ('⚙ ' if l.get('assembly') else '')
+                                   + str(l.get('description') or ''),
+                    'Required': l.get('qty_required'),
+                    'Packed': l.get('qty_packed'),
+                    'Line Total': _line_amt(l.get('item_id'), l.get('qty_packed')),
+                } for l in raw_lines])
+                _dis = (list(df.columns) if o['status'] == 'complete'
+                        else ['Line Total'])
+                ed = st.data_editor(
+                    df, use_container_width=True,
+                    key=f"open_{o['order_key']}",
+                    disabled=_dis,
+                    column_config={'Line Total': st.column_config.NumberColumn(
+                        format='$%.2f')})
+                req = pd.to_numeric(ed['Required'], errors='coerce').fillna(0)
+                packed = pd.to_numeric(ed['Packed'], errors='coerce').fillna(0)
+                any_short = bool((packed < req).any())
+                packed_by = ((st.session_state.user or {}).get('name', '')
+                             if st.session_state.get('user') else '')
+
+                # Freight + total stacked beneath the Packed column.
+                inv_total = 0.0
                 for _, _r in ed.iterrows():
-                    _p = pd.to_numeric(_r['Packed'], errors='coerce')
-                    _pr = _unit.get(str(_r['Item']), float('nan'))
-                    if pd.notna(_p) and _p > 0 and pd.notna(_pr):
-                        _amt = float(_p) * float(_pr)
-                        inv_total += _amt
-                        _parts.append(f"{_r['Item']}: {_p:g} × ${_pr:,.2f} = ${_amt:,.2f}")
-                if _parts:
-                    st.caption(' · '.join(_parts))
-                    fr_q0 = st.session_state.get('freight_quotes', {}).get(o['order_key'])
-                    _fr = None
-                    if fr_q0:
-                        _pick = st.session_state.get(f"frr_{o['order_key']}")
-                        _lbl0 = {f"{q['name']} — ${q['amount']:.2f}"
-                                 + (f" ({q['transit']})" if q.get('transit') else ""): q
-                                 for q in fr_q0['quotes']}
-                        _fr = _lbl0.get(_pick or '') if _pick != '(no freight)' else None
-                    _tot_lbl = f"**Invoice total: ${inv_total + (_fr['amount'] if _fr else 0):,.2f}**"
-                    if _fr:
-                        _tot_lbl += f" (incl. ${_fr['amount']:,.2f} {_fr['name']} freight)"
-                    st.markdown(_tot_lbl)
+                    _a = _line_amt(_r['Item'], _r['Packed'])
+                    if _a != '':
+                        inv_total += float(_a)
+                fr_q0 = st.session_state.get('freight_quotes', {}).get(o['order_key'])
+                _fr = None
+                if fr_q0:
+                    _pick = st.session_state.get(f"frr_{o['order_key']}")
+                    _lbl0 = {f"{q['name']} — ${q['amount']:.2f}"
+                             + (f" ({q['transit']})" if q.get('transit') else ""): q
+                             for q in fr_q0['quotes']}
+                    _fr = _lbl0.get(_pick or '') if _pick != '(no freight)' else None
+                _tc1, _tc2 = st.columns([3, 1])
+                with _tc2:
+                    st.markdown(f"Lines: ${inv_total:,.2f}")
+                    st.markdown(f"Freight: ${(_fr['amount'] if _fr else 0):,.2f}")
+                    st.markdown(f"**Total: ${inv_total + (_fr['amount'] if _fr else 0):,.2f}**")
 
                 # --- Freight: quote FedEx negotiated rates, the selected
                 # service's price rides onto the Sage invoice at Mark Complete.
