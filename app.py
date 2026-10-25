@@ -28,7 +28,7 @@ from sage_queue import (is_configured as sage_queue_configured,
                         queue_assembly_build, delete_open_order,
                         queue_order_void, queue_inventory_adjustment,
                         note_line_adjustment, transactions_from_sage_df,
-                        get_order_ship_to)
+                        get_order_ship_to, get_order_payload)
 from fedex import (is_configured as fedex_configured,
                    get_rates as fedex_get_rates,
                    validate_address as fedex_validate_address,
@@ -1821,6 +1821,39 @@ elif page == "Create Invoices":
                 packed_by = ((st.session_state.user or {}).get('name', '')
                              if st.session_state.get('user') else '')
 
+                # Invoice preview: packed qty x unit price per line + total.
+                # Prices come from the order's create-job payload (cached).
+                o_pl = st.session_state.setdefault('order_payloads', {})
+                if o['order_key'] not in o_pl:
+                    try:
+                        o_pl[o['order_key']] = get_order_payload(o['order_key'])
+                    except Exception:
+                        o_pl[o['order_key']] = {}
+                _unit = {str(l.get('item_id', '')): pd.to_numeric(l.get('unit_price'), errors='coerce')
+                         for l in (o_pl[o['order_key']].get('lines') or [])}
+                _parts, inv_total = [], 0.0
+                for _, _r in ed.iterrows():
+                    _p = pd.to_numeric(_r['Packed'], errors='coerce')
+                    _pr = _unit.get(str(_r['Item']), float('nan'))
+                    if pd.notna(_p) and _p > 0 and pd.notna(_pr):
+                        _amt = float(_p) * float(_pr)
+                        inv_total += _amt
+                        _parts.append(f"{_r['Item']}: {_p:g} × ${_pr:,.2f} = ${_amt:,.2f}")
+                if _parts:
+                    st.caption(' · '.join(_parts))
+                    fr_q0 = st.session_state.get('freight_quotes', {}).get(o['order_key'])
+                    _fr = None
+                    if fr_q0:
+                        _pick = st.session_state.get(f"frr_{o['order_key']}")
+                        _lbl0 = {f"{q['name']} — ${q['amount']:.2f}"
+                                 + (f" ({q['transit']})" if q.get('transit') else ""): q
+                                 for q in fr_q0['quotes']}
+                        _fr = _lbl0.get(_pick or '') if _pick != '(no freight)' else None
+                    _tot_lbl = f"**Invoice total: ${inv_total + (_fr['amount'] if _fr else 0):,.2f}**"
+                    if _fr:
+                        _tot_lbl += f" (incl. ${_fr['amount']:,.2f} {_fr['name']} freight)"
+                    st.markdown(_tot_lbl)
+
                 # --- Freight: quote FedEx negotiated rates, the selected
                 # service's price rides onto the Sage invoice at Mark Complete.
                 fr_q = st.session_state.setdefault('freight_quotes', {})
@@ -1859,40 +1892,36 @@ elif page == "Create Invoices":
                         resid = st.checkbox("Residential",
                                             value=bool(fr_res.get(o['order_key'])),
                                             key=f"frre_{o['order_key']}")
-                        st.divider()
-                        # One block per box: weight required, dims optional
-                        # (FedEx bills by dimensional weight when given).
-                        n_pkg = st.number_input("Packages", min_value=1, max_value=20,
-                                                value=1, step=1,
-                                                key=f"frnp_{o['order_key']}")
-                        pkgs = []
-                        for pi in range(int(n_pkg)):
-                            if n_pkg > 1:
-                                st.caption(f"Package {pi + 1}")
-                            _p = st.columns(4)
-                            pw = _p[0].number_input(
-                                "Weight (lb)" if n_pkg == 1 else "Wt", min_value=0.1,
-                                value=10.0, step=0.5,
-                                key=f"frw{pi}_{o['order_key']}")
-                            pl = _p[1].number_input(
-                                "L" if n_pkg == 1 else "L", min_value=0.0, value=0.0,
-                                step=0.5, key=f"frl{pi}_{o['order_key']}")
-                            pwid = _p[2].number_input(
-                                "W", min_value=0.0, value=0.0, step=0.5,
-                                key=f"frwd{pi}_{o['order_key']}")
-                            ph = _p[3].number_input(
-                                "H", min_value=0.0, value=0.0, step=0.5,
-                                key=f"frh{pi}_{o['order_key']}")
-                            pk = {'weight': pw}
-                            if pl and pwid and ph:
-                                pk.update({'l': pl, 'w': pwid, 'h': ph})
-                            pkgs.append(pk)
-                        if n_pkg > 1:
-                            st.caption(f"{int(n_pkg)} packages · "
-                                       f"{sum(p['weight'] for p in pkgs):g} lb total")
-                        quote = st.button("🚚 Get FedEx rates",
-                                          key=f"frq_{o['order_key']}",
-                                          use_container_width=True)
+                    # One row per box: weight required, dims optional (FedEx
+                    # bills by dimensional weight when given). Wide fields.
+                    n_pkg = st.number_input("Packages", min_value=1, max_value=20,
+                                            value=1, step=1,
+                                            key=f"frnp_{o['order_key']}")
+                    pkgs = []
+                    for pi in range(int(n_pkg)):
+                        _p = st.columns([1.5, 1.5, 1.5, 1.5, 4])
+                        pw = _p[0].number_input(
+                            f"Package {pi+1} weight (lb)" if n_pkg > 1 else "Weight (lb)",
+                            min_value=0.1, value=10.0, step=0.5,
+                            key=f"frw{pi}_{o['order_key']}")
+                        pl = _p[1].number_input(
+                            "L (in)", min_value=0.0, value=0.0,
+                            step=0.5, key=f"frl{pi}_{o['order_key']}")
+                        pwid = _p[2].number_input(
+                            "W (in)", min_value=0.0, value=0.0, step=0.5,
+                            key=f"frwd{pi}_{o['order_key']}")
+                        ph = _p[3].number_input(
+                            "H (in)", min_value=0.0, value=0.0, step=0.5,
+                            key=f"frh{pi}_{o['order_key']}")
+                        pk = {'weight': pw}
+                        if pl and pwid and ph:
+                            pk.update({'l': pl, 'w': pwid, 'h': ph})
+                        pkgs.append(pk)
+                    if n_pkg > 1:
+                        st.caption(f"{int(n_pkg)} packages · "
+                                   f"{sum(p['weight'] for p in pkgs):g} lb total")
+                    quote = st.button("🚚 Get FedEx rates",
+                                      key=f"frq_{o['order_key']}")
                     if quote:
                         try:
                             pkgs = [p for p in pkgs if p['weight'] > 0]

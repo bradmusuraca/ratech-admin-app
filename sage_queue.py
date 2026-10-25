@@ -257,17 +257,20 @@ def queue_assembly_build(order_key, lines):
     return upd_key
 
 
-def get_order_ship_to(order_key):
-    """Ship-to fields from the order's original 'create' job payload."""
+def get_order_payload(order_key):
+    """The order's original 'create' job payload (ship-to, lines w/ prices)."""
     resp = requests.get(
         _url(order_key=f'eq.{order_key}', job_type='eq.create',
              select='payload', limit='1'),
         headers=_headers(), timeout=20)
     resp.raise_for_status()
     rows = resp.json()
-    if not rows:
-        return {}
-    p = rows[0].get('payload') or {}
+    return (rows[0].get('payload') or {}) if rows else {}
+
+
+def get_order_ship_to(order_key):
+    """Ship-to fields from the order's original 'create' job payload."""
+    p = get_order_payload(order_key)
     return {'name': p.get('ship_to_name', ''),
             'line1': p.get('ship_to_line1', ''),
             'line2': p.get('ship_to_line2', ''),
