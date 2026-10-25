@@ -664,20 +664,33 @@ $idleSweeps = 0
 $script:holdMsg = @{}
 $pauseFile = Join-Path $PSScriptRoot 'PAUSE'
 
-# Nightly quiet window (PAUSE_START/PAUSE_END in .env, HH:mm): the bridge
-# releases the Sage session every night inside the window so scheduled or
+# Quiet window (PAUSE_START/PAUSE_END in .env, HH:mm; optional PAUSE_DAYS as a
+# comma-separated list like "Fri" or "Mon,Wed,Fri" - empty means every day):
+# the bridge releases the Sage session inside the window so scheduled or
 # manual backups never hit "company in use". Supports overnight windows.
 $pwStart = if ($env:PAUSE_START) { try { [TimeSpan]::Parse($env:PAUSE_START) } catch { $null } } else { $null }
 $pwEnd   = if ($env:PAUSE_END)   { try { [TimeSpan]::Parse($env:PAUSE_END) }   catch { $null } } else { $null }
+$pwDays = @()
+if ($env:PAUSE_DAYS) {
+    foreach ($d in ($env:PAUSE_DAYS -split ',')) {
+        $d = $d.Trim()
+        foreach ($day in [Enum]::GetValues([DayOfWeek])) {
+            if ($d.Length -ge 2 -and $day.ToString().StartsWith($d, [StringComparison]::OrdinalIgnoreCase)) {
+                $pwDays += $day; break
+            }
+        }
+    }
+}
 function Test-PauseWindow {
     if ($null -eq $script:pwStart -or $null -eq $script:pwEnd) { return $false }
+    if ($script:pwDays.Count -gt 0 -and $script:pwDays -notcontains (Get-Date).DayOfWeek) { return $false }
     $now = (Get-Date).TimeOfDay
     if ($script:pwStart -le $script:pwEnd) {
         return $now -ge $script:pwStart -and $now -lt $script:pwEnd
     }
     return $now -ge $script:pwStart -or $now -lt $script:pwEnd  # overnight wrap
 }
-$script:pwStart = $pwStart; $script:pwEnd = $pwEnd
+$script:pwStart = $pwStart; $script:pwEnd = $pwEnd; $script:pwDays = $pwDays
 
 while ($true) {
     # PAUSE flag file or quiet window: release the Sage company (backups,
