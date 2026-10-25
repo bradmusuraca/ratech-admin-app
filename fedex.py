@@ -92,6 +92,15 @@ def _post(path, body):
     return r.json()
 
 
+_COUNTRY = {'USA': 'US', 'UNITED STATES': 'US', 'UNITED STATES OF AMERICA': 'US'}
+
+
+def _country_code(c):
+    """FedEx wants 2-letter ISO codes; Sage exports 'USA'."""
+    c = str(c or '').strip().upper()
+    return _COUNTRY.get(c, c or 'US')
+
+
 def _recipient_addr(ship_to, residential):
     streets = [s for s in (ship_to.get('line1'), ship_to.get('line2')) if s]
     return {
@@ -99,7 +108,7 @@ def _recipient_addr(ship_to, residential):
         'city': ship_to.get('city', ''),
         'stateOrProvinceCode': ship_to.get('state', ''),
         'postalCode': ship_to.get('zip', ''),
-        'countryCode': ship_to.get('country', 'US') or 'US',
+        'countryCode': _country_code(ship_to.get('country')),
         'residential': bool(residential),
     }
 
