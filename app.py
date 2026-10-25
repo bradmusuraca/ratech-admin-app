@@ -1941,7 +1941,9 @@ elif page == "Create Invoices":
                         # orders keep using ShipStation labels instead.)
                         pick = st.session_state.get(f"frr_{o['order_key']}")
                         if pick and pick != '(no freight)':
-                            if st.button("🏷 Print FedEx label", key=f"frl_{o['order_key']}"):
+                            if st.button(f"🏷 Confirm {lbl[pick]['name']} & print label",
+                                         key=f"frl_{o['order_key']}",
+                                         type='primary'):
                                 try:
                                     with st.spinner("Creating FedEx shipment..."):
                                         sh = fedex_create_shipment(
@@ -1953,6 +1955,9 @@ elif page == "Create Invoices":
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"Label failed: {e}")
+                        else:
+                            st.caption("Select a FedEx service above to confirm "
+                                       "shipping & print a label")
                     elif fq is not None:
                         st.caption("No account rates returned for this lane.")
                     lab = fr_lbl.get(o['order_key'])
