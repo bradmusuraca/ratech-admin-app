@@ -1836,13 +1836,22 @@ elif page == "Create Invoices":
                 } for i, l in enumerate(raw_lines)])
                 _dis = (list(df.columns) if o['status'] == 'complete'
                         else ['Line Total Amount'])
+                _pv = st.session_state.setdefault(f"packver_{o['order_key']}", 0)
                 ed = st.data_editor(
                     df, use_container_width=True,
-                    key=f"open_{o['order_key']}",
+                    key=f"open_{o['order_key']}_{_pv}",
                     disabled=_dis,
                     column_config={'Line Total Amount': st.column_config.NumberColumn(
                         format='$%.2f')})
+                # If Packed changed vs what the table was built with, bump the
+                # editor key and repaint once - the widget only returns edited
+                # cells reliably, so the Line Total column would otherwise lag
+                # one cell behind (last row staying blank).
+                _norm = lambda v: [None if pd.isna(x) else x for x in v]
                 st.session_state[f"lastpack_{o['order_key']}"] = list(ed['Packed'])
+                if _norm(list(ed['Packed'])) != _norm(list(df['Packed'])):
+                    st.session_state[f"packver_{o['order_key']}"] = _pv + 1
+                    st.rerun()
                 req = pd.to_numeric(ed['Required'], errors='coerce').fillna(0)
                 packed = pd.to_numeric(ed['Packed'], errors='coerce').fillna(0)
                 any_short = bool((packed < req).any())
