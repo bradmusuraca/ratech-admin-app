@@ -253,7 +253,10 @@ def resolve_vendor(inv):
         return
     cust_numbers = {str(n) for n in load_customers()['Customer Number']
                     if str(n).strip()}
-    vend = [v for v in df['Vendor'].astype(str).unique() if v.strip()]
+    vendor_col = df['Vendor']
+    if isinstance(vendor_col, pd.DataFrame):
+        vendor_col = vendor_col.iloc[:, 0]
+    vend = [v for v in vendor_col.dropna().astype(str).unique() if v.strip()]
     if vend and all(v in cust_numbers for v in vend):
         return
     gc = guess_customer(inv.get('extracted_text') or '',
@@ -1506,6 +1509,11 @@ if page == "Order Processing":
                         use_container_width=True,
                         key=f"editor_{wkey}_{inv.get('editor_version', 0)}"
                     )
+                    # Editor widget state can hand back a duplicated column
+                    # (e.g. two 'Vendor' cols) after key collisions - collapse
+                    # to the first occurrence so df['Vendor'] stays a Series.
+                    if edited_df.columns.duplicated().any():
+                        edited_df = edited_df.loc[:, ~edited_df.columns.duplicated()]
                     # Keep Total in sync when the user edits Quantity/Price -
                     # but only on rows that changed, so the OCR mismatch check
                     # still sees the document's original totals on first render.
