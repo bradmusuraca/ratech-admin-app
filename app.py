@@ -968,6 +968,62 @@ def _merge_pdfs(pdf_blobs):
     return buf.getvalue()
 
 
+def _label_sheet(orders, label_pdf):
+    """Compose a ShipStation-style print sheet on 8.5x11: order number(s),
+    ship-to, and item lines (with marketplace thumbnails when available)
+    on top; the carrier label embedded in the bottom half. Falls back to
+    the raw label on any failure."""
+    try:
+        import fitz
+        import requests as _rq
+        src = fitz.open(stream=label_pdf, filetype='pdf')
+        sheet = fitz.open()
+        page = sheet.new_page(width=612, height=792)
+        M, y = 36, 48
+        nums = ', '.join(str(o.get('orderNumber') or '') for o in orders)
+        page.insert_text((M, y), nums, fontsize=16, fontname='hebo')
+        st_ = orders[0].get('shipTo') or {}
+        y += 26
+        page.insert_text((M, y), "Ship To:", fontsize=10, fontname='hebo')
+        for ln in [st_.get('name'), st_.get('street1'), st_.get('street2'),
+                   ' '.join(p for p in [st_.get('city'), st_.get('state'),
+                                        st_.get('postalCode')] if p)]:
+            if ln:
+                y += 14
+                page.insert_text((M + 10, y), str(ln), fontsize=10)
+        y += 24
+        page.draw_line(fitz.Point(M, y), fitz.Point(612 - M, y))
+        y += 16
+        for it in (o.get('items') or [] for o in orders):
+            for it2 in it:
+                x_img = M
+                url = it2.get('imageUrl')
+                if url:
+                    try:
+                        r = _rq.get(url, timeout=8)
+                        if r.status_code == 200 and len(r.content) > 100:
+                            page.insert_image(
+                                fitz.Rect(M, y - 4, M + 36, y + 32),
+                                stream=r.content)
+                            x_img = M + 44
+                    except Exception:
+                        pass
+                price = it2.get('unitPrice')
+                txt = (f"{it2.get('quantity', '')}×  {it2.get('sku', '')}  —  "
+                       f"{it2.get('name', '')}"
+                       + (f"  @  ${price:.2f}" if isinstance(price, (int, float))
+                          else ''))
+                page.insert_textbox(fitz.Rect(x_img, y, 612 - M, y + 40),
+                                    txt, fontsize=9)
+                y += 44
+                if y > 400:
+                    break
+        page.show_pdf_page(fitz.Rect(M, 412, 612 - M, 756), src, 0)
+        return sheet.tobytes()
+    except Exception:
+        return label_pdf
+
+
 # ---- Login gate (only active when users are configured) ----
 _users = get_users()
 if _users and st.session_state.user is None:
@@ -1404,9 +1460,12 @@ if page == "Order Processing":
                                                 dimensions=(_pre_dims
                                                             if _pname == _dim_label
                                                             else None))
+                                            _lpdf = label_pdf_bytes(resp)
+                                            if _lpdf[:4] == b'%PDF':
+                                                _lpdf = _label_sheet([order], _lpdf)
                                             st.session_state.ss_labels[oid] = {
                                                 'tracking': resp.get('trackingNumber', ''),
-                                                'pdf': label_pdf_bytes(resp)}
+                                                'pdf': _lpdf}
                                             st.rerun()
                                         except Exception as e:
                                             st.error(f"Label failed: {label_error_message(e)}")
@@ -1547,6 +1606,7 @@ if page == "Order Processing":
                                 track = resp.get('trackingNumber', '')
                                 pdf = label_pdf_bytes(resp)
                                 if pdf[:4] == b'%PDF':
+                                    pdf = _label_sheet(grp, pdf)
                                     pdfs.append(pdf)
                                 st.session_state.ss_labels[oid2] = {
                                     'tracking': track, 'pdf': pdf}
