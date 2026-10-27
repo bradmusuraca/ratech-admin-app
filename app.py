@@ -16,7 +16,6 @@ from shipstation import (list_orders as ss_list_orders,
                          list_carriers as ss_list_carriers,
                          list_services as ss_list_services,
                          list_packages as ss_list_packages,
-                         list_custom_packages as ss_list_custom_packages,
                          list_packages_v2 as ss_list_packages_v2,
                          create_label as ss_create_label,
                          mark_as_shipped as ss_mark_as_shipped,
@@ -226,6 +225,14 @@ def _package_options(ss_key, ss_secret, carrier_code):
                 opts[p.get('name') or p.get('package_code') or '?'] = ('package', dims)
         except Exception:
             pass
+    # packages.csv / PACKAGES_CSV fallback - 'axbxc' keys carry the dims.
+    for _dk, _nm in custom_package_names().items():
+        try:
+            _l, _w2, _h = (float(p) for p in _dk.split('x'))
+        except (ValueError, TypeError):
+            continue
+        opts.setdefault(_nm, ('package', {'units': 'inches', 'length': _l,
+                                          'width': _w2, 'height': _h}))
     return opts
 
 
@@ -1392,47 +1399,44 @@ if page == "Order Processing":
                                 st.error(f"Carrier options failed: {e}")
                                 _svc, _pkg = [], []
                             _svc_map = {s.get('name', s.get('code')): s.get('code') for s in _svc}
-                            _pkg_map = {p.get('name', p.get('code')): p.get('code') for p in _pkg}
-                            # Merge in the account's custom package types -
-                            # listpackages only carries carrier-standard boxes.
-                            try:
-                                _cust_pkg = st.session_state.ss_opts_cache.get('_custom_pkgs')
-                                if _cust_pkg is None:
-                                    _cust_pkg = ss_list_custom_packages(ss_key, ss_secret)
-                                    st.session_state.ss_opts_cache['_custom_pkgs'] = _cust_pkg
-                                for p in _cust_pkg:
-                                    _pkg_map.setdefault(p.get('name', p.get('code')),
-                                                        p.get('code') or p.get('name'))
-                            except Exception:
-                                pass
-                            # ShipStation stores a custom-box preset as the
-                            # generic 'package' code + order dimensions. Show
-                            # the real size and pass dims back at label time.
-                            _dim_label = ''
-                            if _pre_dims.get('length'):
-                                _dk = _dims_key(_pre_dims.get('length'),
-                                                _pre_dims.get('width'),
-                                                _pre_dims.get('height'))
-                                _dim_label = (custom_package_names().get(_dk) or
-                                              f"{_pre_dims['length']} x {_pre_dims['width']} "
-                                              f"x {_pre_dims['height']} in box")
-                                _dim_label += ' (order preset)'
-                                _pkg_map[_dim_label] = _pre_pkg or 'package'
-                            elif _pre_pkg and _pre_pkg not in _pkg_map.values():
-                                _pkg_map[f"{_pre_pkg} (order preset)"] = _pre_pkg
+                            # Standard carrier packages + account custom
+                            # boxes (name -> (code, dims)).
+                            _pk_opts = _package_options(ss_key, ss_secret, _ccode)
+                            _pdk = (_dims_key(_pre_dims.get('length'),
+                                              _pre_dims.get('width'),
+                                              _pre_dims.get('height'))
+                                    if _pre_dims else '')
+                            if _pdk and not any(
+                                    _dd and _dims_key(_dd['length'], _dd['width'],
+                                                      _dd['height']) == _pdk
+                                    for _, _dd in _pk_opts.values()):
+                                _pk_opts[
+                                    f"{_pre_dims.get('length')} x {_pre_dims.get('width')} x "
+                                    f"{_pre_dims.get('height')} in box (order preset)"] = (
+                                        _pre_pkg or 'package', dict(_pre_dims))
+                            elif not _pdk and _pre_pkg and _pre_pkg not in [
+                                    _c2 for _c2, _ in _pk_opts.values()]:
+                                _pk_opts[f"{_pre_pkg} (order preset)"] = (_pre_pkg, None)
                             with lc2:
                                 _si = (list(_svc_map.values()).index(_pre_svc)
                                        if _svc_map and _pre_svc in _svc_map.values() else 0)
                                 _sname = st.selectbox("Service", list(_svc_map) or ['(none)'],
                                                       index=_si,
                                                       key=f"lbl_svc_{oid}")
-                                if _pkg_map and _dim_label and _dim_label in _pkg_map:
-                                    _pi = list(_pkg_map).index(_dim_label)
-                                elif _pkg_map and _pre_pkg in _pkg_map.values():
-                                    _pi = list(_pkg_map.values()).index(_pre_pkg)
-                                else:
-                                    _pi = 0
-                                _pname = st.selectbox("Package", list(_pkg_map) or ['(none)'],
+                                _pi = 0
+                                if _pdk:
+                                    for _i2, (_pn2, (_pc2, _dd)) in enumerate(_pk_opts.items()):
+                                        if _dd and _dims_key(
+                                                _dd['length'], _dd['width'],
+                                                _dd['height']) == _pdk:
+                                            _pi = _i2
+                                            break
+                                elif _pre_pkg:
+                                    for _i2, (_pn2, (_pc2, _dd)) in enumerate(_pk_opts.items()):
+                                        if _pc2 == _pre_pkg:
+                                            _pi = _i2
+                                            break
+                                _pname = st.selectbox("Package", list(_pk_opts) or ['(none)'],
                                                       index=_pi,
                                                       key=f"lbl_pkg_{oid}")
                             if _pre_svc and _pre_svc not in _svc_map.values():
@@ -1449,20 +1453,20 @@ if page == "Order Processing":
                                                     help="USPS/Stamps.com supports free test labels")
                             if st.button(f"Create label for {order.get('orderNumber', oid)}",
                                          type="primary", key=f"lbl_go_{oid}"):
-                                if not _svc_map or not _pkg_map:
+                                if not _svc_map or not _pk_opts:
                                     st.error("Pick a carrier that has services/packages available.")
                                 else:
                                     with st.spinner("Purchasing label..."):
                                         try:
+                                            _pcode, _pdims = _pk_opts.get(
+                                                _pname, (None, None))
                                             resp = ss_create_label(
                                                 ss_key, ss_secret, oid,
                                                 carrier_code=_ccode,
                                                 service_code=_svc_map[_sname],
-                                                package_code=_pkg_map[_pname],
+                                                package_code=_pcode,
                                                 weight_oz=_wt, test=_test,
-                                                dimensions=(_pre_dims
-                                                            if _pname == _dim_label
-                                                            else None))
+                                                dimensions=_pdims)
                                             _lpdf = label_pdf_bytes(resp)
                                             if _lpdf[:4] == b'%PDF':
                                                 _lpdf = _label_sheet([order], _lpdf)
