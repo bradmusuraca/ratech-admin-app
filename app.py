@@ -16,6 +16,7 @@ from shipstation import (list_orders as ss_list_orders,
                          list_carriers as ss_list_carriers,
                          list_services as ss_list_services,
                          list_packages as ss_list_packages,
+                         list_custom_packages as ss_list_custom_packages,
                          create_label as ss_create_label,
                          mark_as_shipped as ss_mark_as_shipped,
                          label_pdf_bytes, label_error_message, order_web_url,
@@ -1190,6 +1191,23 @@ if page == "Order Processing":
                                 _svc, _pkg = [], []
                             _svc_map = {s.get('name', s.get('code')): s.get('code') for s in _svc}
                             _pkg_map = {p.get('name', p.get('code')): p.get('code') for p in _pkg}
+                            # Merge in the account's custom package types -
+                            # listpackages only carries carrier-standard boxes.
+                            try:
+                                _cust_pkg = st.session_state.ss_opts_cache.get('_custom_pkgs')
+                                if _cust_pkg is None:
+                                    _cust_pkg = ss_list_custom_packages(ss_key, ss_secret)
+                                    st.session_state.ss_opts_cache['_custom_pkgs'] = _cust_pkg
+                                for p in _cust_pkg:
+                                    _pkg_map.setdefault(p.get('name', p.get('code')),
+                                                        p.get('code') or p.get('name'))
+                            except Exception:
+                                pass
+                            # If the order's preset code still isn't listed
+                            # (e.g. an unlisted custom box), offer it verbatim
+                            # so the picker can preselect and pass it through.
+                            if _pre_pkg and _pre_pkg not in _pkg_map.values():
+                                _pkg_map[f"{_pre_pkg} (order preset)"] = _pre_pkg
                             with lc2:
                                 _si = (list(_svc_map.values()).index(_pre_svc)
                                        if _svc_map and _pre_svc in _svc_map.values() else 0)
@@ -1292,6 +1310,16 @@ if page == "Order Processing":
                         _bsvc, _bpkg = [], []
                     _bsvc_map = {s.get('name', s.get('code')): s.get('code') for s in _bsvc}
                     _bpkg_map = {p.get('name', p.get('code')): p.get('code') for p in _bpkg}
+                    try:
+                        _cust_pkg = st.session_state.ss_opts_cache.get('_custom_pkgs')
+                        if _cust_pkg is None:
+                            _cust_pkg = ss_list_custom_packages(ss_key, ss_secret)
+                            st.session_state.ss_opts_cache['_custom_pkgs'] = _cust_pkg
+                        for p in _cust_pkg:
+                            _bpkg_map.setdefault(p.get('name', p.get('code')),
+                                                 p.get('code') or p.get('name'))
+                    except Exception:
+                        pass
                     with bc2:
                         _bsname = st.selectbox("Service", list(_bsvc_map) or ['(none)'],
                                                key='batch_svc')

@@ -72,6 +72,16 @@ def list_packages(api_key: str, api_secret: str, carrier_code: str) -> List[Dict
     return resp.json()
 
 
+def list_custom_packages(api_key: str, api_secret: str) -> List[Dict]:
+    """Return the account's custom package types (Settings -> Packages).
+    These don't appear in carriers/listpackages, which only carries the
+    carrier's standard packaging."""
+    resp = requests.get(f'{API_BASE}/packages',
+                        auth=(api_key, api_secret), timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
+
 def create_label(api_key: str, api_secret: str, order_id,
                  carrier_code: str, service_code: str, package_code: str,
                  weight_oz: float, ship_date: Optional[str] = None,
