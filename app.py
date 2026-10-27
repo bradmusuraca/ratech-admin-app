@@ -1276,19 +1276,7 @@ if page == "Order Processing":
                 if _ldinv is not None:
                     si = _ldinv.get('ship_info')
                     if si:
-                        _d = si.get('dimensions') or {}
-                        _w = si.get('weight') or {}
-                        _bits = [si.get('carrier'), si.get('service')]
-                        if si.get('package'):
-                            _bits.append(si['package'])
-                        if _d.get('length'):
-                            _bits.append(f"{_d.get('length')}x{_d.get('width')}x{_d.get('height')}in")
-                        if _w.get('value'):
-                            _bits.append(f"{_w.get('value'):g}oz")
                         st.markdown(f"**Ship to:** {si.get('ship_to', '')}")
-                        st.caption(
-                            f"requested: {si.get('requested') or '—'} • "
-                            f"preset: {' / '.join(str(b) for b in _bits if b) or '—'}")
                     if _ldinv['df'] is not None and not _ldinv['df'].empty:
                         for _, _r in _ldinv['df'].iterrows():
                             _pr = str(_r.get('Unit Price', '')).strip()
