@@ -159,11 +159,25 @@ def _pkg_items(packages, ref=''):
     return items
 
 
-def create_shipment(ship_to, packages, service, residential=False, ref=''):
+def create_shipment(ship_to, packages, service, residential=False, ref='',
+                    bill_account=None, bill_zip='', bill_country='US'):
     """Ship API -> {'tracking', 'labels': [base64 pdf per package]}.
     Creates a real shipment billed to the account (multi-package => MPS
-    with one master tracking number and a label per piece)."""
+    with one master tracking number and a label per piece).
+    bill_account set => THIRD_PARTY billing to that FedEx account; FedEx
+    verifies it against the account's ZIP + country."""
     shipper_phone = os.getenv('FEDEX_SHIPPER_PHONE', '5137422111')
+    if bill_account:
+        payor_addr = {'countryCode': _country_code(bill_country)}
+        if bill_zip:
+            payor_addr['postalCode'] = str(bill_zip)
+        payment = {'paymentType': 'THIRD_PARTY',
+                   'payor': {'responsibleParty': {
+                       'accountNumber': {'value': str(bill_account)},
+                       'contact': None,
+                       'address': payor_addr}}}
+    else:
+        payment = {'paymentType': 'SENDER', 'payor': {}}
     body = {
         'accountNumber': {'value': os.getenv('FEDEX_ACCOUNT_NUMBER')},
         'labelResponseOptions': 'LABEL',
@@ -186,10 +200,7 @@ def create_shipment(ship_to, packages, service, residential=False, ref=''):
             'serviceType': service,
             'packagingType': 'YOUR_PACKAGING',
             'pickupType': 'USE_SCHEDULED_PICKUP',
-            'shippingChargesPayment': {
-                'paymentType': 'SENDER',
-                'payor': {},
-            },
+            'shippingChargesPayment': payment,
             'labelSpecification': {
                 'labelFormatType': 'COMMON2D',
                 'imageType': 'PDF',

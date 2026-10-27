@@ -2257,6 +2257,18 @@ elif page == "Create Invoices":
                         resid = st.checkbox("Residential",
                                             value=bool(fr_res.get(o['order_key'])),
                                             key=f"frre_{o['order_key']}")
+                        tpb = st.checkbox("Bill customer's FedEx account",
+                                          key=f"frtp_{o['order_key']}",
+                                          help="Third-party billing - FedEx "
+                                               "charges the customer's account "
+                                               "instead of ours")
+                        if tpb:
+                            st.text_input("Customer FedEx acct #",
+                                          key=f"frtpa_{o['order_key']}")
+                            st.text_input("Acct billing ZIP",
+                                          key=f"frtpz_{o['order_key']}",
+                                          help="ZIP on the customer's FedEx "
+                                               "account - FedEx verifies it")
                     with _sp:
                         # Original order PDF for the ship-to double-check.
                         _docs = st.session_state.setdefault('order_docs', {})
@@ -2363,14 +2375,28 @@ elif page == "Create Invoices":
                                          key=f"frl_{o['order_key']}",
                                          type='primary'):
                                 try:
-                                    with st.spinner("Creating FedEx shipment..."):
-                                        sh = fedex_create_shipment(
-                                            fq['ship_to'], fq['packages'],
-                                            lbl[pick]['service'],
-                                            residential=fr_res.get(o['order_key'], False),
-                                            ref=o.get('customer_po') or '')
-                                    fr_lbl[o['order_key']] = sh
-                                    st.rerun()
+                                    _tp_acct = ''
+                                    _tp_zip = ''
+                                    if st.session_state.get(f"frtp_{o['order_key']}"):
+                                        _tp_acct = st.session_state.get(
+                                            f"frtpa_{o['order_key']}", '').strip()
+                                        _tp_zip = st.session_state.get(
+                                            f"frtpz_{o['order_key']}", '').strip()
+                                    if st.session_state.get(f"frtp_{o['order_key']}") \
+                                            and not _tp_acct:
+                                        st.error("Enter the customer's FedEx "
+                                                 "account number for third-party billing.")
+                                    else:
+                                        with st.spinner("Creating FedEx shipment..."):
+                                            sh = fedex_create_shipment(
+                                                fq['ship_to'], fq['packages'],
+                                                lbl[pick]['service'],
+                                                residential=fr_res.get(o['order_key'], False),
+                                                ref=o.get('customer_po') or '',
+                                                bill_account=_tp_acct or None,
+                                                bill_zip=_tp_zip)
+                                        fr_lbl[o['order_key']] = sh
+                                        st.rerun()
                                 except Exception as e:
                                     st.error(f"Label failed: {e}")
                         else:
