@@ -339,6 +339,19 @@ def cred_status_caption(name, label):
         st.info(f"ℹ️ {label} not configured")
 
 
+def bump_editor(inv):
+    """Rebase the card's data_editor onto the current df.
+
+    data_editor keeps the user's edits as a diff over the df it was first
+    given. When code (not the user) changes inv['df'], the old widget
+    state would restore stale values - so rotate the widget key (fresh
+    editor) AND point its input at the updated df. Always rebase on a
+    stable df: feeding the edited result back as `data` under the same
+    key re-inits the widget and swallows the user's next cell edit."""
+    inv['editor_version'] = inv.get('editor_version', 0) + 1
+    inv['editor_input'] = inv['df']
+
+
 def resolve_vendor(inv):
     """Ensure the order's Vendor column holds a Sage customer number.
     Orders loaded before a number was entered keep the raw parsed vendor
@@ -360,9 +373,7 @@ def resolve_vendor(inv):
     if gc:
         df['Vendor'] = gc
         inv['customer'] = gc
-        # Bump the editor key: data_editor caches widget state per key, so
-        # the stale vendor string would otherwise overwrite this fix.
-        inv['editor_version'] = inv.get('editor_version', 0) + 1
+        bump_editor(inv)
 
 
 EMAIL_RULES_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'email_rules.csv')
@@ -1155,15 +1166,19 @@ def _order_card(idx, inv, cust_numbers, cust_names):
                 inv['customer'] = sel_cust
                 if 'Vendor' in inv['df'].columns:
                     inv['df']['Vendor'] = sel_cust
-                # Bump the editor key so its cached widget state
-                # can't write the old vendor back over this change.
-                # No st.rerun() needed - the selectbox already
-                # triggered this rerun, and the editor below
-                # renders fresh under the new key.
-                inv['editor_version'] = inv.get('editor_version', 0) + 1
+                # Rebase the editor: fresh widget key + new input so
+                # stale state can't write the old vendor back. No rerun
+                # needed - the editor below mounts fresh in this pass.
+                bump_editor(inv)
 
+            # Mount the editor on a stable input df - feeding the edited
+            # result back as `data` re-inits the widget and eats the
+            # user's next cell edit (upstream streamlit#7749). Any code
+            # that changes inv['df'] must call bump_editor() to rebase.
+            if inv.get('editor_input') is None:
+                inv['editor_input'] = inv['df']
             edited_df = st.data_editor(
-                inv['df'],
+                inv['editor_input'],
                 num_rows="dynamic",
                 use_container_width=True,
                 key=f"editor_{wkey}_{inv.get('editor_version', 0)}"
@@ -1178,6 +1193,7 @@ def _order_card(idx, inv, cust_numbers, cust_names):
             # still sees the document's original totals on first render.
             _pc = ('Unit Price' if 'Unit Price' in edited_df.columns
                    else ('Price' if 'Price' in edited_df.columns else None))
+            _totals_chg = False
             if _pc and 'Quantity' in edited_df.columns and 'Total' in edited_df.columns:
                 _q = pd.to_numeric(edited_df['Quantity'], errors='coerce').fillna(0)
                 _p = pd.to_numeric(edited_df[_pc], errors='coerce').fillna(0)
@@ -1187,10 +1203,17 @@ def _order_card(idx, inv, cust_numbers, cust_names):
                     _qo = pd.to_numeric(_prev['Quantity'], errors='coerce').fillna(0)
                     _po = pd.to_numeric(_prev[_pc], errors='coerce').fillna(0)
                     _chg = (_q != _qo) | (_p != _po)
-                    edited_df.loc[_chg, 'Total'] = (_q * _p)[_chg]
+                    if _chg.any():
+                        edited_df.loc[_chg, 'Total'] = (_q * _p)[_chg]
+                        _totals_chg = True
                 else:
                     edited_df['Total'] = _q * _p
+                    _totals_chg = True
             inv['df'] = edited_df
+            # Totals were rewritten in code - rebase so the editor shows
+            # them (its diff only covers the cell the user touched).
+            if _totals_chg:
+                bump_editor(inv)
             # Re-resolve AFTER the editor hands data back - its cached
             # widget state can still carry the stale vendor string.
             resolve_vendor(inv)
@@ -1206,7 +1229,7 @@ def _order_card(idx, inv, cust_numbers, cust_names):
                                 if first_value:
                                     edited_df[col] = first_value
                         inv['df'] = edited_df
-                        inv['editor_version'] = inv.get('editor_version', 0) + 1
+                        bump_editor(inv)
                         st.rerun()
             with qc2:
                 if st.button("➕ Add Row", key=f"addrow_{wkey}"):
@@ -1219,7 +1242,7 @@ def _order_card(idx, inv, cust_numbers, cust_names):
                                 if first_value:
                                     new_row[col] = first_value
                         inv['df'] = pd.concat([edited_df, pd.DataFrame([new_row])], ignore_index=True)
-                        inv['editor_version'] = inv.get('editor_version', 0) + 1
+                        bump_editor(inv)
                         st.rerun()
             with qc3:
                 st.download_button(
@@ -2012,9 +2035,7 @@ if page == "Order Processing":
                                 df2[price_col] = pd.to_numeric(df2[price_col], errors='coerce').fillna(0)
                                 df2['Total'] = df2['Quantity'] * df2[price_col]
                                 inv['df'] = df2
-                                # New editor key so cached widget state
-                                # can't restore the old totals.
-                                inv['editor_version'] = inv.get('editor_version', 0) + 1
+                                bump_editor(inv)
                         st.rerun()
                 else:
                     st.success(f"✅ All calculations correct across {len(all_dfs)} order(s), {len(combined)} line item(s)")
