@@ -1165,9 +1165,17 @@ if page == "Order Processing":
                         _carriers = {c.get('name', c.get('code')): c.get('code')
                                      for c in st.session_state.ss_carriers}
                         if _carriers:
+                            # Preselect whatever carrier/service/package is
+                            # already preset on the order in ShipStation.
+                            _pre_car = order.get('carrierCode')
+                            _pre_svc = order.get('serviceCode')
+                            _pre_pkg = order.get('packageCode')
                             lc1, lc2 = st.columns(2)
                             with lc1:
+                                _ci = (list(_carriers.values()).index(_pre_car)
+                                       if _pre_car in _carriers.values() else 0)
                                 _cname = st.selectbox("Carrier", list(_carriers),
+                                                      index=_ci,
                                                       key=f"lbl_car_{oid}")
                                 _ccode = _carriers[_cname]
                             try:
@@ -1183,10 +1191,19 @@ if page == "Order Processing":
                             _svc_map = {s.get('name', s.get('code')): s.get('code') for s in _svc}
                             _pkg_map = {p.get('name', p.get('code')): p.get('code') for p in _pkg}
                             with lc2:
+                                _si = (list(_svc_map.values()).index(_pre_svc)
+                                       if _svc_map and _pre_svc in _svc_map.values() else 0)
                                 _sname = st.selectbox("Service", list(_svc_map) or ['(none)'],
+                                                      index=_si,
                                                       key=f"lbl_svc_{oid}")
+                                _pi = (list(_pkg_map.values()).index(_pre_pkg)
+                                       if _pkg_map and _pre_pkg in _pkg_map.values() else 0)
                                 _pname = st.selectbox("Package", list(_pkg_map) or ['(none)'],
+                                                      index=_pi,
                                                       key=f"lbl_pkg_{oid}")
+                            if _pre_svc and _pre_svc not in _svc_map.values():
+                                st.caption(f"ShipStation preset '{_pre_svc}' isn't offered "
+                                           f"by {_cname} here - pick manually.")
                             _w = (order.get('weight') or {}).get('value') or 16
                             lw1, lw2 = st.columns(2)
                             with lw1:
@@ -1293,6 +1310,12 @@ if page == "Order Processing":
                         value=True, key='batch_combine',
                         help="Orders going to the same ship-to get one label; "
                              "siblings are marked shipped with the same tracking")
+                    _bpresets = st.checkbox(
+                        "Use each order's ShipStation preset carrier/service/package",
+                        value=True, key='batch_presets',
+                        help="Orders keep the shipping already configured in "
+                             "ShipStation; orders without a preset use the "
+                             "pickers above")
                     _n_labels = (len({_addr_key(o) or ('__solo__' + str(
                                      o.get('orderId') or o.get('orderKey') or ''))
                                      for o in _sel_orders})
@@ -1323,11 +1346,20 @@ if page == "Order Processing":
                                 wt = sum(float((x.get('weight') or {}).get('value') or 0)
                                          for x in grp) or _bwt
                                 try:
+                                    _car = _bccode
+                                    _svc_code = _bsvc_map[_bsname]
+                                    _pkg_code = _bpkg_map[_bpname]
+                                    if (_bpresets and primary.get('carrierCode')
+                                            and primary.get('serviceCode')
+                                            and primary.get('packageCode')):
+                                        _car = primary['carrierCode']
+                                        _svc_code = primary['serviceCode']
+                                        _pkg_code = primary['packageCode']
                                     resp = ss_create_label(
                                         ss_key, ss_secret, oid2,
-                                        carrier_code=_bccode,
-                                        service_code=_bsvc_map[_bsname],
-                                        package_code=_bpkg_map[_bpname],
+                                        carrier_code=_car,
+                                        service_code=_svc_code,
+                                        package_code=_pkg_code,
                                         weight_oz=wt, test=_btest)
                                     track = resp.get('trackingNumber', '')
                                     pdf = label_pdf_bytes(resp)
@@ -1340,7 +1372,7 @@ if page == "Order Processing":
                                         try:
                                             ss_mark_as_shipped(
                                                 ss_key, ss_secret, sib_id,
-                                                _bccode, track,
+                                                _car, track,
                                                 notify_marketplace=True)
                                             st.session_state.ss_labels[sib_id] = {
                                                 'tracking': track, 'pdf': pdf}
