@@ -4,7 +4,7 @@
 # bridge is not running, so it can't get stuck paused after a reboot.
 $f = Join-Path $PSScriptRoot 'PAUSE'
 $running = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
-    Where-Object { $_.CommandLine -match 'bridge\.ps1' -and $_.CommandLine -notmatch 'start_bridge' }
+    Where-Object { $_.CommandLine -match 'sage_bridge.*\.ps1' -and $_.CommandLine -notmatch 'start_bridge|pause_bridge' }
 
 if (Test-Path $f) {
     Remove-Item $f -Force
