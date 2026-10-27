@@ -1223,7 +1223,7 @@ if page == "Order Processing":
             except TypeError:
                 oc = st.container()
             with oc:
-                oc_cols = st.columns([4, 1, 1])
+                oc_cols = st.columns([5, 1])
                 with oc_cols[0]:
                     n_items = len(order.get('items') or [])
                     st.write(f"**{order.get('orderNumber', '(no number)')}** — "
@@ -1235,13 +1235,15 @@ if page == "Order Processing":
                         f"{order.get('orderStatus', '')} • {n_items} item(s)"
                         + (" • 🔗 shares address" if _shared else ""))
                 with oc_cols[1]:
-                    if st.button("Load", key=f"ss_load_{oid}"):
+                    # Action column: load for review, batch-label select,
+                    # direct-to-Sage sales order.
+                    if st.button("Load", key=f"ss_load_{oid}",
+                                 use_container_width=True):
                         st.session_state.invoices.append(
                             build_shipstation_order_invoice(order, ('shipstation', oid),
                                                             st.session_state.ss_store_map))
                         st.session_state.loaded_ss.add(oid)
                         st.rerun()
-                with oc_cols[2]:
                     if oid not in st.session_state.ss_labels:
                         _sel = st.checkbox("Batch", key=f"sel_{oid}",
                                            help="Include in batch label printing")
@@ -1249,6 +1251,26 @@ if page == "Order Processing":
                             st.session_state.ss_selected.add(oid)
                         else:
                             st.session_state.ss_selected.discard(oid)
+                    if sage_queue_configured() and st.button(
+                            "Create SO", key=f"ss_so_{oid}",
+                            use_container_width=True,
+                            help="Queue this order's sales order into Sage "
+                                 "without loading it for review first"):
+                        try:
+                            _sinv = build_shipstation_order_invoice(
+                                order, ('shipstation', oid),
+                                st.session_state.ss_store_map)
+                            _sdf = build_sage_sales_orders(_sinv['df'])
+                            _sent, _skipped = sage_queue_push(_sdf)
+                            create_open_orders(_sdf)
+                            if _sent:
+                                st.success(f"{order.get('orderNumber')}: "
+                                           "sales order queued for Sage")
+                            else:
+                                st.info(f"{order.get('orderNumber')}: already "
+                                        "in the Sage queue")
+                        except Exception as e:
+                            st.error(f"Sage SO failed: {e}")
 
                 # --- Shipping label (billable: buys postage, marks shipped,
                 #     notifies the marketplace) ---
@@ -1410,13 +1432,8 @@ if page == "Order Processing":
                 st.caption(f"{len(_sel_orders)} order(s) selected — each ships with "
                            "the carrier/service/package preset already set in "
                            "ShipStation.")
-                bw1, bw2 = st.columns(2)
-                with bw1:
-                    _bwt = st.number_input("Default weight (oz) for orders without one",
-                                           min_value=0.0, value=16.0, key='batch_w')
-                with bw2:
-                    _btest = st.checkbox("Test labels (no postage)", value=False,
-                                         key='batch_test')
+                _btest = st.checkbox("Test labels (no postage)", value=False,
+                                     key='batch_test')
                 _bcombine = st.checkbox(
                     "Combine same-address orders into single labels",
                     value=True, key='batch_combine',
@@ -1457,7 +1474,7 @@ if page == "Order Processing":
                         cw, cp = st.columns([1, 3])
                         with cw:
                             st.number_input("Weight (oz)", min_value=0.0,
-                                            value=float(_aw or _bwt),
+                                            value=float(_aw or 0.0),
                                             key=f"cbw_{_ak}")
                         with cp:
                             st.selectbox("Package", list(_pk_opts) or ['(none)'],
@@ -1481,7 +1498,7 @@ if page == "Order Processing":
                         _pkg_code = primary.get('packageCode')
                         if len(grp) > 1:
                             # Combined box: packer-set weight + picked package.
-                            wt = st.session_state.get(f"cbw_{_ak}") or _bwt
+                            wt = st.session_state.get(f"cbw_{_ak}") or 0
                             _pk_opts = _package_options(
                                 ss_key, ss_secret, primary.get('carrierCode') or '')
                             _choice = _pk_opts.get(
@@ -1490,7 +1507,7 @@ if page == "Order Processing":
                                 _pkg_code, _dims = _choice
                         else:
                             wt = sum(float((x.get('weight') or {}).get('value') or 0)
-                                     for x in grp) or _bwt
+                                     for x in grp)
                         if not (primary.get('carrierCode')
                                 and primary.get('serviceCode')
                                 and _pkg_code):
