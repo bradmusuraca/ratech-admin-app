@@ -1290,12 +1290,18 @@ if page == "Order Processing":
                             f"requested: {si.get('requested') or '—'} • "
                             f"preset: {' / '.join(str(b) for b in _bits if b) or '—'}")
                     if _ldinv['df'] is not None and not _ldinv['df'].empty:
-                        st.dataframe(_ldinv['df'], use_container_width=True,
-                                     hide_index=True)
+                        for _, _r in _ldinv['df'].iterrows():
+                            _pr = str(_r.get('Unit Price', '')).strip()
+                            st.caption(
+                                f"{_r.get('Quantity', '')}× "
+                                f"{_r.get('Inventory Item', '')} — "
+                                f"{_r.get('Description', '')}"
+                                + (f" @ ${_pr}" if _pr else ""))
 
                 # --- Shipping label (billable: buys postage, marks shipped,
                 #     notifies the marketplace) ---
-                with st.expander("🏷️ Shipping label"):
+                st.markdown("**🏷️ Shipping label**")
+                with st.container():
                     _lbl = st.session_state.ss_labels.get(oid)
                     if _lbl:
                         st.success(f"✅ Label created — tracking {_lbl['tracking']}")
