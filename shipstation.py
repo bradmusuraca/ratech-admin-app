@@ -82,6 +82,23 @@ def list_custom_packages(api_key: str, api_secret: str) -> List[Dict]:
     return resp.json()
 
 
+V2_BASE = 'https://api.shipstation.com/v2'
+
+
+def list_packages_v2(api_key: str) -> List[Dict]:
+    """Account custom packages via the ShipStation v2 API.
+
+    v2 uses a single 'API-Key' header (a different credential than the v1
+    key/secret pair - generated in ShipStation -> Settings -> API Settings).
+    The v1 API has no endpoint that returns custom package names.
+    """
+    resp = requests.get(f'{V2_BASE}/packages',
+                        headers={'API-Key': api_key}, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+    return data.get('packages', data) if isinstance(data, dict) else data
+
+
 def create_label(api_key: str, api_secret: str, order_id,
                  carrier_code: str, service_code: str, package_code: str,
                  weight_oz: float, ship_date: Optional[str] = None,

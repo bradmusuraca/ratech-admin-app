@@ -17,6 +17,7 @@ from shipstation import (list_orders as ss_list_orders,
                          list_services as ss_list_services,
                          list_packages as ss_list_packages,
                          list_custom_packages as ss_list_custom_packages,
+                         list_packages_v2 as ss_list_packages_v2,
                          create_label as ss_create_label,
                          mark_as_shipped as ss_mark_as_shipped,
                          label_pdf_bytes, label_error_message, order_web_url,
@@ -196,6 +197,61 @@ def load_customers():
     except Exception:
         pass
     return pd.DataFrame(columns=CUSTOMER_COLS)
+
+
+PACKAGES_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'packages.csv')
+
+
+def _dims_key(l, w, h):
+    """Normalize three box sides to a sorted 'axbxc' key so 5x7x7 and
+    7x7x5 match the same custom package."""
+    try:
+        dims = sorted(round(float(x), 2) for x in (l, w, h) if x not in (None, ''))
+    except (TypeError, ValueError):
+        return ''
+    return 'x'.join(f'{d:g}' for d in dims) if len(dims) == 3 else ''
+
+
+def custom_package_names():
+    """dims-key -> ShipStation custom package name.
+
+    The v1 API never exposes custom package names (an order only carries
+    'package' + dimensions), so resolve names via the v2 API when
+    SHIPSTATION_V2_API_KEY is set, else the PACKAGES_CSV secret / local
+    packages.csv ('dimensions,name'). Cached per session."""
+    cached = st.session_state.get('_custom_pkg_names')
+    if cached is not None:
+        return cached
+    names = {}
+    v2_key = os.getenv('SHIPSTATION_V2_API_KEY')
+    if v2_key:
+        try:
+            for p in ss_list_packages_v2(v2_key):
+                d = p.get('dimensions') or {}
+                k = _dims_key(d.get('length'), d.get('width'), d.get('height'))
+                n = p.get('name') or p.get('package_code')
+                if k and n:
+                    names[k] = str(n)
+        except Exception:
+            pass
+    text = os.getenv('PACKAGES_CSV')
+    try:
+        if text:
+            df = pd.read_csv(StringIO(text), dtype=str).fillna('')
+        elif os.path.exists(PACKAGES_CSV):
+            df = pd.read_csv(PACKAGES_CSV, dtype=str).fillna('')
+        else:
+            df = None
+        if df is not None:
+            for _, row in df.iterrows():
+                parts = re.split(r'[x\u00d7,\s]+', str(row.iloc[0]).strip())
+                k = _dims_key(*parts[:3]) if len(parts) >= 3 else ''
+                if k and str(row.iloc[1]).strip():
+                    names[k] = str(row.iloc[1]).strip()
+    except Exception:
+        pass
+    st.session_state['_custom_pkg_names'] = names
+    return names
 
 
 def guess_customer(text, channel=''):
@@ -1209,8 +1265,13 @@ if page == "Order Processing":
                             # the real size and pass dims back at label time.
                             _dim_label = ''
                             if _pre_dims.get('length'):
-                                _dim_label = (f"{_pre_dims['length']} x {_pre_dims['width']} "
-                                              f"x {_pre_dims['height']} in box (order preset)")
+                                _dk = _dims_key(_pre_dims.get('length'),
+                                                _pre_dims.get('width'),
+                                                _pre_dims.get('height'))
+                                _dim_label = (custom_package_names().get(_dk) or
+                                              f"{_pre_dims['length']} x {_pre_dims['width']} "
+                                              f"x {_pre_dims['height']} in box")
+                                _dim_label += ' (order preset)'
                                 _pkg_map[_dim_label] = _pre_pkg or 'package'
                             elif _pre_pkg and _pre_pkg not in _pkg_map.values():
                                 _pkg_map[f"{_pre_pkg} (order preset)"] = _pre_pkg
