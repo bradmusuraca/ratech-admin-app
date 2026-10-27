@@ -624,7 +624,31 @@ function New-SalesInvoice($company, [string]$soNo, $packLines, $freight, $freigh
         $shipped++
     }
     if (-not $shipped) { throw "No invoice lines matched the packed items (SO lines: $($seen -join ', '); wanted: $($want.Keys -join ', '))" }
-    try { $inv.ReferenceNumber = "$($company.Services.ReferenceNumber.TakeNextInvoiceNumber())" } catch { }
+    # Auto-number the invoice. The method name varies between API builds,
+    # so try the known name then reflection-scan for anything like
+    # *Invoice*Number* on the ReferenceNumber service.
+    $invNo = $null
+    $refSvc = $company.Services.ReferenceNumber
+    if ($refSvc) {
+        try { $invNo = "$($refSvc.TakeNextInvoiceNumber())" } catch { }
+        if (-not $invNo) {
+            $t = $refSvc.GetType()
+            $m = $t.GetMethods() | Where-Object {
+                $_.Name -match 'Invoice' -and $_.GetParameters().Count -eq 0 `
+                    -and -not $_.IsSpecialName
+            } | Select-Object -First 1
+            if ($m) { try { $invNo = "$($m.Invoke($refSvc, @()))" } catch { } }
+            if (-not $invNo) {
+                $p = $t.GetProperties() | Where-Object { $_.Name -match 'Invoice' } | Select-Object -First 1
+                if ($p) { try { $invNo = "$($p.GetValue($refSvc))" } catch { } }
+            }
+        }
+    }
+    if ($invNo -and $invNo.Trim()) {
+        try { $inv.ReferenceNumber = $invNo.Trim() } catch { }
+    } else {
+        Write-Host "  [!] no next-invoice-number method found - invoice may save without a number"
+    }
     $inv.Save()
     $script:soList = $null   # SO may have closed - invalidate the list
     $refNo = "$($inv.ReferenceNumber)"

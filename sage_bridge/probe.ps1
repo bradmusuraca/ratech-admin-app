@@ -94,6 +94,17 @@ Write-Host "`nNext sales order number (peek only):"
 try { Write-Host "  $($company.Services.ReferenceNumber.TakeNextSalesOrderNumber())" }
 catch { Write-Host "  $_" -ForegroundColor Yellow }
 
+Write-Host "`nReferenceNumber service members mentioning 'Invoice' or 'Number':"
+try {
+    $rs = $company.Services.ReferenceNumber
+    $rs.GetType().GetMethods() |
+        Where-Object { $_.Name -match 'Invoice|Number' -and -not $_.IsSpecialName } |
+        ForEach-Object { Write-Host "  method: $($_.Name)($($_.GetParameters().Count) params)" }
+    $rs.GetType().GetProperties() |
+        Where-Object { $_.Name -match 'Invoice|Number' } |
+        ForEach-Object { Write-Host "  property: $($_.Name)" }
+} catch { Write-Host "  $_" -ForegroundColor Yellow }
+
 $session.Close($company)
 $session.End()
 Write-Host "`nProbe complete." -ForegroundColor Green
