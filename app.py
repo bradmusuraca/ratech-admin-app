@@ -1165,6 +1165,25 @@ if page == "Order Processing":
             if _k:
                 _addr_counts[_k] = _addr_counts.get(_k, 0) + 1
 
+        _sa1, _sa2, _ = st.columns([1, 1, 6])
+        with _sa1:
+            if st.button("☑ Select all", key='ss_sel_all',
+                         use_container_width=True):
+                for _o in st.session_state.ss_orders:
+                    _id = str(_o.get('orderId') or _o.get('orderKey') or '')
+                    if _id not in st.session_state.ss_labels:
+                        st.session_state.ss_selected.add(_id)
+                        st.session_state[f"sel_{_id}"] = True
+                st.rerun()
+        with _sa2:
+            if st.button("☐ Clear selection", key='ss_sel_none',
+                         use_container_width=True):
+                st.session_state.ss_selected = set()
+                for _o in st.session_state.ss_orders:
+                    _id = str(_o.get('orderId') or _o.get('orderKey') or '')
+                    st.session_state[f"sel_{_id}"] = False
+                st.rerun()
+
         for order in st.session_state.ss_orders:
             oid = str(order.get('orderId') or order.get('orderKey') or '')
             if oid in st.session_state.loaded_ss:
@@ -1358,149 +1377,95 @@ if page == "Order Processing":
             elif not _sel_orders:
                 st.info("Selected orders already have labels.")
             else:
-                st.caption(f"{len(_sel_orders)} order(s) selected — one carrier/service/package "
-                           "applies to all; each order uses its own recorded weight.")
-                if not st.session_state.ss_carriers:
-                    try:
-                        st.session_state.ss_carriers = ss_list_carriers(ss_key, ss_secret)
-                    except Exception as e:
-                        st.error(f"Could not load carriers: {e}")
-                _carriers = {c.get('name', c.get('code')): c.get('code')
-                             for c in st.session_state.ss_carriers}
-                if _carriers:
-                    bc1, bc2, bc3 = st.columns(3)
-                    with bc1:
-                        _bcname = st.selectbox("Carrier", list(_carriers), key='batch_carrier')
-                    _bccode = _carriers[_bcname]
-                    try:
-                        _bsvc = st.session_state.ss_opts_cache.get(_bccode + '_svc') or \
-                            ss_list_services(ss_key, ss_secret, _bccode)
-                        st.session_state.ss_opts_cache[_bccode + '_svc'] = _bsvc
-                        _bpkg = st.session_state.ss_opts_cache.get(_bccode + '_pkg') or \
-                            ss_list_packages(ss_key, ss_secret, _bccode)
-                        st.session_state.ss_opts_cache[_bccode + '_pkg'] = _bpkg
-                    except Exception as e:
-                        st.error(f"Carrier options failed: {e}")
-                        _bsvc, _bpkg = [], []
-                    _bsvc_map = {s.get('name', s.get('code')): s.get('code') for s in _bsvc}
-                    _bpkg_map = {p.get('name', p.get('code')): p.get('code') for p in _bpkg}
-                    try:
-                        _cust_pkg = st.session_state.ss_opts_cache.get('_custom_pkgs')
-                        if _cust_pkg is None:
-                            _cust_pkg = ss_list_custom_packages(ss_key, ss_secret)
-                            st.session_state.ss_opts_cache['_custom_pkgs'] = _cust_pkg
-                        for p in _cust_pkg:
-                            _bpkg_map.setdefault(p.get('name', p.get('code')),
-                                                 p.get('code') or p.get('name'))
-                    except Exception:
-                        pass
-                    with bc2:
-                        _bsname = st.selectbox("Service", list(_bsvc_map) or ['(none)'],
-                                               key='batch_svc')
-                    with bc3:
-                        _bpname = st.selectbox("Package", list(_bpkg_map) or ['(none)'],
-                                               key='batch_pkg')
-                    bw1, bw2 = st.columns(2)
-                    with bw1:
-                        _bwt = st.number_input("Default weight (oz) for orders without one",
-                                               min_value=0.0, value=16.0, key='batch_w')
-                    with bw2:
-                        _btest = st.checkbox("Test labels (no postage)", value=False,
-                                             key='batch_test')
-                    _bcombine = st.checkbox(
-                        "Combine same-address orders into single labels",
-                        value=True, key='batch_combine',
-                        help="Orders going to the same ship-to get one label; "
-                             "siblings are marked shipped with the same tracking")
-                    _bpresets = st.checkbox(
-                        "Use each order's ShipStation preset carrier/service/package",
-                        value=True, key='batch_presets',
-                        help="Orders keep the shipping already configured in "
-                             "ShipStation; orders without a preset use the "
-                             "pickers above")
-                    _n_labels = (len({_addr_key(o) or ('__solo__' + str(
-                                     o.get('orderId') or o.get('orderKey') or ''))
-                                     for o in _sel_orders})
-                                 if _bcombine else len(_sel_orders))
-                    if st.button(
-                            f"Create {_n_labels} label(s) for {len(_sel_orders)} order(s)",
-                            type="primary", key='batch_go'):
-                        if not _bsvc_map or not _bpkg_map:
-                            st.error("Pick a carrier that has services/packages available.")
+                st.caption(f"{len(_sel_orders)} order(s) selected — each ships with "
+                           "the carrier/service/package preset already set in "
+                           "ShipStation.")
+                bw1, bw2 = st.columns(2)
+                with bw1:
+                    _bwt = st.number_input("Default weight (oz) for orders without one",
+                                           min_value=0.0, value=16.0, key='batch_w')
+                with bw2:
+                    _btest = st.checkbox("Test labels (no postage)", value=False,
+                                         key='batch_test')
+                _bcombine = st.checkbox(
+                    "Combine same-address orders into single labels",
+                    value=True, key='batch_combine',
+                    help="Orders going to the same ship-to get one label; "
+                         "siblings are marked shipped with the same tracking")
+                _n_labels = (len({_addr_key(o) or ('__solo__' + str(
+                                 o.get('orderId') or o.get('orderKey') or ''))
+                                 for o in _sel_orders})
+                             if _bcombine else len(_sel_orders))
+                if st.button(
+                        f"Create {_n_labels} label(s) for {len(_sel_orders)} order(s)",
+                        type="primary", key='batch_go'):
+                    results, pdfs = [], []
+                    if _bcombine:
+                        groups = {}
+                        for o in _sel_orders:
+                            _ak = _addr_key(o) or ('__solo__' + str(
+                                o.get('orderId') or o.get('orderKey') or ''))
+                            groups.setdefault(_ak, []).append(o)
+                        work_groups = list(groups.values())
+                    else:
+                        work_groups = [[o] for o in _sel_orders]
+                    total_units = sum(len(g) for g in work_groups)
+                    done = 0
+                    prog = st.progress(0, text="Creating labels...")
+                    for grp in work_groups:
+                        primary = grp[0]
+                        oid2 = str(primary.get('orderId') or primary.get('orderKey') or '')
+                        nums = ', '.join(str(x.get('orderNumber')) for x in grp)
+                        wt = sum(float((x.get('weight') or {}).get('value') or 0)
+                                 for x in grp) or _bwt
+                        if not (primary.get('carrierCode')
+                                and primary.get('serviceCode')
+                                and primary.get('packageCode')):
+                            results.append(('fail',
+                                f"⚠️ {nums}: no shipping preset in ShipStation — "
+                                "set carrier/service/package there first"))
                         else:
-                            results, pdfs = [], []
-                            if _bcombine:
-                                groups = {}
-                                for o in _sel_orders:
-                                    _ak = _addr_key(o) or ('__solo__' + str(
-                                        o.get('orderId') or o.get('orderKey') or ''))
-                                    groups.setdefault(_ak, []).append(o)
-                                work_groups = list(groups.values())
-                            else:
-                                work_groups = [[o] for o in _sel_orders]
-                            total_units = sum(len(g) for g in work_groups)
-                            done = 0
-                            prog = st.progress(0, text="Creating labels...")
-                            for grp in work_groups:
-                                primary = grp[0]
-                                oid2 = str(primary.get('orderId') or primary.get('orderKey') or '')
-                                nums = ', '.join(str(x.get('orderNumber')) for x in grp)
-                                wt = sum(float((x.get('weight') or {}).get('value') or 0)
-                                         for x in grp) or _bwt
-                                try:
-                                    _car = _bccode
-                                    _svc_code = _bsvc_map[_bsname]
-                                    _pkg_code = _bpkg_map[_bpname]
-                                    _dims = None
-                                    if (_bpresets and primary.get('carrierCode')
-                                            and primary.get('serviceCode')
-                                            and primary.get('packageCode')):
-                                        _car = primary['carrierCode']
-                                        _svc_code = primary['serviceCode']
-                                        _pkg_code = primary['packageCode']
-                                        # Custom boxes arrive as generic
-                                        # 'package' + preset dimensions.
-                                        _dims = primary.get('dimensions')
-                                    resp = ss_create_label(
-                                        ss_key, ss_secret, oid2,
-                                        carrier_code=_car,
-                                        service_code=_svc_code,
-                                        package_code=_pkg_code,
-                                        weight_oz=wt, test=_btest,
-                                        dimensions=_dims)
-                                    track = resp.get('trackingNumber', '')
-                                    pdf = label_pdf_bytes(resp)
-                                    if pdf[:4] == b'%PDF':
-                                        pdfs.append(pdf)
-                                    st.session_state.ss_labels[oid2] = {
-                                        'tracking': track, 'pdf': pdf}
-                                    for sib in grp[1:]:
-                                        sib_id = str(sib.get('orderId') or sib.get('orderKey') or '')
-                                        try:
-                                            ss_mark_as_shipped(
-                                                ss_key, ss_secret, sib_id,
-                                                _car, track,
-                                                notify_marketplace=True)
-                                            st.session_state.ss_labels[sib_id] = {
-                                                'tracking': track, 'pdf': pdf}
-                                        except Exception as e2:
-                                            results.append(('fail',
-                                                f"⚠️ {sib.get('orderNumber')}: label created but "
-                                                f"not marked shipped - {label_error_message(e2)}"))
-                                    tag = f" (combined {len(grp)} orders)" if len(grp) > 1 else ""
-                                    results.append(('ok', f"✅ {nums}{tag}: {track}"))
-                                except Exception as e:
-                                    results.append(('fail', f"❌ {nums}: {label_error_message(e)}"))
-                                done += len(grp)
-                                prog.progress(done / total_units)
-                            prog.empty()
-                            if pdfs:
-                                st.session_state.ss_batch_pdf = _merge_pdfs(pdfs)
-                            else:
-                                for kind, line in results:
-                                    st.write(line)
-                            st.session_state.ss_batch_results = results
-                            st.rerun()
+                            try:
+                                resp = ss_create_label(
+                                    ss_key, ss_secret, oid2,
+                                    carrier_code=primary['carrierCode'],
+                                    service_code=primary['serviceCode'],
+                                    package_code=primary['packageCode'],
+                                    weight_oz=wt, test=_btest,
+                                    dimensions=primary.get('dimensions'))
+                                track = resp.get('trackingNumber', '')
+                                pdf = label_pdf_bytes(resp)
+                                if pdf[:4] == b'%PDF':
+                                    pdfs.append(pdf)
+                                st.session_state.ss_labels[oid2] = {
+                                    'tracking': track, 'pdf': pdf}
+                                for sib in grp[1:]:
+                                    sib_id = str(sib.get('orderId') or sib.get('orderKey') or '')
+                                    try:
+                                        ss_mark_as_shipped(
+                                            ss_key, ss_secret, sib_id,
+                                            primary['carrierCode'], track,
+                                            notify_marketplace=True)
+                                        st.session_state.ss_labels[sib_id] = {
+                                            'tracking': track, 'pdf': pdf}
+                                    except Exception as e2:
+                                        results.append(('fail',
+                                            f"⚠️ {sib.get('orderNumber')}: label created but "
+                                            f"not marked shipped - {label_error_message(e2)}"))
+                                tag = f" (combined {len(grp)} orders)" if len(grp) > 1 else ""
+                                results.append(('ok', f"✅ {nums}{tag}: {track}"))
+                            except Exception as e:
+                                results.append(('fail', f"❌ {nums}: {label_error_message(e)}"))
+                        done += len(grp)
+                        prog.progress(done / total_units)
+                    prog.empty()
+                    if pdfs:
+                        st.session_state.ss_batch_pdf = _merge_pdfs(pdfs)
+                    else:
+                        for kind, line in results:
+                            st.write(line)
+                    st.session_state.ss_batch_results = results
+                    st.rerun()
 
         _ss_pick = [(inv['name'], inv['df']) for inv in st.session_state.invoices
                     if inv['df'] is not None and not inv['df'].empty and (
