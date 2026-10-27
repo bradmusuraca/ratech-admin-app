@@ -1101,8 +1101,12 @@ def _order_data(inv, wkey, cust_numbers, cust_names):
     # that changes inv['df'] must call bump_editor() to rebase.
     if inv.get('editor_input') is None:
         inv['editor_input'] = inv['df']
+    # Total stays OUT of the grid - it's computed, not typed, and a
+    # stale computed cell is worse than none. It is recomputed below on
+    # every edit and lives in inv['df'] for export.
+    _disp = inv['editor_input'].drop(columns=['Total'], errors='ignore')
     edited_df = st.data_editor(
-        inv['editor_input'],
+        _disp,
         num_rows="dynamic",
         use_container_width=True,
         key=f"editor_{wkey}_{inv.get('editor_version', 0)}"
@@ -1112,35 +1116,29 @@ def _order_data(inv, wkey, cust_numbers, cust_names):
     # to the first occurrence so df['Vendor'] stays a Series.
     if edited_df.columns.duplicated().any():
         edited_df = edited_df.loc[:, ~edited_df.columns.duplicated()]
-    # Keep Total in sync when the user edits Quantity/Price -
-    # but only on rows that changed, so the OCR mismatch check
-    # still sees the document's original totals on first render.
+    # Recompute Total: rows whose Quantity/Price changed get qty*price;
+    # untouched rows keep the document's original totals so the OCR
+    # mismatch check still works.
     _pc = ('Unit Price' if 'Unit Price' in edited_df.columns
            else ('Price' if 'Price' in edited_df.columns else None))
-    _totals_chg = False
-    _push = []     # (row, value) Total overrides for the widget diff
-    if _pc and 'Quantity' in edited_df.columns and 'Total' in edited_df.columns:
+    if _pc and 'Quantity' in edited_df.columns:
         _q = pd.to_numeric(edited_df['Quantity'], errors='coerce').fillna(0)
         _p = pd.to_numeric(edited_df[_pc], errors='coerce').fillna(0)
         _prev = inv['df']
         if (_prev is not None and len(_prev) == len(edited_df)
-                and 'Quantity' in _prev.columns and _pc in _prev.columns):
+                and 'Quantity' in _prev.columns and _pc in _prev.columns
+                and 'Total' in _prev.columns):
             _qo = pd.to_numeric(_prev['Quantity'], errors='coerce').fillna(0)
             _po = pd.to_numeric(_prev[_pc], errors='coerce').fillna(0)
             _chg = (_q != _qo) | (_p != _po)
-            _nt = _q * _p
-            edited_df.loc[_chg, 'Total'] = _nt[_chg]
-            _push = [(_ri, _nt[_ri]) for _ri in edited_df.index[_chg]]
+            edited_df['Total'] = pd.to_numeric(_prev['Total'], errors='coerce').values
+            edited_df.loc[_chg, 'Total'] = (_q * _p)[_chg]
         else:
             edited_df['Total'] = _q * _p
-            _totals_chg = True   # rows added/removed - rebase
     inv['df'] = edited_df
-    if _totals_chg or _push:
-        # Totals were rewritten in code - rebase and rerun so the
-        # editor remounts on the updated df right away (the edit
-        # is already persisted above, so nothing is lost).
-        bump_editor(inv)
-        st.rerun()
+    if 'Total' in edited_df.columns:
+        _tot = pd.to_numeric(edited_df['Total'], errors='coerce').fillna(0).sum()
+        st.caption(f"Order total: ${_tot:,.2f}")
     # Re-resolve AFTER the editor hands data back - its cached
     # widget state can still carry the stale vendor string.
     resolve_vendor(inv)
