@@ -1392,23 +1392,49 @@ if page == "Order Processing":
                     value=True, key='batch_combine',
                     help="Orders going to the same ship-to get one label; "
                          "siblings are marked shipped with the same tracking")
-                _n_labels = (len({_addr_key(o) or ('__solo__' + str(
-                                 o.get('orderId') or o.get('orderKey') or ''))
-                                 for o in _sel_orders})
-                             if _bcombine else len(_sel_orders))
+                _groups = {}
+                for o in _sel_orders:
+                    _ak = (_addr_key(o) if _bcombine else None) or (
+                        '__solo__' + str(o.get('orderId') or o.get('orderKey') or ''))
+                    _groups.setdefault(_ak, []).append(o)
+                work_groups = list(_groups.values())
+
+                # Combined orders share one box - the single-order preset
+                # weight/dims no longer apply, so make them editable here.
+                _comb = {k: g for k, g in _groups.items() if len(g) > 1}
+                if _comb:
+                    st.write("**Combined shipments** — set the shared box's "
+                             "weight and dimensions:")
+                    for _ak, _g in _comb.items():
+                        _nums = ' + '.join(str(x.get('orderNumber')) for x in _g)
+                        _nm = (_g[0].get('shipTo') or {}).get('name', '')
+                        _pd = _g[0].get('dimensions') or {}
+                        _aw = sum(float((x.get('weight') or {}).get('value') or 0)
+                                  for x in _g)
+                        st.caption(f"📦 {_nums} → {_nm}")
+                        cw, cl, cw2, ch = st.columns(4)
+                        with cw:
+                            st.number_input("Weight (oz)", min_value=0.0,
+                                            value=float(_aw or _bwt),
+                                            key=f"cbw_{_ak}")
+                        with cl:
+                            st.number_input("L (in)", min_value=0.0,
+                                            value=float(_pd.get('length') or 0),
+                                            key=f"cdl_{_ak}")
+                        with cw2:
+                            st.number_input("W (in)", min_value=0.0,
+                                            value=float(_pd.get('width') or 0),
+                                            key=f"cdw_{_ak}")
+                        with ch:
+                            st.number_input("H (in)", min_value=0.0,
+                                            value=float(_pd.get('height') or 0),
+                                            key=f"cdh_{_ak}")
+
+                _n_labels = len(work_groups)
                 if st.button(
                         f"Create {_n_labels} label(s) for {len(_sel_orders)} order(s)",
                         type="primary", key='batch_go'):
                     results, pdfs = [], []
-                    if _bcombine:
-                        groups = {}
-                        for o in _sel_orders:
-                            _ak = _addr_key(o) or ('__solo__' + str(
-                                o.get('orderId') or o.get('orderKey') or ''))
-                            groups.setdefault(_ak, []).append(o)
-                        work_groups = list(groups.values())
-                    else:
-                        work_groups = [[o] for o in _sel_orders]
                     total_units = sum(len(g) for g in work_groups)
                     done = 0
                     prog = st.progress(0, text="Creating labels...")
@@ -1416,11 +1442,26 @@ if page == "Order Processing":
                         primary = grp[0]
                         oid2 = str(primary.get('orderId') or primary.get('orderKey') or '')
                         nums = ', '.join(str(x.get('orderNumber')) for x in grp)
-                        wt = sum(float((x.get('weight') or {}).get('value') or 0)
-                                 for x in grp) or _bwt
+                        _ak = (_addr_key(primary) if _bcombine else None) or (
+                            '__solo__' + oid2)
+                        _dims = primary.get('dimensions')
+                        _pkg_code = primary.get('packageCode')
+                        if len(grp) > 1:
+                            # Combined box: packer-set weight, and L/W/H override
+                            wt = st.session_state.get(f"cbw_{_ak}") or _bwt
+                            _l = st.session_state.get(f"cdl_{_ak}") or 0
+                            _w = st.session_state.get(f"cdw_{_ak}") or 0
+                            _h = st.session_state.get(f"cdh_{_ak}") or 0
+                            if _l and _w and _h:
+                                _dims = {'units': 'inches', 'length': _l,
+                                         'width': _w, 'height': _h}
+                                _pkg_code = 'package'
+                        else:
+                            wt = sum(float((x.get('weight') or {}).get('value') or 0)
+                                     for x in grp) or _bwt
                         if not (primary.get('carrierCode')
                                 and primary.get('serviceCode')
-                                and primary.get('packageCode')):
+                                and _pkg_code):
                             results.append(('fail',
                                 f"⚠️ {nums}: no shipping preset in ShipStation — "
                                 "set carrier/service/package there first"))
@@ -1430,9 +1471,9 @@ if page == "Order Processing":
                                     ss_key, ss_secret, oid2,
                                     carrier_code=primary['carrierCode'],
                                     service_code=primary['serviceCode'],
-                                    package_code=primary['packageCode'],
+                                    package_code=_pkg_code,
                                     weight_oz=wt, test=_btest,
-                                    dimensions=primary.get('dimensions'))
+                                    dimensions=_dims)
                                 track = resp.get('trackingNumber', '')
                                 pdf = label_pdf_bytes(resp)
                                 if pdf[:4] == b'%PDF':
