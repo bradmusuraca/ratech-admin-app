@@ -339,6 +339,22 @@ def cred_status_caption(name, label):
         st.info(f"ℹ️ {label} not configured")
 
 
+def _editor_write(inv, wkey, row_idx, col, value):
+    """Write a programmatic cell change into the data_editor's pending-
+    edits state ({edited_rows: {row: {col: val}}}) so it displays without
+    remounting the widget. Returns False if the state isn't there."""
+    _st = st.session_state.get(f"editor_{wkey}_{inv.get('editor_version', 0)}")
+    if not isinstance(_st, dict) or 'edited_rows' not in _st:
+        return False
+    er = _st.setdefault('edited_rows', {})
+    # Match the row-key type the frontend already uses
+    k = row_idx
+    if er and not any(isinstance(x, type(row_idx)) for x in er):
+        k = str(row_idx)
+    er.setdefault(k, {})[col] = value
+    return True
+
+
 def bump_editor(inv):
     """Rebase the card's data_editor onto the current df.
 
@@ -376,13 +392,13 @@ def resolve_vendor(inv):
         # Feed the fix through the editor's pending-edits state so it
         # displays without a remount - a key bump here would drop the
         # cell edit that triggered this very rerun.
-        _ekey = f"editor_{inv['key']}_{inv.get('editor_version', 0)}"
-        _st = st.session_state.get(_ekey)
-        if isinstance(_st, dict) and 'edited_rows' in _st:
-            for _ri in df.index:
-                _st['edited_rows'].setdefault(_ri, {})['Vendor'] = gc
-        else:
-            bump_editor(inv)
+        _wkey = str(inv['key'])
+        _wrote = [_editor_write(inv, _wkey, _ri, 'Vendor', gc)
+                  for _ri in df.index]
+        if _wrote and all(_wrote):
+            return True     # caller should rerun to refresh the display
+        bump_editor(inv)
+    return False
 
 
 EMAIL_RULES_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'email_rules.csv')
@@ -1203,6 +1219,7 @@ def _order_card(idx, inv, cust_numbers, cust_names):
             _pc = ('Unit Price' if 'Unit Price' in edited_df.columns
                    else ('Price' if 'Price' in edited_df.columns else None))
             _totals_chg = False
+            _push = []     # (row, value) Total overrides for the widget diff
             if _pc and 'Quantity' in edited_df.columns and 'Total' in edited_df.columns:
                 _q = pd.to_numeric(edited_df['Quantity'], errors='coerce').fillna(0)
                 _p = pd.to_numeric(edited_df[_pc], errors='coerce').fillna(0)
@@ -1212,28 +1229,27 @@ def _order_card(idx, inv, cust_numbers, cust_names):
                     _qo = pd.to_numeric(_prev['Quantity'], errors='coerce').fillna(0)
                     _po = pd.to_numeric(_prev[_pc], errors='coerce').fillna(0)
                     _chg = (_q != _qo) | (_p != _po)
-                    if _chg.any():
-                        _nt = _q * _p
-                        edited_df.loc[_chg, 'Total'] = _nt[_chg]
-                        # Show the recalced Total WITHOUT remounting the
-                        # editor - write it into the widget's pending-edits
-                        # dict ({edited_rows: {row: {col: val}}}, the same
-                        # shape the frontend sends).
-                        _st = st.session_state.get(
-                            f"editor_{wkey}_{inv.get('editor_version', 0)}")
-                        if isinstance(_st, dict):
-                            for _ri in edited_df.index[_chg]:
-                                _st.setdefault('edited_rows', {}) \
-                                   .setdefault(_ri, {})['Total'] = _nt[_ri]
+                    _nt = _q * _p
+                    edited_df.loc[_chg, 'Total'] = _nt[_chg]
+                    _push = [(_ri, _nt[_ri]) for _ri in edited_df.index[_chg]]
                 else:
                     edited_df['Total'] = _q * _p
                     _totals_chg = True   # rows added/removed - rebase
             inv['df'] = edited_df
             if _totals_chg:
                 bump_editor(inv)
+            elif _push:
+                # Show the recalced Total WITHOUT remounting the editor -
+                # write into the widget's pending-edits dict, then
+                # fragment-rerun to refresh the cell.
+                for _ri, _v in _push:
+                    _editor_write(inv, wkey, _ri, 'Total', _v)
+                st.rerun()
             # Re-resolve AFTER the editor hands data back - its cached
-            # widget state can still carry the stale vendor string.
-            resolve_vendor(inv)
+            # widget state can still carry the stale vendor string. When
+            # the fix went through the widget diff, refresh to show it.
+            if resolve_vendor(inv):
+                st.rerun()
 
             qc1, qc2, qc3 = st.columns(3)
             with qc1:
