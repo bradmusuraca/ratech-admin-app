@@ -1,4 +1,4 @@
-import streamlit as st
+?import streamlit as st
 import os
 import re
 import json
@@ -1038,6 +1038,243 @@ def _label_sheet(orders, label_pdf):
 
 # ---- Login gate (only active when users are configured) ----
 _users = get_users()
+@st.fragment
+def _order_card(idx, inv, cust_numbers, cust_names):
+    """One review-queue order card. Runs as a fragment so widget
+    interactions (cell edits, buttons) rerun only this card instead
+    of the whole page - keeps scroll position and avoids re-rendering
+    every PDF image on each click."""
+    wkey = str(inv['key'])
+    # NOTE: resolve_vendor() deliberately runs only AFTER the
+    # data_editor below - it bumps editor_version (new widget key),
+    # which would discard a cell edit submitted on this same rerun.
+    try:
+        card = st.container(border=True)
+    except TypeError:
+        card = st.container()
+    with card:
+        title_cols = st.columns([6, 1])
+        with title_cols[0]:
+            cust_label = cust_names.get(inv.get('customer', ''), '')
+            st.subheader(f"📄 {inv['name']}"
+                         + (f"  ·  👤 {inv['customer']} {cust_label}" if inv.get('customer') else ""))
+            if inv.get('email'):
+                st.caption(f"✉️ Email: \"{inv['email']['subject']}\" — "
+                           f"{inv['email']['sender']} • {inv['email']['date']}")
+        with title_cols[1]:
+            if st.button("🗑 Remove", key=f"remove_{wkey}"):
+                st.session_state.invoices.pop(idx)
+                st.session_state.upload_version += 1
+                # Full app rerun - a fragment rerun would re-render this
+                # card even though the order was popped from the list.
+                st.rerun(scope="app")
+
+        col_pdf, col_data = st.columns([1, 1])
+
+        with col_pdf:
+            if inv.get('raw_csv_df') is not None:
+                # Source CSV shown in a scrollable table for verification
+                try:
+                    src_container = st.container(height=600)
+                except TypeError:
+                    src_container = st.container()
+                with src_container:
+                    st.caption("Source CSV data")
+                    st.dataframe(inv['raw_csv_df'], use_container_width=True)
+            elif inv['pdf_images']:
+                # Scrollable container - PDF scrolls independently
+                try:
+                    pdf_container = st.container(height=600)
+                except TypeError:
+                    pdf_container = st.container()
+                with pdf_container:
+                    for page_num, img in enumerate(inv['pdf_images']):
+                        try:
+                            st.image(img, width='stretch',
+                                     caption=f"Page {page_num + 1} of {len(inv['pdf_images'])}")
+                        except TypeError:
+                            st.image(img, use_container_width=True,
+                                     caption=f"Page {page_num + 1} of {len(inv['pdf_images'])}")
+            elif inv['pdf_bytes']:
+                try:
+                    st.pdf(inv['pdf_bytes'], height=600)
+                except TypeError:
+                    st.pdf(inv['pdf_bytes'])
+                except Exception:
+                    st.download_button(
+                        label="📥 Download PDF to view",
+                        data=inv['pdf_bytes'],
+                        file_name=inv['name'],
+                        mime="application/pdf",
+                        key=f"dl_{wkey}"
+                    )
+            if inv.get('extracted_text'):
+                # Expand by default when there's no document preview to show
+                no_preview = inv['pdf_bytes'] is None and inv.get('raw_csv_df') is None
+                with st.expander("📧 Email / Raw Text", expanded=no_preview):
+                    st.text_area(
+                        "Raw Extracted Text",
+                        inv['extracted_text'],
+                        height=250,
+                        label_visibility="collapsed",
+                        key=f"raw_{wkey}"
+                    )
+
+        with col_data:
+            # Shipping summary for ShipStation-loaded orders - the
+            # preset service/package plus ship-to, so everything the
+            # packer needs is on the card.
+            si = inv.get('ship_info')
+            if si:
+                _d = si.get('dimensions') or {}
+                _w = si.get('weight') or {}
+                _bits = [si.get('carrier'), si.get('service')]
+                if si.get('package'):
+                    _bits.append(si['package'])
+                if _d.get('length'):
+                    _bits.append(f"{_d.get('length')}x{_d.get('width')}x{_d.get('height')}in")
+                if _w.get('value'):
+                    _bits.append(f"{_w.get('value'):g}oz")
+                st.markdown(f"**Ship to:** {si.get('ship_to', '')}")
+                st.caption(
+                    f"requested: {si.get('requested') or '—'} • "
+                    f"preset: {' / '.join(str(b) for b in _bits if b) or '—'}")
+
+            # Sage customer selector - applies the customer number to the
+            # Vendor column of every row in this order
+            cust_opts = [''] + cust_numbers
+            sel_idx = cust_opts.index(inv['customer']) if inv.get('customer', '') in cust_opts else 0
+            sel_cust = st.selectbox(
+                "Sage Customer #",
+                options=cust_opts,
+                index=sel_idx,
+                format_func=lambda n: f"{n} — {cust_names.get(n, '')}" if n else "Select customer...",
+                key=f"custsel_{wkey}"
+            )
+            if sel_cust and sel_cust != inv.get('customer', ''):
+                inv['customer'] = sel_cust
+                if 'Vendor' in inv['df'].columns:
+                    inv['df']['Vendor'] = sel_cust
+                # Bump the editor key so its cached widget state
+                # can't write the old vendor back over this change.
+                # No st.rerun() needed - the selectbox already
+                # triggered this rerun, and the editor below
+                # renders fresh under the new key.
+                inv['editor_version'] = inv.get('editor_version', 0) + 1
+
+            edited_df = st.data_editor(
+                inv['df'],
+                num_rows="dynamic",
+                use_container_width=True,
+                key=f"editor_{wkey}_{inv.get('editor_version', 0)}"
+            )
+            # Editor widget state can hand back a duplicated column
+            # (e.g. two 'Vendor' cols) after key collisions - collapse
+            # to the first occurrence so df['Vendor'] stays a Series.
+            if edited_df.columns.duplicated().any():
+                edited_df = edited_df.loc[:, ~edited_df.columns.duplicated()]
+            # Keep Total in sync when the user edits Quantity/Price -
+            # but only on rows that changed, so the OCR mismatch check
+            # still sees the document's original totals on first render.
+            _pc = ('Unit Price' if 'Unit Price' in edited_df.columns
+                   else ('Price' if 'Price' in edited_df.columns else None))
+            if _pc and 'Quantity' in edited_df.columns and 'Total' in edited_df.columns:
+                _q = pd.to_numeric(edited_df['Quantity'], errors='coerce').fillna(0)
+                _p = pd.to_numeric(edited_df[_pc], errors='coerce').fillna(0)
+                _prev = inv['df']
+                if (_prev is not None and len(_prev) == len(edited_df)
+                        and 'Quantity' in _prev.columns and _pc in _prev.columns):
+                    _qo = pd.to_numeric(_prev['Quantity'], errors='coerce').fillna(0)
+                    _po = pd.to_numeric(_prev[_pc], errors='coerce').fillna(0)
+                    _chg = (_q != _qo) | (_p != _po)
+                    edited_df.loc[_chg, 'Total'] = (_q * _p)[_chg]
+                else:
+                    edited_df['Total'] = _q * _p
+            inv['df'] = edited_df
+            # Re-resolve AFTER the editor hands data back - its cached
+            # widget state can still carry the stale vendor string.
+            resolve_vendor(inv)
+
+            qc1, qc2, qc3 = st.columns(3)
+            with qc1:
+                if st.button("📋 Copy Header to All Rows", key=f"copyhdr_{wkey}"):
+                    if not edited_df.empty:
+                        header_cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments']
+                        for col in header_cols:
+                            if col in edited_df.columns:
+                                first_value = edited_df[col].dropna().iloc[0] if not edited_df[col].dropna().empty else ""
+                                if first_value:
+                                    edited_df[col] = first_value
+                        inv['df'] = edited_df
+                        inv['editor_version'] = inv.get('editor_version', 0) + 1
+                        st.rerun()
+            with qc2:
+                if st.button("➕ Add Row", key=f"addrow_{wkey}"):
+                    if not edited_df.empty:
+                        new_row = {col: "" for col in edited_df.columns}
+                        header_cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments']
+                        for col in header_cols:
+                            if col in edited_df.columns:
+                                first_value = edited_df[col].dropna().iloc[0] if not edited_df[col].dropna().empty else ""
+                                if first_value:
+                                    new_row[col] = first_value
+                        inv['df'] = pd.concat([edited_df, pd.DataFrame([new_row])], ignore_index=True)
+                        inv['editor_version'] = inv.get('editor_version', 0) + 1
+                        st.rerun()
+            with qc3:
+                st.download_button(
+                    "📥 This order → SO.CSV",
+                    data=build_sage_sales_orders(edited_df).to_csv(index=False)
+                         if not edited_df.empty else "",
+                    file_name=f"SO_{inv['name'].rsplit('.', 1)[0]}.csv",
+                    mime="text/csv",
+                    key=f"ordercsv_{wkey}",
+                    disabled=edited_df.empty,
+                )
+
+        # Order confirmation - only for orders loaded from the inbox
+        if inv.get('email'):
+            if inv.get('confirmed'):
+                st.caption("✅ Order confirmation email sent")
+            else:
+                if st.button("✉️ Send Order Confirmation", key=f"confirm_{wkey}"):
+                    smtp_host = os.getenv('EMAIL_SMTP_HOST', 'smtp.mail.yahoo.com')
+                    smtp_port = os.getenv('EMAIL_SMTP_PORT', '465')
+                    to_addr = extract_email_address(inv['email']['sender'])
+                    if not email_user or not email_pass:
+                        st.warning("Email credentials not configured.")
+                    elif not to_addr:
+                        st.error(f"Could not determine sender address from '{inv['email']['sender']}'")
+                    else:
+                        po = ''
+                        if inv['df'] is not None and 'Purchase Order Number' in inv['df'].columns and not inv['df'].empty:
+                            pos = inv['df']['Purchase Order Number'].dropna()
+                            po = str(pos.iloc[0]) if not pos.empty else ''
+                        n = len(inv['df']) if inv['df'] is not None else 0
+                        total_str = ''
+                        if inv['df'] is not None and 'Total' in inv['df'].columns:
+                            s = pd.to_numeric(inv['df']['Total'], errors='coerce').fillna(0).sum()
+                            total_str = f"${s:,.2f}"
+                        body = (
+                            "Hello,\n\n"
+                            "Your purchase order has been received and entered into our system.\n\n"
+                            f"PO Number: {po}\n"
+                            f"Line Items: {n}\n"
+                            f"Order Total: {total_str}\n\n"
+                            "If anything looks incorrect, please reply to this email.\n\n"
+                            "Thank you,\nRatech Manufacturing\n"
+                            f"{email_user}"
+                        )
+                        with st.spinner("Sending confirmation..."):
+                            try:
+                                send_email(smtp_host, smtp_port, email_user, email_pass,
+                                           to_addr, f"RE: {inv['email']['subject']}", body)
+                                inv['confirmed'] = True
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Failed to send confirmation: {e}")
+    st.markdown("")
+
 if _users and st.session_state.user is None:
     _c1, _c2, _c3 = st.columns([1, 1.1, 1])
     with _c2:
@@ -1713,228 +1950,10 @@ if page == "Order Processing":
         cust_numbers = [n for n in customers_df['Customer Number'] if str(n).strip()]
         cust_names = dict(zip(customers_df['Customer Number'], customers_df['Customer Name']))
 
+
+
         for idx, inv in enumerate(st.session_state.invoices):
-            wkey = str(inv['key'])
-            # NOTE: resolve_vendor() deliberately runs only AFTER the
-            # data_editor below - it bumps editor_version (new widget key),
-            # which would discard a cell edit submitted on this same rerun.
-            try:
-                card = st.container(border=True)
-            except TypeError:
-                card = st.container()
-            with card:
-                title_cols = st.columns([6, 1])
-                with title_cols[0]:
-                    cust_label = cust_names.get(inv.get('customer', ''), '')
-                    st.subheader(f"📄 {inv['name']}"
-                                 + (f"  ·  👤 {inv['customer']} {cust_label}" if inv.get('customer') else ""))
-                    if inv.get('email'):
-                        st.caption(f"✉️ Email: \"{inv['email']['subject']}\" — "
-                                   f"{inv['email']['sender']} • {inv['email']['date']}")
-                with title_cols[1]:
-                    if st.button("🗑 Remove", key=f"remove_{wkey}"):
-                        st.session_state.invoices.pop(idx)
-                        st.session_state.upload_version += 1
-                        st.rerun()
-
-                col_pdf, col_data = st.columns([1, 1])
-
-                with col_pdf:
-                    if inv.get('raw_csv_df') is not None:
-                        # Source CSV shown in a scrollable table for verification
-                        try:
-                            src_container = st.container(height=600)
-                        except TypeError:
-                            src_container = st.container()
-                        with src_container:
-                            st.caption("Source CSV data")
-                            st.dataframe(inv['raw_csv_df'], use_container_width=True)
-                    elif inv['pdf_images']:
-                        # Scrollable container - PDF scrolls independently
-                        try:
-                            pdf_container = st.container(height=600)
-                        except TypeError:
-                            pdf_container = st.container()
-                        with pdf_container:
-                            for page_num, img in enumerate(inv['pdf_images']):
-                                try:
-                                    st.image(img, width='stretch',
-                                             caption=f"Page {page_num + 1} of {len(inv['pdf_images'])}")
-                                except TypeError:
-                                    st.image(img, use_container_width=True,
-                                             caption=f"Page {page_num + 1} of {len(inv['pdf_images'])}")
-                    elif inv['pdf_bytes']:
-                        try:
-                            st.pdf(inv['pdf_bytes'], height=600)
-                        except TypeError:
-                            st.pdf(inv['pdf_bytes'])
-                        except Exception:
-                            st.download_button(
-                                label="📥 Download PDF to view",
-                                data=inv['pdf_bytes'],
-                                file_name=inv['name'],
-                                mime="application/pdf",
-                                key=f"dl_{wkey}"
-                            )
-                    if inv.get('extracted_text'):
-                        # Expand by default when there's no document preview to show
-                        no_preview = inv['pdf_bytes'] is None and inv.get('raw_csv_df') is None
-                        with st.expander("📧 Email / Raw Text", expanded=no_preview):
-                            st.text_area(
-                                "Raw Extracted Text",
-                                inv['extracted_text'],
-                                height=250,
-                                label_visibility="collapsed",
-                                key=f"raw_{wkey}"
-                            )
-
-                with col_data:
-                    # Shipping summary for ShipStation-loaded orders - the
-                    # preset service/package plus ship-to, so everything the
-                    # packer needs is on the card.
-                    si = inv.get('ship_info')
-                    if si:
-                        _d = si.get('dimensions') or {}
-                        _w = si.get('weight') or {}
-                        _bits = [si.get('carrier'), si.get('service')]
-                        if si.get('package'):
-                            _bits.append(si['package'])
-                        if _d.get('length'):
-                            _bits.append(f"{_d.get('length')}x{_d.get('width')}x{_d.get('height')}in")
-                        if _w.get('value'):
-                            _bits.append(f"{_w.get('value'):g}oz")
-                        st.markdown(f"**Ship to:** {si.get('ship_to', '')}")
-                        st.caption(
-                            f"requested: {si.get('requested') or '—'} • "
-                            f"preset: {' / '.join(str(b) for b in _bits if b) or '—'}")
-
-                    # Sage customer selector - applies the customer number to the
-                    # Vendor column of every row in this order
-                    cust_opts = [''] + cust_numbers
-                    sel_idx = cust_opts.index(inv['customer']) if inv.get('customer', '') in cust_opts else 0
-                    sel_cust = st.selectbox(
-                        "Sage Customer #",
-                        options=cust_opts,
-                        index=sel_idx,
-                        format_func=lambda n: f"{n} — {cust_names.get(n, '')}" if n else "Select customer...",
-                        key=f"custsel_{wkey}"
-                    )
-                    if sel_cust and sel_cust != inv.get('customer', ''):
-                        inv['customer'] = sel_cust
-                        if 'Vendor' in inv['df'].columns:
-                            inv['df']['Vendor'] = sel_cust
-                        st.rerun()
-
-                    edited_df = st.data_editor(
-                        inv['df'],
-                        num_rows="dynamic",
-                        use_container_width=True,
-                        key=f"editor_{wkey}_{inv.get('editor_version', 0)}"
-                    )
-                    # Editor widget state can hand back a duplicated column
-                    # (e.g. two 'Vendor' cols) after key collisions - collapse
-                    # to the first occurrence so df['Vendor'] stays a Series.
-                    if edited_df.columns.duplicated().any():
-                        edited_df = edited_df.loc[:, ~edited_df.columns.duplicated()]
-                    # Keep Total in sync when the user edits Quantity/Price -
-                    # but only on rows that changed, so the OCR mismatch check
-                    # still sees the document's original totals on first render.
-                    _pc = ('Unit Price' if 'Unit Price' in edited_df.columns
-                           else ('Price' if 'Price' in edited_df.columns else None))
-                    if _pc and 'Quantity' in edited_df.columns and 'Total' in edited_df.columns:
-                        _q = pd.to_numeric(edited_df['Quantity'], errors='coerce').fillna(0)
-                        _p = pd.to_numeric(edited_df[_pc], errors='coerce').fillna(0)
-                        _prev = inv['df']
-                        if (_prev is not None and len(_prev) == len(edited_df)
-                                and 'Quantity' in _prev.columns and _pc in _prev.columns):
-                            _qo = pd.to_numeric(_prev['Quantity'], errors='coerce').fillna(0)
-                            _po = pd.to_numeric(_prev[_pc], errors='coerce').fillna(0)
-                            _chg = (_q != _qo) | (_p != _po)
-                            edited_df.loc[_chg, 'Total'] = (_q * _p)[_chg]
-                        else:
-                            edited_df['Total'] = _q * _p
-                    inv['df'] = edited_df
-                    # Re-resolve AFTER the editor hands data back - its cached
-                    # widget state can still carry the stale vendor string.
-                    resolve_vendor(inv)
-
-                    qc1, qc2, qc3 = st.columns(3)
-                    with qc1:
-                        if st.button("📋 Copy Header to All Rows", key=f"copyhdr_{wkey}"):
-                            if not edited_df.empty:
-                                header_cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments']
-                                for col in header_cols:
-                                    if col in edited_df.columns:
-                                        first_value = edited_df[col].dropna().iloc[0] if not edited_df[col].dropna().empty else ""
-                                        if first_value:
-                                            edited_df[col] = first_value
-                                inv['df'] = edited_df
-                                st.rerun()
-                    with qc2:
-                        if st.button("➕ Add Row", key=f"addrow_{wkey}"):
-                            if not edited_df.empty:
-                                new_row = {col: "" for col in edited_df.columns}
-                                header_cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments']
-                                for col in header_cols:
-                                    if col in edited_df.columns:
-                                        first_value = edited_df[col].dropna().iloc[0] if not edited_df[col].dropna().empty else ""
-                                        if first_value:
-                                            new_row[col] = first_value
-                                inv['df'] = pd.concat([edited_df, pd.DataFrame([new_row])], ignore_index=True)
-                                st.rerun()
-                    with qc3:
-                        st.download_button(
-                            "📥 This order → SO.CSV",
-                            data=build_sage_sales_orders(edited_df).to_csv(index=False)
-                                 if not edited_df.empty else "",
-                            file_name=f"SO_{inv['name'].rsplit('.', 1)[0]}.csv",
-                            mime="text/csv",
-                            key=f"ordercsv_{wkey}",
-                            disabled=edited_df.empty,
-                        )
-
-                # Order confirmation - only for orders loaded from the inbox
-                if inv.get('email'):
-                    if inv.get('confirmed'):
-                        st.caption("✅ Order confirmation email sent")
-                    else:
-                        if st.button("✉️ Send Order Confirmation", key=f"confirm_{wkey}"):
-                            smtp_host = os.getenv('EMAIL_SMTP_HOST', 'smtp.mail.yahoo.com')
-                            smtp_port = os.getenv('EMAIL_SMTP_PORT', '465')
-                            to_addr = extract_email_address(inv['email']['sender'])
-                            if not email_user or not email_pass:
-                                st.warning("Email credentials not configured.")
-                            elif not to_addr:
-                                st.error(f"Could not determine sender address from '{inv['email']['sender']}'")
-                            else:
-                                po = ''
-                                if inv['df'] is not None and 'Purchase Order Number' in inv['df'].columns and not inv['df'].empty:
-                                    pos = inv['df']['Purchase Order Number'].dropna()
-                                    po = str(pos.iloc[0]) if not pos.empty else ''
-                                n = len(inv['df']) if inv['df'] is not None else 0
-                                total_str = ''
-                                if inv['df'] is not None and 'Total' in inv['df'].columns:
-                                    s = pd.to_numeric(inv['df']['Total'], errors='coerce').fillna(0).sum()
-                                    total_str = f"${s:,.2f}"
-                                body = (
-                                    "Hello,\n\n"
-                                    "Your purchase order has been received and entered into our system.\n\n"
-                                    f"PO Number: {po}\n"
-                                    f"Line Items: {n}\n"
-                                    f"Order Total: {total_str}\n\n"
-                                    "If anything looks incorrect, please reply to this email.\n\n"
-                                    "Thank you,\nRatech Manufacturing\n"
-                                    f"{email_user}"
-                                )
-                                with st.spinner("Sending confirmation..."):
-                                    try:
-                                        send_email(smtp_host, smtp_port, email_user, email_pass,
-                                                   to_addr, f"RE: {inv['email']['subject']}", body)
-                                        inv['confirmed'] = True
-                                        st.rerun()
-                                    except Exception as e:
-                                        st.error(f"Failed to send confirmation: {e}")
-            st.markdown("")
+            _order_card(idx, inv, cust_numbers, cust_names)
 
         # --- Combined validation & export ---
         # Last-chance vendor resolution so the export always carries Sage
@@ -1993,6 +2012,9 @@ if page == "Order Processing":
                                 df2[price_col] = pd.to_numeric(df2[price_col], errors='coerce').fillna(0)
                                 df2['Total'] = df2['Quantity'] * df2[price_col]
                                 inv['df'] = df2
+                                # New editor key so cached widget state
+                                # can't restore the old totals.
+                                inv['editor_version'] = inv.get('editor_version', 0) + 1
                         st.rerun()
                 else:
                     st.success(f"✅ All calculations correct across {len(all_dfs)} order(s), {len(combined)} line item(s)")
