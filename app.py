@@ -199,6 +199,36 @@ def load_customers():
     return pd.DataFrame(columns=CUSTOMER_COLS)
 
 
+def _package_options(ss_key, ss_secret, carrier_code):
+    """name -> (package_code, dims) for a carrier's standard packages plus the
+    account's custom package types (v2 API, which exposes names + sizes)."""
+    opts = {}
+    try:
+        pkgs = st.session_state.ss_opts_cache.get(carrier_code + '_pkg')
+        if pkgs is None:
+            pkgs = ss_list_packages(ss_key, ss_secret, carrier_code)
+            st.session_state.ss_opts_cache[carrier_code + '_pkg'] = pkgs
+        for p in pkgs:
+            opts[p.get('name', p.get('code'))] = (p.get('code'), None)
+    except Exception:
+        pass
+    v2k = os.getenv('SHIPSTATION_V2_API_KEY')
+    if v2k:
+        try:
+            cust = st.session_state.ss_opts_cache.get('_v2_pkgs')
+            if cust is None:
+                cust = ss_list_packages_v2(v2k)
+                st.session_state.ss_opts_cache['_v2_pkgs'] = cust
+            for p in cust:
+                d = p.get('dimensions') or {}
+                dims = {'units': 'inches', 'length': d.get('length'),
+                        'width': d.get('width'), 'height': d.get('height')}
+                opts[p.get('name') or p.get('package_code') or '?'] = ('package', dims)
+        except Exception:
+            pass
+    return opts
+
+
 PACKAGES_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'packages.csv')
 
 
@@ -1412,23 +1442,26 @@ if page == "Order Processing":
                         _aw = sum(float((x.get('weight') or {}).get('value') or 0)
                                   for x in _g)
                         st.caption(f"📦 {_nums} → {_nm}")
-                        cw, cl, cw2, ch = st.columns(4)
+                        _pk_opts = _package_options(
+                            ss_key, ss_secret, _g[0].get('carrierCode') or '')
+                        # Preselect the package matching the primary order's
+                        # preset dims (usually its single-order box).
+                        _pdef = 0
+                        _pdk = _dims_key(_pd.get('length'), _pd.get('width'),
+                                         _pd.get('height'))
+                        for _pi2, (_pn, (_pc2, _dd)) in enumerate(_pk_opts.items()):
+                            if _dd and _dims_key(_dd['length'], _dd['width'],
+                                                 _dd['height']) == _pdk:
+                                _pdef = _pi2
+                                break
+                        cw, cp = st.columns([1, 3])
                         with cw:
                             st.number_input("Weight (oz)", min_value=0.0,
                                             value=float(_aw or _bwt),
                                             key=f"cbw_{_ak}")
-                        with cl:
-                            st.number_input("L (in)", min_value=0.0,
-                                            value=float(_pd.get('length') or 0),
-                                            key=f"cdl_{_ak}")
-                        with cw2:
-                            st.number_input("W (in)", min_value=0.0,
-                                            value=float(_pd.get('width') or 0),
-                                            key=f"cdw_{_ak}")
-                        with ch:
-                            st.number_input("H (in)", min_value=0.0,
-                                            value=float(_pd.get('height') or 0),
-                                            key=f"cdh_{_ak}")
+                        with cp:
+                            st.selectbox("Package", list(_pk_opts) or ['(none)'],
+                                         index=_pdef, key=f"cbp_{_ak}")
 
                 _n_labels = len(work_groups)
                 if st.button(
@@ -1447,15 +1480,14 @@ if page == "Order Processing":
                         _dims = primary.get('dimensions')
                         _pkg_code = primary.get('packageCode')
                         if len(grp) > 1:
-                            # Combined box: packer-set weight, and L/W/H override
+                            # Combined box: packer-set weight + picked package.
                             wt = st.session_state.get(f"cbw_{_ak}") or _bwt
-                            _l = st.session_state.get(f"cdl_{_ak}") or 0
-                            _w = st.session_state.get(f"cdw_{_ak}") or 0
-                            _h = st.session_state.get(f"cdh_{_ak}") or 0
-                            if _l and _w and _h:
-                                _dims = {'units': 'inches', 'length': _l,
-                                         'width': _w, 'height': _h}
-                                _pkg_code = 'package'
+                            _pk_opts = _package_options(
+                                ss_key, ss_secret, primary.get('carrierCode') or '')
+                            _choice = _pk_opts.get(
+                                st.session_state.get(f"cbp_{_ak}"))
+                            if _choice:
+                                _pkg_code, _dims = _choice
                         else:
                             wt = sum(float((x.get('weight') or {}).get('value') or 0)
                                      for x in grp) or _bwt
