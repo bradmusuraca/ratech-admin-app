@@ -18,6 +18,7 @@ import requests
 TABLE = 'sage_order_queue'
 OPEN_TABLE = 'open_orders'
 DOCS_TABLE = 'order_docs'
+PROFILES_TABLE = 'fedex_profiles'
 
 
 def is_configured():
@@ -328,6 +329,31 @@ def store_order_docs(sage_df, doc_map):
         _url(DOCS_TABLE),
         headers={**_headers(), 'Prefer': 'resolution=merge-duplicates'},
         json=rows, timeout=60).raise_for_status()
+
+
+def get_fedex_profile(customer_id):
+    """Saved third-party FedEx billing for a customer -> {'acct','zip'}."""
+    resp = requests.get(
+        _url(PROFILES_TABLE, customer_id=f'eq.{customer_id}',
+             select='acct,zip', limit='1'),
+        headers=_headers(), timeout=30)
+    resp.raise_for_status()
+    rows = resp.json()
+    return rows[0] if rows else {}
+
+
+def save_fedex_profile(customer_id, acct, zip_):
+    requests.post(
+        _url(PROFILES_TABLE),
+        headers={**_headers(), 'Prefer': 'resolution=merge-duplicates'},
+        json=[{'customer_id': customer_id, 'acct': acct, 'zip': zip_}],
+        timeout=30).raise_for_status()
+
+
+def delete_fedex_profile(customer_id):
+    requests.delete(
+        _url(PROFILES_TABLE, customer_id=f'eq.{customer_id}'),
+        headers=_headers(), timeout=30).raise_for_status()
 
 
 def get_order_doc(order_key):

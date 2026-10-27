@@ -52,3 +52,14 @@ create table if not exists order_docs (
 );
 
 alter table order_docs enable row level security;
+
+-- Third-party FedEx billing per customer: when set, the Create Invoices
+-- freight widget auto-fills the customer's FedEx account.
+create table if not exists fedex_profiles (
+    customer_id    text primary key,
+    acct           text,
+    zip            text,
+    created_at     timestamptz not null default now()
+);
+
+alter table fedex_profiles enable row level security;

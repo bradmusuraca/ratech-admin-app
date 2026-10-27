@@ -30,7 +30,9 @@ from sage_queue import (is_configured as sage_queue_configured,
                         queue_order_void, queue_inventory_adjustment,
                         note_line_adjustment, transactions_from_sage_df,
                         get_order_ship_to, get_order_payload,
-                        store_order_docs, get_order_doc)
+                        store_order_docs, get_order_doc,
+                        get_fedex_profile, save_fedex_profile,
+                        delete_fedex_profile)
 from fedex import (is_configured as fedex_configured,
                    get_rates as fedex_get_rates,
                    validate_address as fedex_validate_address,
@@ -2257,6 +2259,23 @@ elif page == "Create Invoices":
                         resid = st.checkbox("Residential",
                                             value=bool(fr_res.get(o['order_key'])),
                                             key=f"frre_{o['order_key']}")
+                        # Saved third-party billing for this customer
+                        # auto-fills before the widgets render.
+                        _profs = st.session_state.setdefault('fedex_profiles', {})
+                        _ck = str(o.get('customer_id') or '')
+                        if _ck and _ck not in _profs:
+                            try:
+                                _profs[_ck] = get_fedex_profile(_ck)
+                            except Exception:
+                                _profs[_ck] = {}
+                        _prof = _profs.get(_ck) or {}
+                        if _prof.get('acct'):
+                            st.session_state.setdefault(
+                                f"frtp_{o['order_key']}", True)
+                            st.session_state.setdefault(
+                                f"frtpa_{o['order_key']}", _prof['acct'])
+                            st.session_state.setdefault(
+                                f"frtpz_{o['order_key']}", _prof.get('zip', ''))
                         tpb = st.checkbox("Bill customer's FedEx account",
                                           key=f"frtp_{o['order_key']}",
                                           help="Third-party billing - FedEx "
@@ -2269,6 +2288,38 @@ elif page == "Create Invoices":
                                           key=f"frtpz_{o['order_key']}",
                                           help="ZIP on the customer's FedEx "
                                                "account - FedEx verifies it")
+                            if _ck:
+                                sb1, sb2 = st.columns(2)
+                                with sb1:
+                                    if st.button("💾 Save", key=f"frtps_{o['order_key']}",
+                                                 use_container_width=True,
+                                                 help="Remember this FedEx account "
+                                                      "for this customer"):
+                                        _a = st.session_state.get(
+                                            f"frtpa_{o['order_key']}", '').strip()
+                                        _z = st.session_state.get(
+                                            f"frtpz_{o['order_key']}", '').strip()
+                                        try:
+                                            save_fedex_profile(_ck, _a, _z)
+                                            _profs[_ck] = {'acct': _a, 'zip': _z}
+                                            st.success(f"Saved for customer {_ck}")
+                                        except Exception as e:
+                                            st.error(f"Save failed: {e}")
+                                with sb2:
+                                    if _prof.get('acct') and st.button(
+                                            "🗑 Remove", key=f"frtpd_{o['order_key']}",
+                                            use_container_width=True,
+                                            help="Forget this customer's saved account"):
+                                        try:
+                                            delete_fedex_profile(_ck)
+                                        except Exception:
+                                            pass
+                                        _profs[_ck] = {}
+                                        for _k2 in (f"frtp_{o['order_key']}",
+                                                    f"frtpa_{o['order_key']}",
+                                                    f"frtpz_{o['order_key']}"):
+                                            st.session_state.pop(_k2, None)
+                                        st.rerun()
                     with _sp:
                         # Original order PDF for the ship-to double-check.
                         _docs = st.session_state.setdefault('order_docs', {})
