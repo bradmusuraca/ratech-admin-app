@@ -1052,6 +1052,137 @@ def _label_sheet(orders, label_pdf):
 # ---- Login gate (only active when users are configured) ----
 _users = get_users()
 @st.fragment
+def _order_data(inv, wkey, cust_numbers, cust_names):
+    """Right-hand column of an order card - customer select, line-item
+    editor, row buttons. Its own fragment so table interactions rerun
+    only this small region; the PDF preview and page scroll stay put."""
+    # Shipping summary for ShipStation-loaded orders - the
+    # preset service/package plus ship-to, so everything the
+    # packer needs is on the card.
+    si = inv.get('ship_info')
+    if si:
+        _d = si.get('dimensions') or {}
+        _w = si.get('weight') or {}
+        _bits = [si.get('carrier'), si.get('service')]
+        if si.get('package'):
+            _bits.append(si['package'])
+        if _d.get('length'):
+            _bits.append(f"{_d.get('length')}x{_d.get('width')}x{_d.get('height')}in")
+        if _w.get('value'):
+            _bits.append(f"{_w.get('value'):g}oz")
+        st.markdown(f"**Ship to:** {si.get('ship_to', '')}")
+        st.caption(
+            f"requested: {si.get('requested') or '—'} • "
+            f"preset: {' / '.join(str(b) for b in _bits if b) or '—'}")
+
+    # Sage customer selector - applies the customer number to the
+    # Vendor column of every row in this order
+    cust_opts = [''] + cust_numbers
+    sel_idx = cust_opts.index(inv['customer']) if inv.get('customer', '') in cust_opts else 0
+    sel_cust = st.selectbox(
+        "Sage Customer #",
+        options=cust_opts,
+        index=sel_idx,
+        format_func=lambda n: f"{n} — {cust_names.get(n, '')}" if n else "Select customer...",
+        key=f"custsel_{wkey}"
+    )
+    if sel_cust and sel_cust != inv.get('customer', ''):
+        inv['customer'] = sel_cust
+        if 'Vendor' in inv['df'].columns:
+            inv['df']['Vendor'] = sel_cust
+        # Rebase the editor: fresh widget key + new input so
+        # stale state can't write the old vendor back. No rerun
+        # needed - the editor below mounts fresh in this pass.
+        bump_editor(inv)
+
+    # Mount the editor on a stable input df - feeding the edited
+    # result back as `data` re-inits the widget and eats the
+    # user's next cell edit (upstream streamlit#7749). Any code
+    # that changes inv['df'] must call bump_editor() to rebase.
+    if inv.get('editor_input') is None:
+        inv['editor_input'] = inv['df']
+    edited_df = st.data_editor(
+        inv['editor_input'],
+        num_rows="dynamic",
+        use_container_width=True,
+        key=f"editor_{wkey}_{inv.get('editor_version', 0)}"
+    )
+    # Editor widget state can hand back a duplicated column
+    # (e.g. two 'Vendor' cols) after key collisions - collapse
+    # to the first occurrence so df['Vendor'] stays a Series.
+    if edited_df.columns.duplicated().any():
+        edited_df = edited_df.loc[:, ~edited_df.columns.duplicated()]
+    # Keep Total in sync when the user edits Quantity/Price -
+    # but only on rows that changed, so the OCR mismatch check
+    # still sees the document's original totals on first render.
+    _pc = ('Unit Price' if 'Unit Price' in edited_df.columns
+           else ('Price' if 'Price' in edited_df.columns else None))
+    _totals_chg = False
+    _push = []     # (row, value) Total overrides for the widget diff
+    if _pc and 'Quantity' in edited_df.columns and 'Total' in edited_df.columns:
+        _q = pd.to_numeric(edited_df['Quantity'], errors='coerce').fillna(0)
+        _p = pd.to_numeric(edited_df[_pc], errors='coerce').fillna(0)
+        _prev = inv['df']
+        if (_prev is not None and len(_prev) == len(edited_df)
+                and 'Quantity' in _prev.columns and _pc in _prev.columns):
+            _qo = pd.to_numeric(_prev['Quantity'], errors='coerce').fillna(0)
+            _po = pd.to_numeric(_prev[_pc], errors='coerce').fillna(0)
+            _chg = (_q != _qo) | (_p != _po)
+            _nt = _q * _p
+            edited_df.loc[_chg, 'Total'] = _nt[_chg]
+            _push = [(_ri, _nt[_ri]) for _ri in edited_df.index[_chg]]
+        else:
+            edited_df['Total'] = _q * _p
+            _totals_chg = True   # rows added/removed - rebase
+    inv['df'] = edited_df
+    if _totals_chg or _push:
+        # Totals were rewritten in code - rebase and rerun so the
+        # editor remounts on the updated df right away (the edit
+        # is already persisted above, so nothing is lost).
+        bump_editor(inv)
+        st.rerun()
+    # Re-resolve AFTER the editor hands data back - its cached
+    # widget state can still carry the stale vendor string.
+    resolve_vendor(inv)
+
+    qc1, qc2, qc3 = st.columns(3)
+    with qc1:
+        if st.button("📋 Copy Header to All Rows", key=f"copyhdr_{wkey}"):
+            if not edited_df.empty:
+                header_cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments']
+                for col in header_cols:
+                    if col in edited_df.columns:
+                        first_value = edited_df[col].dropna().iloc[0] if not edited_df[col].dropna().empty else ""
+                        if first_value:
+                            edited_df[col] = first_value
+                inv['df'] = edited_df
+                bump_editor(inv)
+                st.rerun()
+    with qc2:
+        if st.button("➕ Add Row", key=f"addrow_{wkey}"):
+            if not edited_df.empty:
+                new_row = {col: "" for col in edited_df.columns}
+                header_cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments']
+                for col in header_cols:
+                    if col in edited_df.columns:
+                        first_value = edited_df[col].dropna().iloc[0] if not edited_df[col].dropna().empty else ""
+                        if first_value:
+                            new_row[col] = first_value
+                inv['df'] = pd.concat([edited_df, pd.DataFrame([new_row])], ignore_index=True)
+                bump_editor(inv)
+                st.rerun()
+    with qc3:
+        st.download_button(
+            "📥 This order → SO.CSV",
+            data=build_sage_sales_orders(edited_df).to_csv(index=False)
+                 if not edited_df.empty else "",
+            file_name=f"SO_{inv['name'].rsplit('.', 1)[0]}.csv",
+            mime="text/csv",
+            key=f"ordercsv_{wkey}",
+            disabled=edited_df.empty,
+        )
+
+@st.fragment
 def _order_card(idx, inv, cust_numbers, cust_names):
     """One review-queue order card. Runs as a fragment so widget
     interactions (cell edits, buttons) rerun only this card instead
@@ -1134,131 +1265,7 @@ def _order_card(idx, inv, cust_numbers, cust_names):
                     )
 
         with col_data:
-            # Shipping summary for ShipStation-loaded orders - the
-            # preset service/package plus ship-to, so everything the
-            # packer needs is on the card.
-            si = inv.get('ship_info')
-            if si:
-                _d = si.get('dimensions') or {}
-                _w = si.get('weight') or {}
-                _bits = [si.get('carrier'), si.get('service')]
-                if si.get('package'):
-                    _bits.append(si['package'])
-                if _d.get('length'):
-                    _bits.append(f"{_d.get('length')}x{_d.get('width')}x{_d.get('height')}in")
-                if _w.get('value'):
-                    _bits.append(f"{_w.get('value'):g}oz")
-                st.markdown(f"**Ship to:** {si.get('ship_to', '')}")
-                st.caption(
-                    f"requested: {si.get('requested') or '—'} • "
-                    f"preset: {' / '.join(str(b) for b in _bits if b) or '—'}")
-
-            # Sage customer selector - applies the customer number to the
-            # Vendor column of every row in this order
-            cust_opts = [''] + cust_numbers
-            sel_idx = cust_opts.index(inv['customer']) if inv.get('customer', '') in cust_opts else 0
-            sel_cust = st.selectbox(
-                "Sage Customer #",
-                options=cust_opts,
-                index=sel_idx,
-                format_func=lambda n: f"{n} — {cust_names.get(n, '')}" if n else "Select customer...",
-                key=f"custsel_{wkey}"
-            )
-            if sel_cust and sel_cust != inv.get('customer', ''):
-                inv['customer'] = sel_cust
-                if 'Vendor' in inv['df'].columns:
-                    inv['df']['Vendor'] = sel_cust
-                # Rebase the editor: fresh widget key + new input so
-                # stale state can't write the old vendor back. No rerun
-                # needed - the editor below mounts fresh in this pass.
-                bump_editor(inv)
-
-            # Mount the editor on a stable input df - feeding the edited
-            # result back as `data` re-inits the widget and eats the
-            # user's next cell edit (upstream streamlit#7749). Any code
-            # that changes inv['df'] must call bump_editor() to rebase.
-            if inv.get('editor_input') is None:
-                inv['editor_input'] = inv['df']
-            edited_df = st.data_editor(
-                inv['editor_input'],
-                num_rows="dynamic",
-                use_container_width=True,
-                key=f"editor_{wkey}_{inv.get('editor_version', 0)}"
-            )
-            # Editor widget state can hand back a duplicated column
-            # (e.g. two 'Vendor' cols) after key collisions - collapse
-            # to the first occurrence so df['Vendor'] stays a Series.
-            if edited_df.columns.duplicated().any():
-                edited_df = edited_df.loc[:, ~edited_df.columns.duplicated()]
-            # Keep Total in sync when the user edits Quantity/Price -
-            # but only on rows that changed, so the OCR mismatch check
-            # still sees the document's original totals on first render.
-            _pc = ('Unit Price' if 'Unit Price' in edited_df.columns
-                   else ('Price' if 'Price' in edited_df.columns else None))
-            _totals_chg = False
-            _push = []     # (row, value) Total overrides for the widget diff
-            if _pc and 'Quantity' in edited_df.columns and 'Total' in edited_df.columns:
-                _q = pd.to_numeric(edited_df['Quantity'], errors='coerce').fillna(0)
-                _p = pd.to_numeric(edited_df[_pc], errors='coerce').fillna(0)
-                _prev = inv['df']
-                if (_prev is not None and len(_prev) == len(edited_df)
-                        and 'Quantity' in _prev.columns and _pc in _prev.columns):
-                    _qo = pd.to_numeric(_prev['Quantity'], errors='coerce').fillna(0)
-                    _po = pd.to_numeric(_prev[_pc], errors='coerce').fillna(0)
-                    _chg = (_q != _qo) | (_p != _po)
-                    _nt = _q * _p
-                    edited_df.loc[_chg, 'Total'] = _nt[_chg]
-                    _push = [(_ri, _nt[_ri]) for _ri in edited_df.index[_chg]]
-                else:
-                    edited_df['Total'] = _q * _p
-                    _totals_chg = True   # rows added/removed - rebase
-            inv['df'] = edited_df
-            if _totals_chg or _push:
-                # Totals were rewritten in code - rebase and rerun so the
-                # editor remounts on the updated df right away (the edit
-                # is already persisted above, so nothing is lost).
-                bump_editor(inv)
-                st.rerun()
-            # Re-resolve AFTER the editor hands data back - its cached
-            # widget state can still carry the stale vendor string.
-            resolve_vendor(inv)
-
-            qc1, qc2, qc3 = st.columns(3)
-            with qc1:
-                if st.button("📋 Copy Header to All Rows", key=f"copyhdr_{wkey}"):
-                    if not edited_df.empty:
-                        header_cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments']
-                        for col in header_cols:
-                            if col in edited_df.columns:
-                                first_value = edited_df[col].dropna().iloc[0] if not edited_df[col].dropna().empty else ""
-                                if first_value:
-                                    edited_df[col] = first_value
-                        inv['df'] = edited_df
-                        bump_editor(inv)
-                        st.rerun()
-            with qc2:
-                if st.button("➕ Add Row", key=f"addrow_{wkey}"):
-                    if not edited_df.empty:
-                        new_row = {col: "" for col in edited_df.columns}
-                        header_cols = ['Purchase Order Number', 'Date of Order', 'Ship By Date', 'Ship To', 'Invoice Address', 'Vendor', 'Shipping Instructions', 'Comments']
-                        for col in header_cols:
-                            if col in edited_df.columns:
-                                first_value = edited_df[col].dropna().iloc[0] if not edited_df[col].dropna().empty else ""
-                                if first_value:
-                                    new_row[col] = first_value
-                        inv['df'] = pd.concat([edited_df, pd.DataFrame([new_row])], ignore_index=True)
-                        bump_editor(inv)
-                        st.rerun()
-            with qc3:
-                st.download_button(
-                    "📥 This order → SO.CSV",
-                    data=build_sage_sales_orders(edited_df).to_csv(index=False)
-                         if not edited_df.empty else "",
-                    file_name=f"SO_{inv['name'].rsplit('.', 1)[0]}.csv",
-                    mime="text/csv",
-                    key=f"ordercsv_{wkey}",
-                    disabled=edited_df.empty,
-                )
+            _order_data(inv, wkey, cust_numbers, cust_names)
 
         # Order confirmation - only for orders loaded from the inbox
         if inv.get('email'):
