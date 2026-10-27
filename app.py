@@ -1171,6 +1171,7 @@ if page == "Order Processing":
                             _pre_car = order.get('carrierCode')
                             _pre_svc = order.get('serviceCode')
                             _pre_pkg = order.get('packageCode')
+                            _pre_dims = order.get('dimensions') or {}
                             lc1, lc2 = st.columns(2)
                             with lc1:
                                 _ci = (list(_carriers.values()).index(_pre_car)
@@ -1203,10 +1204,15 @@ if page == "Order Processing":
                                                         p.get('code') or p.get('name'))
                             except Exception:
                                 pass
-                            # If the order's preset code still isn't listed
-                            # (e.g. an unlisted custom box), offer it verbatim
-                            # so the picker can preselect and pass it through.
-                            if _pre_pkg and _pre_pkg not in _pkg_map.values():
+                            # ShipStation stores a custom-box preset as the
+                            # generic 'package' code + order dimensions. Show
+                            # the real size and pass dims back at label time.
+                            _dim_label = ''
+                            if _pre_dims.get('length'):
+                                _dim_label = (f"{_pre_dims['length']} x {_pre_dims['width']} "
+                                              f"x {_pre_dims['height']} in box (order preset)")
+                                _pkg_map[_dim_label] = _pre_pkg or 'package'
+                            elif _pre_pkg and _pre_pkg not in _pkg_map.values():
                                 _pkg_map[f"{_pre_pkg} (order preset)"] = _pre_pkg
                             with lc2:
                                 _si = (list(_svc_map.values()).index(_pre_svc)
@@ -1214,8 +1220,12 @@ if page == "Order Processing":
                                 _sname = st.selectbox("Service", list(_svc_map) or ['(none)'],
                                                       index=_si,
                                                       key=f"lbl_svc_{oid}")
-                                _pi = (list(_pkg_map.values()).index(_pre_pkg)
-                                       if _pkg_map and _pre_pkg in _pkg_map.values() else 0)
+                                if _pkg_map and _dim_label and _dim_label in _pkg_map:
+                                    _pi = list(_pkg_map).index(_dim_label)
+                                elif _pkg_map and _pre_pkg in _pkg_map.values():
+                                    _pi = list(_pkg_map.values()).index(_pre_pkg)
+                                else:
+                                    _pi = 0
                                 _pname = st.selectbox("Package", list(_pkg_map) or ['(none)'],
                                                       index=_pi,
                                                       key=f"lbl_pkg_{oid}")
@@ -1243,7 +1253,10 @@ if page == "Order Processing":
                                                 carrier_code=_ccode,
                                                 service_code=_svc_map[_sname],
                                                 package_code=_pkg_map[_pname],
-                                                weight_oz=_wt, test=_test)
+                                                weight_oz=_wt, test=_test,
+                                                dimensions=(_pre_dims
+                                                            if _pname == _dim_label
+                                                            else None))
                                             st.session_state.ss_labels[oid] = {
                                                 'tracking': resp.get('trackingNumber', ''),
                                                 'pdf': label_pdf_bytes(resp)}
@@ -1377,18 +1390,23 @@ if page == "Order Processing":
                                     _car = _bccode
                                     _svc_code = _bsvc_map[_bsname]
                                     _pkg_code = _bpkg_map[_bpname]
+                                    _dims = None
                                     if (_bpresets and primary.get('carrierCode')
                                             and primary.get('serviceCode')
                                             and primary.get('packageCode')):
                                         _car = primary['carrierCode']
                                         _svc_code = primary['serviceCode']
                                         _pkg_code = primary['packageCode']
+                                        # Custom boxes arrive as generic
+                                        # 'package' + preset dimensions.
+                                        _dims = primary.get('dimensions')
                                     resp = ss_create_label(
                                         ss_key, ss_secret, oid2,
                                         carrier_code=_car,
                                         service_code=_svc_code,
                                         package_code=_pkg_code,
-                                        weight_oz=wt, test=_btest)
+                                        weight_oz=wt, test=_btest,
+                                        dimensions=_dims)
                                     track = resp.get('trackingNumber', '')
                                     pdf = label_pdf_bytes(resp)
                                     if pdf[:4] == b'%PDF':
