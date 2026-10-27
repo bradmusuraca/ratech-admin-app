@@ -969,17 +969,18 @@ def _merge_pdfs(pdf_blobs):
 
 
 def _label_sheet(orders, label_pdf):
-    """Compose a ShipStation-style print sheet on 8.5x11: order number(s),
-    ship-to, and item lines (with marketplace thumbnails when available)
-    on top; the carrier label embedded in the bottom half. Falls back to
-    the raw label on any failure."""
+    """Compose a ShipStation-style print sheet on landscape 8.5x11: order
+    number(s), ship-to, and item lines (with marketplace thumbnails when
+    available) down the left half; the carrier label on the right. Falls
+    back to the raw label on any failure."""
     try:
         import fitz
         import requests as _rq
         src = fitz.open(stream=label_pdf, filetype='pdf')
         sheet = fitz.open()
-        page = sheet.new_page(width=612, height=792)
+        page = sheet.new_page(width=792, height=612)  # landscape letter
         M, y = 36, 48
+        R = 372  # right edge of the info column
         nums = ', '.join(str(o.get('orderNumber') or '') for o in orders)
         page.insert_text((M, y), nums, fontsize=16, fontname='hebo')
         st_ = orders[0].get('shipTo') or {}
@@ -992,7 +993,7 @@ def _label_sheet(orders, label_pdf):
                 y += 14
                 page.insert_text((M + 10, y), str(ln), fontsize=10)
         y += 24
-        page.draw_line(fitz.Point(M, y), fitz.Point(612 - M, y))
+        page.draw_line(fitz.Point(M, y), fitz.Point(R, y))
         y += 16
         for it in (o.get('items') or [] for o in orders):
             for it2 in it:
@@ -1013,12 +1014,14 @@ def _label_sheet(orders, label_pdf):
                        f"{it2.get('name', '')}"
                        + (f"  @  ${price:.2f}" if isinstance(price, (int, float))
                           else ''))
-                page.insert_textbox(fitz.Rect(x_img, y, 612 - M, y + 40),
+                page.insert_textbox(fitz.Rect(x_img, y, R, y + 40),
                                     txt, fontsize=9)
                 y += 44
-                if y > 400:
+                if y > 560:
                     break
-        page.show_pdf_page(fitz.Rect(M, 412, 612 - M, 756), src, 0)
+        # Carrier label fills the right half.
+        page.draw_line(fitz.Point(396, M), fitz.Point(396, 576), width=0.5)
+        page.show_pdf_page(fitz.Rect(408, M, 756, 576), src, 0)
         return sheet.tobytes()
     except Exception:
         return label_pdf
