@@ -373,7 +373,16 @@ def resolve_vendor(inv):
     if gc:
         df['Vendor'] = gc
         inv['customer'] = gc
-        bump_editor(inv)
+        # Feed the fix through the editor's pending-edits state so it
+        # displays without a remount - a key bump here would drop the
+        # cell edit that triggered this very rerun.
+        _ekey = f"editor_{inv['key']}_{inv.get('editor_version', 0)}"
+        _st = st.session_state.get(_ekey)
+        if isinstance(_st, dict) and 'edited_rows' in _st:
+            for _ri in df.index:
+                _st['edited_rows'].setdefault(_ri, {})['Vendor'] = gc
+        else:
+            bump_editor(inv)
 
 
 EMAIL_RULES_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'email_rules.csv')
@@ -1204,14 +1213,22 @@ def _order_card(idx, inv, cust_numbers, cust_names):
                     _po = pd.to_numeric(_prev[_pc], errors='coerce').fillna(0)
                     _chg = (_q != _qo) | (_p != _po)
                     if _chg.any():
-                        edited_df.loc[_chg, 'Total'] = (_q * _p)[_chg]
-                        _totals_chg = True
+                        _nt = _q * _p
+                        edited_df.loc[_chg, 'Total'] = _nt[_chg]
+                        # Show the recalced Total WITHOUT remounting the
+                        # editor - write it into the widget's pending-edits
+                        # dict ({edited_rows: {row: {col: val}}}, the same
+                        # shape the frontend sends).
+                        _st = st.session_state.get(
+                            f"editor_{wkey}_{inv.get('editor_version', 0)}")
+                        if isinstance(_st, dict):
+                            for _ri in edited_df.index[_chg]:
+                                _st.setdefault('edited_rows', {}) \
+                                   .setdefault(_ri, {})['Total'] = _nt[_ri]
                 else:
                     edited_df['Total'] = _q * _p
-                    _totals_chg = True
+                    _totals_chg = True   # rows added/removed - rebase
             inv['df'] = edited_df
-            # Totals were rewritten in code - rebase so the editor shows
-            # them (its diff only covers the cell the user touched).
             if _totals_chg:
                 bump_editor(inv)
             # Re-resolve AFTER the editor hands data back - its cached
