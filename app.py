@@ -1138,7 +1138,11 @@ def _order_data(inv, wkey, cust_numbers, cust_names):
     inv['df'] = edited_df
     if 'Total' in edited_df.columns:
         _tot = pd.to_numeric(edited_df['Total'], errors='coerce').fillna(0).sum()
-        st.caption(f"Order total: ${_tot:,.2f}")
+        st.markdown(
+            f'<div style="text-align:right; font-size:0.875rem; '
+            f'font-weight:600; padding:0.25rem 0.5rem 0 0;">'
+            f'Order total: ${_tot:,.2f}</div>',
+            unsafe_allow_html=True)
     # Re-resolve AFTER the editor hands data back - its cached
     # widget state can still carry the stale vendor string.
     resolve_vendor(inv)
