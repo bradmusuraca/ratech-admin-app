@@ -1235,8 +1235,6 @@ if page == "Order Processing":
                         f"{order.get('orderStatus', '')} • {n_items} item(s)"
                         + (" • 🔗 shares address" if _shared else ""))
                 with oc_cols[1]:
-                    # Action column: load for review, batch-label select,
-                    # direct-to-Sage sales order.
                     if st.button("Load", key=f"ss_load_{oid}",
                                  use_container_width=True):
                         st.session_state.invoices.append(
@@ -1251,26 +1249,6 @@ if page == "Order Processing":
                             st.session_state.ss_selected.add(oid)
                         else:
                             st.session_state.ss_selected.discard(oid)
-                    if sage_queue_configured() and st.button(
-                            "Create SO", key=f"ss_so_{oid}",
-                            use_container_width=True,
-                            help="Queue this order's sales order into Sage "
-                                 "without loading it for review first"):
-                        try:
-                            _sinv = build_shipstation_order_invoice(
-                                order, ('shipstation', oid),
-                                st.session_state.ss_store_map)
-                            _sdf = build_sage_sales_orders(_sinv['df'])
-                            _sent, _skipped = sage_queue_push(_sdf)
-                            create_open_orders(_sdf)
-                            if _sent:
-                                st.success(f"{order.get('orderNumber')}: "
-                                           "sales order queued for Sage")
-                            else:
-                                st.info(f"{order.get('orderNumber')}: already "
-                                        "in the Sage queue")
-                        except Exception as e:
-                            st.error(f"Sage SO failed: {e}")
 
                 # --- Shipping label (billable: buys postage, marks shipped,
                 #     notifies the marketplace) ---
@@ -1439,6 +1417,11 @@ if page == "Order Processing":
                     value=True, key='batch_combine',
                     help="Orders going to the same ship-to get one label; "
                          "siblings are marked shipped with the same tracking")
+                _bso = sage_queue_configured() and st.checkbox(
+                    "Create sales orders in Sage",
+                    value=True, key='batch_sage_so',
+                    help="Queue each shipped order's sales order into Sage "
+                         "when the labels are created")
                 _groups = {}
                 for o in _sel_orders:
                     _ak = (_addr_key(o) if _bcombine else None) or (
@@ -1485,6 +1468,7 @@ if page == "Order Processing":
                         f"Create {_n_labels} label(s) for {len(_sel_orders)} order(s)",
                         type="primary", key='batch_go'):
                     results, pdfs = [], []
+                    so_orders = []  # orders whose labels succeeded - for the Sage push
                     total_units = sum(len(g) for g in work_groups)
                     done = 0
                     prog = st.progress(0, text="Creating labels...")
@@ -1544,11 +1528,30 @@ if page == "Order Processing":
                                             f"not marked shipped - {label_error_message(e2)}"))
                                 tag = f" (combined {len(grp)} orders)" if len(grp) > 1 else ""
                                 results.append(('ok', f"✅ {nums}{tag}: {track}"))
+                                so_orders.extend(grp)
                             except Exception as e:
                                 results.append(('fail', f"❌ {nums}: {label_error_message(e)}"))
                         done += len(grp)
                         prog.progress(done / total_units)
                     prog.empty()
+                    if _bso and so_orders:
+                        try:
+                            _sdf = build_sage_sales_orders(pd.concat(
+                                [build_shipstation_order_invoice(
+                                    _o2,
+                                    ('shipstation', str(_o2.get('orderId')
+                                                      or _o2.get('orderKey') or '')),
+                                    st.session_state.ss_store_map)['df']
+                                 for _o2 in so_orders], ignore_index=True))
+                            _sent, _skipped = sage_queue_push(_sdf)
+                            create_open_orders(_sdf)
+                            results.append(('ok',
+                                f"🧾 Sage: {len(_sent)} sales order(s) queued"
+                                + (f" ({len(_skipped)} already queued)"
+                                   if _skipped else "")))
+                        except Exception as e3:
+                            results.append(('fail',
+                                f"⚠️ Sage sales orders failed: {e3}"))
                     if pdfs:
                         st.session_state.ss_batch_pdf = _merge_pdfs(pdfs)
                     else:
