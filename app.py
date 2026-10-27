@@ -690,6 +690,15 @@ def build_shipstation_order_invoice(order, doc_key, store_map=None):
         'customer': vendors[0] if len(vendors) == 1 else '',
         'email': None,
         'confirmed': False,
+        'ship_info': {
+            'ship_to': ship_str,
+            'requested': order.get('requestedShippingService'),
+            'carrier': order.get('carrierCode'),
+            'service': order.get('serviceCode'),
+            'package': order.get('packageCode'),
+            'dimensions': order.get('dimensions'),
+            'weight': order.get('weight'),
+        },
     }
 
 
@@ -1182,8 +1191,20 @@ if page == "Order Processing":
                         ss_key, ss_secret,
                         status=None if ss_status == "(all)" else ss_status,
                         order_date_start=since)
+                    # Auto-load every fetched order into the review queue -
+                    # pulling is read-only, ShipStation is only touched when
+                    # a label is created.
+                    for _o in st.session_state.ss_orders:
+                        _oid = str(_o.get('orderId') or _o.get('orderKey') or '')
+                        if _oid and _oid not in st.session_state.loaded_ss:
+                            st.session_state.invoices.append(
+                                build_shipstation_order_invoice(
+                                    _o, ('shipstation', _oid),
+                                    st.session_state.ss_store_map))
+                            st.session_state.loaded_ss.add(_oid)
                     if st.session_state.ss_orders:
-                        st.success(f"Found {len(st.session_state.ss_orders)} order(s)")
+                        st.success(f"Found {len(st.session_state.ss_orders)} order(s) "
+                                   "- loaded into the review queue below")
                     else:
                         st.info("No ShipStation orders matched.")
                 except Exception as e:
@@ -1216,8 +1237,8 @@ if page == "Order Processing":
 
         for order in st.session_state.ss_orders:
             oid = str(order.get('orderId') or order.get('orderKey') or '')
-            if oid in st.session_state.loaded_ss:
-                continue
+            _ldinv = next((i for i in st.session_state.invoices
+                           if i['key'] == ('shipstation', oid)), None)
             try:
                 oc = st.container(border=True)
             except TypeError:
@@ -1235,8 +1256,9 @@ if page == "Order Processing":
                         f"{order.get('orderStatus', '')} • {n_items} item(s)"
                         + (" • 🔗 shares address" if _shared else ""))
                 with oc_cols[1]:
-                    if st.button("Load", key=f"ss_load_{oid}",
-                                 use_container_width=True):
+                    if _ldinv is None and st.button(
+                            "Load", key=f"ss_load_{oid}",
+                            use_container_width=True):
                         st.session_state.invoices.append(
                             build_shipstation_order_invoice(order, ('shipstation', oid),
                                                             st.session_state.ss_store_map))
@@ -1249,6 +1271,27 @@ if page == "Order Processing":
                             st.session_state.ss_selected.add(oid)
                         else:
                             st.session_state.ss_selected.discard(oid)
+
+                # Loaded order + shipping details, inline - no menus needed.
+                if _ldinv is not None:
+                    si = _ldinv.get('ship_info')
+                    if si:
+                        _d = si.get('dimensions') or {}
+                        _w = si.get('weight') or {}
+                        _bits = [si.get('carrier'), si.get('service')]
+                        if si.get('package'):
+                            _bits.append(si['package'])
+                        if _d.get('length'):
+                            _bits.append(f"{_d.get('length')}x{_d.get('width')}x{_d.get('height')}in")
+                        if _w.get('value'):
+                            _bits.append(f"{_w.get('value'):g}oz")
+                        st.markdown(f"**Ship to:** {si.get('ship_to', '')}")
+                        st.caption(
+                            f"requested: {si.get('requested') or '—'} • "
+                            f"preset: {' / '.join(str(b) for b in _bits if b) or '—'}")
+                    if _ldinv['df'] is not None and not _ldinv['df'].empty:
+                        st.dataframe(_ldinv['df'], use_container_width=True,
+                                     hide_index=True)
 
                 # --- Shipping label (billable: buys postage, marks shipped,
                 #     notifies the marketplace) ---
@@ -1683,6 +1726,25 @@ if page == "Order Processing":
                             )
 
                 with col_data:
+                    # Shipping summary for ShipStation-loaded orders - the
+                    # preset service/package plus ship-to, so everything the
+                    # packer needs is on the card.
+                    si = inv.get('ship_info')
+                    if si:
+                        _d = si.get('dimensions') or {}
+                        _w = si.get('weight') or {}
+                        _bits = [si.get('carrier'), si.get('service')]
+                        if si.get('package'):
+                            _bits.append(si['package'])
+                        if _d.get('length'):
+                            _bits.append(f"{_d.get('length')}x{_d.get('width')}x{_d.get('height')}in")
+                        if _w.get('value'):
+                            _bits.append(f"{_w.get('value'):g}oz")
+                        st.markdown(f"**Ship to:** {si.get('ship_to', '')}")
+                        st.caption(
+                            f"requested: {si.get('requested') or '—'} • "
+                            f"preset: {' / '.join(str(b) for b in _bits if b) or '—'}")
+
                     # Sage customer selector - applies the customer number to the
                     # Vendor column of every row in this order
                     cust_opts = [''] + cust_numbers
