@@ -1589,6 +1589,9 @@ if page == "Order Processing":
                 oc_cols = st.columns([5, 1])
                 with oc_cols[0]:
                     n_items = len(order.get('items') or [])
+                    _units = sum(float(it.get('quantity') or 0)
+                                 for it in (order.get('items') or []))
+                    _multi = n_items > 1 or _units > 1
                     st.write(f"**{order.get('orderNumber', '(no number)')}** — "
                              f"{ss_order_channel(order, st.session_state.ss_store_map)}")
                     _shared = _addr_counts.get(_addr_key(order), 0) > 1
@@ -1596,7 +1599,8 @@ if page == "Order Processing":
                         f"{(order.get('shipTo') or {}).get('name', '')} • "
                         f"{_fmt_ss_date(order.get('orderDate'))} • "
                         f"{order.get('orderStatus', '')} • {n_items} item(s)"
-                        + (" • 🔗 shares address" if _shared else ""))
+                        + (" • 🔗 shares address" if _shared else "")
+                        + (" • ⚠️ **multi-item — edit box dims**" if _multi else ""))
                 with oc_cols[1]:
                     if _ldinv is None and st.button(
                             "Load", key=f"ss_load_{oid}",
@@ -1696,6 +1700,18 @@ if page == "Order Processing":
                             with lc2:
                                 _si = (list(_svc_map.values()).index(_pre_svc)
                                        if _svc_map and _pre_svc in _svc_map.values() else 0)
+                                # Multi-item orders usually outgrow the preset
+                                # Priority Mail box - default those to Ground
+                                # Advantage when the carrier offers it.
+                                if _multi and (not _pre_svc or
+                                               'priority' in str(_pre_svc).lower()):
+                                    _ga = next(
+                                        (_k for _k, _c2 in _svc_map.items()
+                                         if 'ground advantage' in str(_k).lower()
+                                         or 'ground_advantage' in str(_c2).lower()
+                                         or 'first_class' in str(_c2).lower()), None)
+                                    if _ga is not None:
+                                        _si = list(_svc_map).index(_ga)
                                 _sname = st.selectbox("Service", list(_svc_map) or ['(none)'],
                                                       index=_si,
                                                       key=f"lbl_svc_{oid}")
@@ -1718,6 +1734,12 @@ if page == "Order Processing":
                             if _pre_svc and _pre_svc not in _svc_map.values():
                                 st.caption(f"ShipStation preset '{_pre_svc}' isn't offered "
                                            f"by {_cname} here - pick manually.")
+                            if _multi:
+                                st.warning(
+                                    f"Multi-item order ({_units:g} units across "
+                                    f"{n_items} line(s)) — combined weight is "
+                                    "shown; edit the package dimensions before "
+                                    "creating the label.")
                             _w = (order.get('weight') or {}).get('value') or 16
                             lw1, lw2 = st.columns(2)
                             with lw1:
