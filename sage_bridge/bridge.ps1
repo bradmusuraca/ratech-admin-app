@@ -35,6 +35,15 @@ if ($env:POLL_SECONDS) { $POLL_SECONDS = [int]$env:POLL_SECONDS }
 $TABLE          = 'sage_order_queue'
 $SAGE_BASE      = if ($env:SAGE_BASE_DIR) { $env:SAGE_BASE_DIR } else { 'C:\Program Files (x86)\Sage' }
 
+# Capture console output to bridge_out.log regardless of how the process
+# was launched (Task Scheduler runs it hidden with no stdout redirect).
+try { Stop-Transcript | Out-Null } catch { }
+try {
+    Start-Transcript -Path (Join-Path $PSScriptRoot 'bridge_out.log') -Append | Out-Null
+} catch {
+    Write-Host "[!] transcript could not start: $_" -ForegroundColor Yellow
+}
+
 if (-not $SUPABASE_URL -or -not $SUPABASE_KEY -or -not $COMPANY_NAME) {
     Write-Host 'Missing SUPABASE_URL / SUPABASE_KEY / SAGE_COMPANY_NAME in .env' -ForegroundColor Red
     exit 1
