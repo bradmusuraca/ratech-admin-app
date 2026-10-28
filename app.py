@@ -2063,7 +2063,19 @@ if page == "Order Processing":
                 if not os.getenv('SAGE_AR_ACCOUNT') or not os.getenv('SAGE_GL_ACCOUNT'):
                     st.caption("Using built-in defaults: AR account 12000, G/L account 30500 "
                                "- override in Settings if needed.")
-                with st.expander("Preview SO.CSV data (Sage format)", expanded=True):
+                # Cell edits rerun only their card fragment, so this
+                # preview can lag the editor until a full rerun. The
+                # actual download/send always rebuilds from the latest
+                # data - the refresh button just forces a render.
+                _pc1, _pc2 = st.columns([5, 1])
+                with _pc1:
+                    st.caption("Preview may lag behind in-table edits - "
+                               "download and Send to Sage always use your "
+                               "latest data.")
+                with _pc2:
+                    st.button("↻ Refresh", key="refresh_export",
+                              use_container_width=True)
+                with st.expander("Preview SO.CSV data (Sage format)", expanded=False):
                     st.dataframe(sage_df, use_container_width=True)
                 ec1, ec2, ec3 = st.columns(3)
                 with ec1:
