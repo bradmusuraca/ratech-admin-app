@@ -82,6 +82,12 @@ st.markdown("""
         border-radius: 10px;
         padding: 0.6rem 1rem;
     }
+    /* Yellow-tint order cards flagged as multi-item */
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.multi-item-flag) {
+        background-color: #FFF3B0;
+        border-color: #E8C800 !important;
+    }
+    .multi-item-flag { display: none; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1581,17 +1587,20 @@ if page == "Order Processing":
             oid = str(order.get('orderId') or order.get('orderKey') or '')
             _ldinv = next((i for i in st.session_state.invoices
                            if i['key'] == ('shipstation', oid)), None)
+            n_items = len(order.get('items') or [])
+            _units = sum(float(it.get('quantity') or 0)
+                         for it in (order.get('items') or []))
+            _multi = n_items > 1 or _units > 1
             try:
                 oc = st.container(border=True)
             except TypeError:
                 oc = st.container()
             with oc:
+                if _multi:
+                    st.markdown('<div class="multi-item-flag"></div>',
+                                unsafe_allow_html=True)
                 oc_cols = st.columns([5, 1])
                 with oc_cols[0]:
-                    n_items = len(order.get('items') or [])
-                    _units = sum(float(it.get('quantity') or 0)
-                                 for it in (order.get('items') or []))
-                    _multi = n_items > 1 or _units > 1
                     st.write(f"**{order.get('orderNumber', '(no number)')}** — "
                              f"{ss_order_channel(order, st.session_state.ss_store_map)}")
                     _shared = _addr_counts.get(_addr_key(order), 0) > 1
@@ -1734,12 +1743,6 @@ if page == "Order Processing":
                             if _pre_svc and _pre_svc not in _svc_map.values():
                                 st.caption(f"ShipStation preset '{_pre_svc}' isn't offered "
                                            f"by {_cname} here - pick manually.")
-                            if _multi:
-                                st.warning(
-                                    f"Multi-item order ({_units:g} units across "
-                                    f"{n_items} line(s)) — combined weight is "
-                                    "shown; edit the package dimensions before "
-                                    "creating the label.")
                             _w = (order.get('weight') or {}).get('value') or 16
                             lw1, lw2 = st.columns(2)
                             with lw1:
