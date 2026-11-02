@@ -25,7 +25,9 @@ $BUILDS   = if ($env:ASM_BUILDS_CSV)  { $env:ASM_BUILDS_CSV }  else { Join-Path 
 $PENDING  = if ($env:ASM_PENDING_CSV) { $env:ASM_PENDING_CSV } else { Join-Path $DIR 'assembly_pending.csv' }
 $ARCHIVE  = Join-Path $DIR 'imported'
 $LOG      = Join-Path $DIR 'assembly_import.log'
-$AU3      = Join-Path $DIR 'assembly_import.au3'
+$AU3      = @('assembly_import.au3', 'asm_import.au3') |
+    ForEach-Object { Join-Path $DIR $_ } |
+    Where-Object { Test-Path $_ } | Select-Object -First 1
 $HEADER   = 'Assembly Item ID,Reference,Date,Reason to Build,Quantity Built,Number of distributions,Quantity,Component Item ID,Revision Number Used'
 
 function Log([string]$m) {
@@ -58,6 +60,10 @@ $autoit = @(
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $autoit) {
     Log 'FAIL: AutoIt3.exe not installed - download from autoitscript.com'
+    exit 1
+}
+if (-not $AU3) {
+    Log 'FAIL: assembly_import.au3 / asm_import.au3 not found'
     exit 1
 }
 

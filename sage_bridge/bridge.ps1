@@ -890,17 +890,23 @@ while ($true) {
         # backstop for runs that fail (Sage busy, dialogs, etc).
         if ($script:asmNeedsImport) {
             $script:asmNeedsImport = $false
-            $imp = Join-Path $PSScriptRoot 'import_assemblies.ps1'
-            if (Test-Path $imp) {
-                Write-Host "  [.] launching assembly import" -ForegroundColor DarkGray
+            # Accept the renamed copy too - some filenames became
+            # un-createable on the Sage box (pending-delete name lock).
+            $imp = @('import_assemblies.ps1', 'asm_import_run.ps1') |
+                ForEach-Object { Join-Path $PSScriptRoot $_ } |
+                Where-Object { Test-Path $_ } | Select-Object -First 1
+            if ($imp) {
+                Write-Host "  [.] launching assembly import ($([IO.Path]::GetFileName($imp)))" -ForegroundColor DarkGray
                 Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$imp`"" -WorkingDirectory $PSScriptRoot
             }
         }
         if ($script:adjNeedsImport) {
             $script:adjNeedsImport = $false
-            $imp = Join-Path $PSScriptRoot 'import_adjustments.ps1'
-            if (Test-Path $imp) {
-                Write-Host "  [.] launching adjustments import" -ForegroundColor DarkGray
+            $imp = @('import_adjustments.ps1', 'adj_import_run.ps1') |
+                ForEach-Object { Join-Path $PSScriptRoot $_ } |
+                Where-Object { Test-Path $_ } | Select-Object -First 1
+            if ($imp) {
+                Write-Host "  [.] launching adjustments import ($([IO.Path]::GetFileName($imp)))" -ForegroundColor DarkGray
                 Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$imp`"" -WorkingDirectory $PSScriptRoot
             }
         }

@@ -31,7 +31,9 @@ $BUILDS   = if ($env:INV_ADJ_CSV)         { $env:INV_ADJ_CSV }         else { Jo
 $PENDING  = if ($env:INV_ADJ_PENDING_CSV) { $env:INV_ADJ_PENDING_CSV } else { Join-Path $DIR 'inventory_adjustments_pending.csv' }
 $ARCHIVE  = Join-Path $DIR 'imported'
 $LOG      = Join-Path $DIR 'adjustment_import.log'
-$AU3      = Join-Path $DIR 'assembly_import.au3'
+$AU3      = @('assembly_import.au3', 'asm_import.au3') |
+    ForEach-Object { Join-Path $DIR $_ } |
+    Where-Object { Test-Path $_ } | Select-Object -First 1
 $HEADER   = 'Item ID,Reference,Date,GL Acct-Source,Quantity,Unit Cost,Reason to Adjust,Number of Distributions,Amount'
 
 function Log([string]$m) {
@@ -64,6 +66,10 @@ $autoit = @(
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $autoit) {
     Log 'FAIL: AutoIt3.exe not installed - download from autoitscript.com'
+    exit 1
+}
+if (-not $AU3) {
+    Log 'FAIL: assembly_import.au3 / asm_import.au3 not found'
     exit 1
 }
 
