@@ -83,6 +83,17 @@ function Get-Pending {
     Get-Rows $uri
 }
 
+# Launch a .ps1 with no console window. wscript (silent.vbs) creates none;
+# plain powershell -WindowStyle Hidden still flashes the console briefly.
+function Start-HiddenScript([string]$scriptPath) {
+    $vbs = Join-Path $PSScriptRoot 'silent.vbs'
+    if (Test-Path $vbs) {
+        Start-Process wscript.exe -ArgumentList "`"$vbs`" `"$scriptPath`"" -WorkingDirectory $PSScriptRoot
+    } else {
+        Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`"" -WorkingDirectory $PSScriptRoot
+    }
+}
+
 function Claim-Order([string]$key) {
     $uri = "$SUPABASE_URL/rest/v1/$TABLE`?order_key=eq.$key&status=eq.pending"
     $h = Headers; $h['Prefer'] = 'return=representation'
@@ -897,7 +908,7 @@ while ($true) {
                 Where-Object { Test-Path $_ } | Select-Object -First 1
             if ($imp) {
                 Write-Host "  [.] launching assembly import ($([IO.Path]::GetFileName($imp)))" -ForegroundColor DarkGray
-                Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$imp`"" -WorkingDirectory $PSScriptRoot
+                Start-HiddenScript $imp
             }
         }
         if ($script:adjNeedsImport) {
@@ -907,7 +918,7 @@ while ($true) {
                 Where-Object { Test-Path $_ } | Select-Object -First 1
             if ($imp) {
                 Write-Host "  [.] launching adjustments import ($([IO.Path]::GetFileName($imp)))" -ForegroundColor DarkGray
-                Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$imp`"" -WorkingDirectory $PSScriptRoot
+                Start-HiddenScript $imp
             }
         }
     } catch {
