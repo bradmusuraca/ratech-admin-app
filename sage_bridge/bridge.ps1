@@ -193,7 +193,8 @@ function New-SalesOrder($company, $payload, $refCache) {
         $ln = $so.AddLine()
         if (-not $ln) { $ln = $so.SalesOrderLines.Add() }
         $ln.InventoryItemReference = Resolve-Ref $company.Factories.InventoryItemFactory "$($line.item_id)" $refCache.Item
-        $ln.Description  = Trim-To "$($line.description)" 160
+        $sageDesc = Get-ItemDescription $company "$($line.item_id)" $refCache
+        $ln.Description  = Trim-To "$(if ($sageDesc) { $sageDesc } else { $line.description })" 160
         $ln.Quantity     = [decimal]$line.quantity
         $ln.UnitPrice    = [decimal]$line.unit_price
         $ln.Amount       = [decimal]$line.quantity * [decimal]$line.unit_price
@@ -303,6 +304,48 @@ function Get-ItemOnHand($company, [string]$itemId, $refCache) {
     try { return [decimal]$item.QuantityOnHand((Get-Date)) } catch { }
     try { return [decimal]$item.QuantityAvailable((Get-Date)) } catch { }
     return $null
+}
+
+# The item's Sage (Ratech) description, cached per sweep - used instead
+# of the customer's wording on sales order lines.
+function Get-ItemDescription($company, [string]$itemId, $refCache) {
+    $id = $itemId.Trim().ToUpper()
+    if ($refCache.Desc.ContainsKey($id)) { return $refCache.Desc[$id] }
+    $d = $null
+    try {
+        $key = Resolve-Ref $company.Factories.InventoryItemFactory $itemId $refCache.Item
+        $item = $company.Factories.InventoryItemFactory.Load($key)
+        $d = "$($item.Description)".Trim()
+    } catch { }
+    $refCache.Desc[$id] = $d
+    return $d
+}
+
+# Push every item's ID -> description into the `items` table so the app
+# can substitute Ratech descriptions at order-build time. Runs once per
+# bridge process; a missing table (pre-migration) just logs and skips.
+function Sync-ItemDescriptions($company) {
+    if ($script:descSynced) { return }
+    $script:descSynced = $true
+    try {
+        $il = $company.Factories.InventoryItemFactory.List()
+        $il.Load()
+        $rows = @()
+        foreach ($it in $il) {
+            $iid = "$($it.ID)".Trim()
+            if ($iid) { $rows += @{ item_id = $iid; description = "$($it.Description)".Trim() } }
+        }
+        $h = Headers; $h['Prefer'] = 'resolution=merge-duplicates'
+        for ($i = 0; $i -lt $rows.Count; $i += 400) {
+            $batch = @($rows | Select-Object -Skip $i -First 400)
+            Invoke-RestMethod -Uri "$SUPABASE_URL/rest/v1/items" -Method Post `
+                -Headers $h -ContentType 'application/json' `
+                -Body (ConvertTo-Json -InputObject $batch -Compress) -TimeoutSec 30 | Out-Null
+        }
+        Write-Host "  [.] item descriptions synced ($($rows.Count))" -ForegroundColor DarkGray
+    } catch {
+        Write-Host "  [!] item description sync skipped: $_" -ForegroundColor Yellow
+    }
 }
 
 # Flip a packing row's status (e.g. back to 'open' when a build/invoice
@@ -754,8 +797,9 @@ while ($true) {
         if (-not $sess) {
             $sess = Open-SageCompany
             Write-Host "  [.] sage open OK" -ForegroundColor DarkGray
+            Sync-ItemDescriptions $sess.Company
         }
-        $refCache = @{ Customer = @{}; Item = @{}; Account = @{} }
+        $refCache = @{ Customer = @{}; Item = @{}; Account = @{}; Desc = @{} }
         $bom = Get-BomMap
         $costs = Get-CostMap
         $script:asmIds = $null

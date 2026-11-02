@@ -32,7 +32,7 @@ from sage_queue import (is_configured as sage_queue_configured,
                         get_order_ship_to, get_order_payload,
                         store_order_docs, get_order_doc,
                         get_fedex_profile, save_fedex_profile,
-                        delete_fedex_profile)
+                        delete_fedex_profile, get_item_descriptions)
 from fedex import (is_configured as fedex_configured,
                    get_rates as fedex_get_rates,
                    validate_address as fedex_validate_address,
@@ -821,6 +821,16 @@ def _split_ship_to(text):
     return name, l1, l2, city, state, zipc
 
 
+@st.cache_data(ttl=300)
+def _sage_item_descs():
+    """item_id -> Ratech description, synced from Sage via Supabase.
+    Empty dict until the table exists / first bridge sync lands."""
+    try:
+        return get_item_descriptions()
+    except Exception:
+        return {}
+
+
 def build_sage_sales_orders(df):
     """Transform the internal order table into the Sage 50 Sales Order
     Journal (SO.CSV) layout, matching the company's export template.
@@ -867,7 +877,11 @@ def build_sage_sales_orders(df):
                 amount = ''
             if amount != '':
                 amount = -abs(float(amount))  # sales order lines are credits
-            desc = str(r.get('Description', ''))
+            # Prefer the Ratech (Sage) item description over the customer's
+            # wording so sales orders and pick lists read consistently.
+            desc = _sage_item_descs().get(
+                str(r.get('Inventory Item', '')).strip().upper(),
+                str(r.get('Description', '')))
             if is_batch:
                 desc = (f"[{r.get('Purchase Order Number', '')}] "
                         f"{r.get('Ship To', '')} - {desc}")

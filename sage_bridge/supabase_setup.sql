@@ -63,3 +63,13 @@ create table if not exists fedex_profiles (
 );
 
 alter table fedex_profiles enable row level security;
+
+-- Ratech item descriptions synced from Sage by the bridge, so sales
+-- orders/pick lists carry our wording instead of the customer's.
+create table if not exists items (
+    item_id        text primary key,
+    description    text,
+    updated_at     timestamptz not null default now()
+);
+
+alter table items enable row level security;

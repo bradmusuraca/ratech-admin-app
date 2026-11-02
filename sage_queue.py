@@ -19,6 +19,7 @@ TABLE = 'sage_order_queue'
 OPEN_TABLE = 'open_orders'
 DOCS_TABLE = 'order_docs'
 PROFILES_TABLE = 'fedex_profiles'
+ITEMS_TABLE = 'items'
 
 
 def is_configured():
@@ -354,6 +355,21 @@ def delete_fedex_profile(customer_id):
     requests.delete(
         _url(PROFILES_TABLE, customer_id=f'eq.{customer_id}'),
         headers=_headers(), timeout=30).raise_for_status()
+
+
+def get_item_descriptions():
+    """Ratech (Sage) item descriptions synced by the bridge.
+    Returns {ITEM_ID_UPPER: description}; empty when unconfigured or the
+    table hasn't been created/synced yet."""
+    if not is_configured():
+        return {}
+    resp = requests.get(
+        _url(ITEMS_TABLE, select='item_id,description'),
+        headers=_headers(), timeout=30)
+    if resp.status_code >= 400:
+        return {}
+    return {str(r['item_id']).strip().upper(): str(r.get('description') or '')
+            for r in resp.json() if r.get('item_id')}
 
 
 def get_order_doc(order_key):
