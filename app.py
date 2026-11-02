@@ -420,6 +420,23 @@ def save_email_rule(sender_header, classification):
         print(f"Could not save email rules: {e}")
 
 
+def _email_accounts():
+    """Configured mailboxes to scan. Primary account uses EMAIL_*; extra
+    mailboxes use EMAIL_USER2/EMAIL_PASSWORD2 (and so on) with optional
+    EMAIL_HOST2/EMAIL_PORT2 overrides falling back to the primary's."""
+    base_host = os.getenv('EMAIL_HOST', 'imap.mail.yahoo.com')
+    base_port = os.getenv('EMAIL_PORT', '993')
+    accts = []
+    for i in range(1, 6):
+        s = '' if i == 1 else str(i)
+        u, p = os.getenv(f'EMAIL_USER{s}'), os.getenv(f'EMAIL_PASSWORD{s}')
+        if u and p:
+            accts.append({'host': os.getenv(f'EMAIL_HOST{s}', base_host),
+                          'port': os.getenv(f'EMAIL_PORT{s}', base_port),
+                          'user': u, 'password': p})
+    return accts
+
+
 def classify_email(item, rules):
     """Return 'order', 'ignore' or 'unknown' for an inbox item."""
     addr = extract_email_address(item.get('sender', '')).lower()
@@ -1410,25 +1427,36 @@ if page == "Order Processing":
     st.caption(f"Showing unread emails received on/after {email_since}. "
                "Load or Ignore marks an email read; untouched mail stays unread.")
 
+    accounts = _email_accounts()
     if st.button("🔍 Check Inbox for New Orders"):
-        if not email_user or not email_pass:
+        if not accounts:
             st.warning("Email credentials not configured. Add them in the Settings page.")
         else:
             with st.spinner("Checking inbox for unread emails..."):
-                try:
-                    items = list_unseen_orders(email_host, email_port, email_user,
-                                               email_pass, since=email_since)
-                    rules = load_email_rules()
-                    for i in items:
-                        i['classification'] = classify_email(i, rules)
-                    items = [i for i in items if i['uid'] not in st.session_state.loaded_uids]
-                    st.session_state.inbox_items = items
-                    if items:
-                        st.success(f"Found {len(items)} unread email(s)")
-                    else:
-                        st.info("No unread emails in the inbox.")
-                except Exception as e:
-                    st.error(f"Inbox check failed: {e}")
+                items, acct_errs = [], []
+                for ai, acct in enumerate(accounts):
+                    try:
+                        got = list_unseen_orders(acct['host'], acct['port'],
+                                                 acct['user'], acct['password'],
+                                                 since=email_since)
+                        for it in got:
+                            it['acct'] = acct
+                            it['key'] = f"{ai}:{it['uid']}"
+                            it['mailbox'] = acct['user']
+                        items.extend(got)
+                    except Exception as e:
+                        acct_errs.append(f"{acct['user']}: {e}")
+                rules = load_email_rules()
+                for i in items:
+                    i['classification'] = classify_email(i, rules)
+                items = [i for i in items if i['key'] not in st.session_state.loaded_uids]
+                st.session_state.inbox_items = items
+                if items:
+                    st.success(f"Found {len(items)} unread email(s)")
+                elif not acct_errs:
+                    st.info("No unread emails in the inbox.")
+                for e in acct_errs:
+                    st.error(f"Inbox check failed - {e}")
 
     for item in st.session_state.inbox_items:
         try:
@@ -1441,42 +1469,49 @@ if page == "Order Processing":
                 _cls = item.get('classification', 'unknown')
                 _badge = {'order': '📦 order', 'ignore': '🚫 ignore'}.get(_cls, '❓ unknown')
                 st.write(f"**{item['subject']}**")
-                st.caption(f"{item['sender']} • {item['date']} • {_badge}")
+                st.caption(f"{item['sender']} • {item['date']} • {_badge}"
+                           + (f" • 📬 {item['mailbox']}" if item.get('mailbox')
+                              and len(accounts) > 1 else ""))
+            acct = item.get('acct')
             with item_cols[1]:
-                if st.button("Load", key=f"load_{item['uid']}"):
-                    if not email_user or not email_pass:
+                if st.button("Load", key=f"load_{item.get('key', item['uid'])}"):
+                    if not acct:
                         st.warning("Email credentials not configured.")
                     else:
                         with st.spinner("Loading PDF attachment(s)..."):
                             try:
-                                pdfs = fetch_pdf_from_message(email_host, email_port, email_user, email_pass, item['uid'])
+                                pdfs = fetch_pdf_from_message(acct['host'], acct['port'],
+                                                              acct['user'], acct['password'],
+                                                              item['uid'])
                             except Exception as e:
                                 st.error(f"Failed to load attachment: {e}")
                                 pdfs = []
                         if not pdfs:
                             # No PDF - the email body itself may be the order
                             try:
-                                body = fetch_body_from_message(email_host, email_port,
-                                                               email_user, email_pass, item['uid'])
+                                body = fetch_body_from_message(acct['host'], acct['port'],
+                                                               acct['user'], acct['password'],
+                                                               item['uid'])
                             except Exception as e:
                                 st.error(f"Failed to read email body: {e}")
                                 body = ''
                             if body.strip():
                                 meta = {'uid': item['uid'], 'subject': item['subject'],
-                                        'sender': item['sender'], 'date': item['date']}
-                                inv_key = ('inbox', item['uid'], 'body')
+                                        'sender': item['sender'], 'date': item['date'],
+                                        'mailbox': item.get('mailbox')}
+                                inv_key = ('inbox', item.get('key', item['uid']), 'body')
                                 if inv_key not in {inv['key'] for inv in st.session_state.invoices}:
                                     st.session_state.invoices.append(
                                         build_text_invoice(body, f"Email: {item['subject']}",
                                                            inv_key, email_meta=meta))
                                 save_email_rule(item['sender'], 'order')
                                 try:
-                                    mark_as_read(email_host, email_port, email_user,
-                                                 email_pass, item['uid'])
+                                    mark_as_read(acct['host'], acct['port'], acct['user'],
+                                                 acct['password'], item['uid'])
                                 except Exception as e:
                                     st.warning(f"Order loaded but could not mark email read: {e}")
-                                st.session_state.loaded_uids.add(item['uid'])
-                                st.session_state.inbox_items = [i for i in st.session_state.inbox_items if i['uid'] != item['uid']]
+                                st.session_state.loaded_uids.add(item.get('key', item['uid']))
+                                st.session_state.inbox_items = [i for i in st.session_state.inbox_items if i.get('key', i['uid']) != item.get('key', item['uid'])]
                                 st.rerun()
                             else:
                                 st.warning("No PDF attachment and no readable email body.")
@@ -1484,10 +1519,11 @@ if page == "Order Processing":
                             existing = {inv['key'] for inv in st.session_state.invoices}
                             loaded = 0
                             for pdf in pdfs:
-                                inv_key = ('inbox', item['uid'], pdf['filename'])
+                                inv_key = ('inbox', item.get('key', item['uid']), pdf['filename'])
                                 if inv_key not in existing:
                                     meta = {'uid': item['uid'], 'subject': item['subject'],
-                                            'sender': item['sender'], 'date': item['date']}
+                                            'sender': item['sender'], 'date': item['date'],
+                                            'mailbox': item.get('mailbox')}
                                     st.session_state.invoices.append(
                                         build_invoice(pdf['bytes'], pdf['filename'], inv_key,
                                                       email_meta=meta))
@@ -1495,25 +1531,25 @@ if page == "Order Processing":
                                     loaded += 1
                             save_email_rule(item['sender'], 'order')
                             try:
-                                mark_as_read(email_host, email_port, email_user,
-                                             email_pass, item['uid'])
+                                mark_as_read(acct['host'], acct['port'], acct['user'],
+                                             acct['password'], item['uid'])
                             except Exception as e:
                                 st.warning(f"Order loaded but could not mark email read: {e}")
-                            st.session_state.loaded_uids.add(item['uid'])
-                            st.session_state.inbox_items = [i for i in st.session_state.inbox_items if i['uid'] != item['uid']]
+                            st.session_state.loaded_uids.add(item.get('key', item['uid']))
+                            st.session_state.inbox_items = [i for i in st.session_state.inbox_items if i.get('key', i['uid']) != item.get('key', item['uid'])]
                             if loaded:
                                 st.rerun()
             with item_cols[2]:
-                if st.button("Ignore", key=f"ignore_{item['uid']}"):
+                if st.button("Ignore", key=f"ignore_{item.get('key', item['uid'])}"):
                     save_email_rule(item['sender'], 'ignore')
-                    if email_user and email_pass:
+                    if acct:
                         try:
-                            mark_as_read(email_host, email_port, email_user,
-                                         email_pass, item['uid'])
+                            mark_as_read(acct['host'], acct['port'], acct['user'],
+                                         acct['password'], item['uid'])
                         except Exception as e:
                             st.warning(f"Could not mark email read: {e}")
-                    st.session_state.loaded_uids.add(item['uid'])
-                    st.session_state.inbox_items = [i for i in st.session_state.inbox_items if i['uid'] != item['uid']]
+                    st.session_state.loaded_uids.add(item.get('key', item['uid']))
+                    st.session_state.inbox_items = [i for i in st.session_state.inbox_items if i.get('key', i['uid']) != item.get('key', item['uid'])]
                     st.rerun()
 
     st.divider()
@@ -3196,6 +3232,32 @@ elif page == "Settings":
         })
         st.success("Email settings saved")
         st.rerun()
+
+    with st.expander("➕ Additional mailbox (optional)"):
+        st.caption("Scan a second inbox for orders. Host/port fall back to "
+                   "the primary mailbox's when left as shown.")
+        _h2 = os.getenv('EMAIL_HOST2', cur_host)
+        _p2 = os.getenv('EMAIL_PORT2', cur_port)
+        email_user2 = st.text_input("Email Address 2", value=os.getenv('EMAIL_USER2', ''),
+                                    key='set_email_user2',
+                                    placeholder="e.g. jm@ratech.us")
+        email_pass2 = st.text_input("Email App Password 2", value=os.getenv('EMAIL_PASSWORD2', ''),
+                                    type='password', key='set_email_pass2')
+        ec21, ec22 = st.columns(2)
+        with ec21:
+            email_host2 = st.text_input("IMAP Host 2", value=_h2, key='set_email_host2')
+        with ec22:
+            email_port2 = st.text_input("IMAP Port 2", value=_p2, key='set_email_port2')
+        if st.button("Save Second Mailbox", key='save_email2'):
+            save_env_vars({
+                'EMAIL_HOST2': email_host2,
+                'EMAIL_PORT2': email_port2,
+                'EMAIL_USER2': email_user2,
+                'EMAIL_PASSWORD2': email_pass2,
+            })
+            st.success("Second mailbox saved" +
+                       ("" if email_user2 else " (cleared - only the primary scans)"))
+            st.rerun()
 
     st.divider()
 
