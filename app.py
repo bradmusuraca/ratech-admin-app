@@ -1899,6 +1899,22 @@ if page == "Order Processing":
                                             st.session_state.ss_labels[oid] = {
                                                 'tracking': resp.get('trackingNumber', ''),
                                                 'pdf': _lpdf}
+                                            # Queue the Sage sales order +
+                                            # packing row, same as batch.
+                                            if sage_queue_configured():
+                                                try:
+                                                    _sdf = build_sage_sales_orders(
+                                                        build_shipstation_order_invoice(
+                                                            order,
+                                                            ('shipstation', oid),
+                                                            st.session_state
+                                                            .ss_store_map)['df'])
+                                                    sage_queue_push(_sdf)
+                                                    create_open_orders(_sdf)
+                                                except Exception as e2:
+                                                    st.warning(
+                                                        "Label created but the "
+                                                        f"Sage push failed: {e2}")
                                             st.rerun()
                                         except Exception as e:
                                             st.error(f"Label failed: {label_error_message(e)}")
