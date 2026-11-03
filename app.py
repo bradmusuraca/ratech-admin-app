@@ -2053,6 +2053,21 @@ if page == "Order Processing":
                             results.append(('fail',
                                 f"⚠️ Sage sales orders failed: {e3}"))
                     if pdfs:
+                        # Append a pick list of the shipped orders so the
+                        # one print job carries labels + pick sheet.
+                        try:
+                            _pl = build_pick_list_pdf([
+                                (str(_o.get('orderNumber', '')),
+                                 build_shipstation_order_invoice(
+                                     _o, ('shipstation',
+                                          str(_o.get('orderId')
+                                               or _o.get('orderKey') or '')),
+                                     st.session_state.ss_store_map)['df'])
+                                for _o in so_orders])
+                            if _pl:
+                                pdfs.append(_pl)
+                        except Exception:
+                            pass
                         st.session_state.ss_batch_pdf = _merge_pdfs(pdfs)
                         st.session_state._print_batch = True
                     else:
