@@ -2131,7 +2131,7 @@ if page == "Order Processing":
                                     st.session_state.ss_store_map)['df']
                                  for _o2 in so_orders], ignore_index=True))
                             _sent, _skipped = sage_queue_push(_sdf)
-                            # Already shipped - no packing row needed.
+                            _packed, _ = create_open_orders(_sdf)
                             results.append(('ok',
                                 f"🧾 Sage: {len(_sent)} sales order(s) queued"
                                 + (f" ({len(_skipped)} already queued)"

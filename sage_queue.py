@@ -133,6 +133,7 @@ def create_open_orders(sage_df):
     """Create packing-list rows for each Sage transaction.
     Returns (inserted, skipped) order_key lists."""
     txs = transactions_from_sage_df(sage_df)
+    item_descs = get_item_descriptions()
     rows = []
     for tx in txs:
         key = _order_key(tx)
@@ -143,7 +144,8 @@ def create_open_orders(sage_df):
             'status': 'open',
             'lines': [{
                 'item_id': l['item_id'],
-                'description': l['description'],
+                'description': item_descs.get(
+                    str(l['item_id']).strip().upper(), l['description']),
                 'qty_required': l['quantity'],
                 'qty_packed': None,
             } for l in tx['lines']],
