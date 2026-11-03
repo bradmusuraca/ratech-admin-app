@@ -2212,7 +2212,11 @@ if page == "Order Processing":
 
 
 
+        _lbl_ids = st.session_state.ss_labels
         for idx, inv in enumerate(st.session_state.invoices):
+            # Labeled ShipStation orders are processed - out of the queue.
+            if inv['key'][:1] == ('shipstation',) and inv['key'][1] in _lbl_ids:
+                continue
             _order_card(idx, inv, cust_numbers, cust_names)
 
         # --- Combined validation & export ---
@@ -2221,7 +2225,9 @@ if page == "Order Processing":
         for inv in st.session_state.invoices:
             resolve_vendor(inv)
         all_dfs = [inv['df'] for inv in st.session_state.invoices
-                   if inv['df'] is not None and not inv['df'].empty]
+                   if inv['df'] is not None and not inv['df'].empty
+                   and not (inv['key'][:1] == ('shipstation',)
+                            and inv['key'][1] in _lbl_ids)]
         if all_dfs:
             combined = pd.concat(all_dfs, ignore_index=True)
 
