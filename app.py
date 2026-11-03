@@ -801,6 +801,7 @@ def build_pick_list_pdf(orders):
         pdf.set_fill_color(220, 230, 245)
         pdf.multi_cell(sum(widths), 7, t('  |  '.join(bits)),
                        border=1, fill=True)
+        pdf.set_x(pdf.l_margin)  # newer fpdf2 leaves x at the right edge
         pdf.set_font('helvetica', '', 9)
         for _, r in df.iterrows():
             if pdf.get_y() > pdf.page_break_trigger - 10:
