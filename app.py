@@ -1917,55 +1917,6 @@ if page == "Order Processing":
                             st.selectbox("Package", list(_pk_opts) or ['(none)'],
                                          index=_pdef, key=f"cbp_{_ak}")
 
-                # Orders with no ShipStation preset (typical for multi-item
-                # orders) get carrier/service/package pickers instead of
-                # failing outright.
-                _nop = [o for o in _sel_orders
-                        if not (o.get('carrierCode') and o.get('serviceCode')
-                                and o.get('packageCode'))]
-                _nc = {}
-                if _nop:
-                    if not st.session_state.ss_carriers:
-                        try:
-                            st.session_state.ss_carriers = ss_list_carriers(ss_key, ss_secret)
-                        except Exception as e:
-                            st.error(f"Could not load carriers: {e}")
-                    _nc = {c.get('name', c.get('code')): c.get('code')
-                           for c in st.session_state.ss_carriers}
-                    st.write("**No ShipStation preset** — pick how these ship:")
-                    for _o in _nop:
-                        _oid = str(_o.get('orderId') or _o.get('orderKey') or '')
-                        _un = sum(float(x.get('quantity') or 0)
-                                  for x in (_o.get('items') or []))
-                        st.caption(f"📦 {_o.get('orderNumber', _oid)} — {_un:g} unit(s)")
-                        c1, c2, c3 = st.columns(3)
-                        with c1:
-                            _cn = st.selectbox("Carrier", list(_nc) or ['(none)'],
-                                               key=f"npc_{_oid}")
-                        _cc = _nc.get(_cn)
-                        try:
-                            _sv = st.session_state.ss_opts_cache.get(str(_cc) + '_svc') or \
-                                ss_list_services(ss_key, ss_secret, _cc)
-                            st.session_state.ss_opts_cache[str(_cc) + '_svc'] = _sv
-                        except Exception:
-                            _sv = []
-                        _sm = {s.get('name', s.get('code')): s.get('code') for s in _sv}
-                        _si = 0
-                        if _un > 1:
-                            _ga = next((i for i, (_n2, _c2) in enumerate(_sm.items())
-                                        if 'ground advantage' in str(_n2).lower()
-                                        or 'ground_advantage' in str(_c2).lower()
-                                        or 'first_class' in str(_c2).lower()), None)
-                            if _ga is not None:
-                                _si = _ga
-                        with c2:
-                            st.selectbox("Service", list(_sm) or ['(none)'],
-                                         index=_si, key=f"nps_{_oid}")
-                        with c3:
-                            _pk = _package_options(ss_key, ss_secret, _cc or '')
-                            st.selectbox("Package", list(_pk) or ['(none)'],
-                                         key=f"npp_{_oid}")
-
                 _n_labels = len(work_groups)
                 if st.button(
                         f"Create {_n_labels} label(s) for {len(_sel_orders)} order(s)",
@@ -1998,22 +1949,29 @@ if page == "Order Processing":
                         _car = primary.get('carrierCode')
                         _svc = primary.get('serviceCode')
                         if not (_car and _svc and _pkg_code):
-                            # Preset incomplete - fill gaps from the batch
-                            # section's per-order picks.
-                            _pcn = st.session_state.get(f"npc_{oid2}")
-                            if _pcn and _pcn != '(none)':
-                                _car = _car or _nc.get(_pcn)
+                            # Preset incomplete - use this order's card picks
+                            # (the per-order label section above the batch).
+                            if not st.session_state.ss_carriers:
+                                try:
+                                    st.session_state.ss_carriers = ss_list_carriers(ss_key, ss_secret)
+                                except Exception:
+                                    pass
+                            _car = _car or {c.get('name', c.get('code')): c.get('code')
+                                            for c in st.session_state.ss_carriers}.get(
+                                                st.session_state.get(f"lbl_car_{oid2}"))
                             if _car:
                                 _sv2 = st.session_state.ss_opts_cache.get(str(_car) + '_svc') or []
-                                _psn = st.session_state.get(f"nps_{oid2}")
                                 _svc = _svc or {s.get('name', s.get('code')): s.get('code')
-                                                for s in _sv2}.get(_psn)
-                                _ppn = st.session_state.get(f"npp_{oid2}")
+                                                for s in _sv2}.get(
+                                                    st.session_state.get(f"lbl_svc_{oid2}"))
+                                _ppn = st.session_state.get(f"lbl_pkg_{oid2}")
                                 if _ppn and _ppn != '(none)':
                                     _pkc = _package_options(
                                         ss_key, ss_secret, _car).get(_ppn)
                                     if _pkc:
                                         _pkg_code, _dims = _pkc
+                            if len(grp) == 1:
+                                wt = float(st.session_state.get(f"lbl_w_{oid2}") or wt)
                         if not (_car and _svc and _pkg_code):
                             results.append(('fail',
                                 f"⚠️ {nums}: no shipping preset in ShipStation — "
