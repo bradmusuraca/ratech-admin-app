@@ -1032,60 +1032,132 @@ def _merge_pdfs(pdf_blobs):
     return buf.getvalue()
 
 
-def _label_sheet(orders, label_pdf):
-    """Compose a ShipStation-style print sheet on landscape 8.5x11: order
-    number(s), ship-to, and item lines (with marketplace thumbnails when
-    available) down the left half; the carrier label on the right. Falls
-    back to the raw label on any failure."""
+def _label_sheet(orders, label_pdf, dims=None):
+    """ShipStation-style combined sheet on portrait 8.5x11: carrier label
+    rotated into the top half; a 'Packing Slip' below - return address,
+    ship-to, order meta, box dims and an item table (thumbnails, prices,
+    ext. price, sub total). Falls back to the raw label on any failure."""
     try:
         import fitz
         import requests as _rq
         src = fitz.open(stream=label_pdf, filetype='pdf')
         sheet = fitz.open()
-        page = sheet.new_page(width=792, height=612)  # landscape letter
-        M, y = 36, 48
-        R = 372  # right edge of the info column
-        nums = ', '.join(str(o.get('orderNumber') or '') for o in orders)
-        page.insert_text((M, y), nums, fontsize=16, fontname='hebo')
+        page = sheet.new_page(width=612, height=792)
+        W, M, GRAY = 612, 40, (0.45, 0.45, 0.45)
+
+        # --- carrier label, rotated into the top half ---
+        page.show_pdf_page(fitz.Rect(M - 8, 16, W - M + 8, 400), src, 0,
+                           rotate=90)
+
+        # --- packing slip ---
+        bar = fitz.Rect(M, 416, W - M, 438)
+        page.draw_rect(bar, fill=GRAY, color=None)
+        page.insert_textbox(bar, "Packing Slip", fontsize=10, fontname='hebo',
+                            color=(1, 1, 1), align=1)
+        y = 458
+        page.insert_text((M, y), os.getenv('FEDEX_SHIPPER_STREET',
+                                           '11110 Adwood Drive'), fontsize=9)
+        page.insert_text((M, y + 12),
+                         f"{os.getenv('FEDEX_SHIPPER_CITY', 'Cincinnati')}, "
+                         f"{os.getenv('FEDEX_SHIPPER_STATE', 'OH')} "
+                         f"{os.getenv('FEDEX_SHIPPER_ZIP', '45240')}",
+                         fontsize=9)
+
+        y += 40
+        page.insert_text((M, y), "Ship To:", fontsize=9, fontname='hebo')
         st_ = orders[0].get('shipTo') or {}
-        y += 26
-        page.insert_text((M, y), "Ship To:", fontsize=10, fontname='hebo')
+        st_y = y
         for ln in [st_.get('name'), st_.get('street1'), st_.get('street2'),
                    ' '.join(p for p in [st_.get('city'), st_.get('state'),
-                                        st_.get('postalCode')] if p)]:
+                                        st_.get('postalCode')] if p) + ' US']:
             if ln:
-                y += 14
-                page.insert_text((M + 10, y), str(ln), fontsize=10)
-        y += 24
-        page.draw_line(fitz.Point(M, y), fitz.Point(R, y))
+                page.insert_text((M + 60, st_y), str(ln), fontsize=9)
+                st_y += 13
+        # order meta, right side
+        from datetime import date as _dd
+        nums = ', '.join(str(o.get('orderNumber') or '') for o in orders)
+        meta = [('Order #', nums),
+                ('Date', _fmt_ss_date(orders[0].get('orderDate'))),
+                ('Ship Date', _dd.today().strftime('%-m/%-d/%Y')
+                 if os.name != 'nt' else
+                 _dd.today().strftime('%m/%d/%Y').lstrip('0').replace('/0', '/'))]
+        my = y
+        for lab, val in meta:
+            page.insert_text((W - M - 200, my), lab, fontsize=9, fontname='hebo')
+            page.insert_text((W - M - 150, my), str(val), fontsize=9)
+            my += 16
+
+        # box dims line under ship-to
+        if not dims:
+            dims = orders[0].get('dimensions') or {}
+        if dims.get('length'):
+            st_y += 8
+            page.insert_text(
+                (M, st_y),
+                f"Box {dims.get('length'):g} x {dims.get('width'):g} x "
+                f"{dims.get('height'):g}", fontsize=9)
+            st_y += 6
+        y = max(st_y, my) + 22
+
+        # --- item table ---
+        cols = [(M, 'Item', 'l'), (M + 70, 'Image', 'l'), (M + 118, 'Description', 'l'),
+                (W - M - 190, 'Price', 'r'), (W - M - 120, 'Qty', 'r'),
+                (W - M, 'Ext. Price', 'r')]
+        hdr = fitz.Rect(M, y, W - M, y + 16)
+        page.draw_rect(hdr, fill=GRAY, color=None)
+        for x, h, al in cols:
+            page.insert_textbox(fitz.Rect(x, y, x + 130, y + 16), h,
+                                fontsize=8, fontname='hebo', color=(1, 1, 1),
+                                align=2 if al == 'r' else 0)
         y += 16
-        for it in (o.get('items') or [] for o in orders):
-            for it2 in it:
-                x_img = M
-                url = it2.get('imageUrl')
+        sub_total = 0.0
+        for o in orders:
+            for it in (o.get('items') or []):
+                if y > 720:
+                    page = sheet.new_page(width=612, height=792)
+                    y = 60
+                rh = 40
+                qty = it.get('quantity') or 0
+                price = it.get('unitPrice')
+                ext = qty * price if isinstance(price, (int, float)) else None
+                if ext is not None:
+                    sub_total += ext
+                page.insert_text((cols[0][0], y + 12), str(it.get('sku', '')),
+                                 fontsize=8)
+                url = it.get('imageUrl')
                 if url:
                     try:
                         r = _rq.get(url, timeout=8)
                         if r.status_code == 200 and len(r.content) > 100:
                             page.insert_image(
-                                fitz.Rect(M, y - 4, M + 36, y + 32),
+                                fitz.Rect(cols[1][0], y + 2,
+                                          cols[1][0] + 34, y + 36),
                                 stream=r.content)
-                            x_img = M + 44
                     except Exception:
                         pass
-                price = it2.get('unitPrice')
-                txt = (f"{it2.get('quantity', '')}×  {it2.get('sku', '')}  —  "
-                       f"{it2.get('name', '')}"
-                       + (f"  @  ${price:.2f}" if isinstance(price, (int, float))
-                          else ''))
-                page.insert_textbox(fitz.Rect(x_img, y, R, y + 40),
-                                    txt, fontsize=9)
-                y += 44
-                if y > 560:
-                    break
-        # Carrier label fills the right half.
-        page.draw_line(fitz.Point(396, M), fitz.Point(396, 576), width=0.5)
-        page.show_pdf_page(fitz.Rect(408, M, 756, 576), src, 0)
+                page.insert_textbox(
+                    fitz.Rect(cols[2][0], y + 2, W - M - 200, y + rh),
+                    str(it.get('name', '')), fontsize=8)
+                if isinstance(price, (int, float)):
+                    page.insert_textbox(
+                        fitz.Rect(cols[3][0] - 130, y + 12, cols[3][0], y + 12 + 12),
+                        f"${price:.2f}", fontsize=8, align=2)
+                page.insert_textbox(
+                    fitz.Rect(cols[4][0] - 60, y + 12, cols[4][0], y + 24),
+                    f"{qty:g}", fontsize=8, align=2)
+                if ext is not None:
+                    page.insert_textbox(
+                        fitz.Rect(cols[5][0] - 90, y + 12, cols[5][0], y + 24),
+                        f"${ext:.2f}", fontsize=8, align=2)
+                page.draw_line(fitz.Point(M, y + rh), fitz.Point(W - M, y + rh),
+                               color=(0.8, 0.8, 0.8), width=0.4)
+                y += rh
+        # sub total, bottom right
+        y += 12
+        page.insert_textbox(fitz.Rect(W - M - 200, y, W - M - 100, y + 14),
+                            "Sub Total:", fontsize=9, fontname='hebo', align=2)
+        page.insert_textbox(fitz.Rect(W - M - 90, y, W - M, y + 14),
+                            f"${sub_total:.2f}", fontsize=9, align=2)
         return sheet.tobytes()
     except Exception:
         return label_pdf
@@ -1826,7 +1898,8 @@ if page == "Order Processing":
                                                 dimensions=_pdims)
                                             _lpdf = label_pdf_bytes(resp)
                                             if _lpdf[:4] == b'%PDF':
-                                                _lpdf = _label_sheet([order], _lpdf)
+                                                _lpdf = _label_sheet([order], _lpdf,
+                                                                     dims=_pdims)
                                             st.session_state.ss_labels[oid] = {
                                                 'tracking': resp.get('trackingNumber', ''),
                                                 'pdf': _lpdf}
@@ -2009,7 +2082,7 @@ if page == "Order Processing":
                                 track = resp.get('trackingNumber', '')
                                 pdf = label_pdf_bytes(resp)
                                 if pdf[:4] == b'%PDF':
-                                    pdf = _label_sheet(grp, pdf)
+                                    pdf = _label_sheet(grp, pdf, dims=_dims)
                                     pdfs.append(pdf)
                                 st.session_state.ss_labels[oid2] = {
                                     'tracking': track, 'pdf': pdf}
