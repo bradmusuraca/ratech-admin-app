@@ -788,27 +788,12 @@ def build_pick_list_pdf(orders):
     for name, df in orders:
         if df is None or df.empty:
             continue
-        r0 = df.iloc[0]
-        bits = [t(name)]
-        for label, col in [('PO', 'Purchase Order Number'),
-                           ('Ship By', 'Ship By Date'),
-                           ('Cust', 'Vendor'),
-                           ('To', 'Ship To')]:
-            val = ' '.join(t(r0.get(col, '')).split())
-            if val and val.lower() != 'nan':
-                bits.append(f'{label}: {val}')
-        pdf.set_font('helvetica', 'B', 9)
-        pdf.set_fill_color(220, 230, 245)
-        pdf.multi_cell(sum(widths), 7, t('  |  '.join(bits)),
-                       border=1, fill=True)
-        pdf.set_x(pdf.l_margin)  # newer fpdf2 leaves x at the right edge
-        pdf.set_font('helvetica', '', 9)
         for _, r in df.iterrows():
             if pdf.get_y() > pdf.page_break_trigger - 10:
                 pdf.add_page()
                 header_row()
             pdf.cell(widths[0], 7, t(r.get('Inventory Item', ''))[:24], border=1)
-            pdf.cell(widths[1], 7, t(r.get('Description', ''))[:60], border=1)
+            pdf.cell(widths[1], 7, t(r.get('Description', ''))[:38], border=1)
             pdf.cell(widths[2], 7, t(r.get('Quantity', '')), border=1)
             pdf.cell(widths[3], 7, '', border=1)
             pdf.ln()
