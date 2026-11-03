@@ -5,6 +5,7 @@ ShipStation -> Settings -> Account -> API Settings. API access requires
 a Standard plan or higher.
 """
 import requests
+from datetime import date
 from typing import List, Dict, Optional
 
 API_BASE = 'https://ssapi.shipstation.com'
@@ -121,11 +122,10 @@ def create_label(api_key: str, api_secret: str, order_id,
         'weight': {'value': float(weight_oz), 'units': 'ounces'},
         'testLabel': bool(test),
     }
-    if ship_date:
-        body['shipDate'] = ship_date
+    body['shipDate'] = ship_date or date.today().isoformat()
     if dimensions:
         body['dimensions'] = dimensions
-    resp = requests.post(f'{API_BASE}/orders/createlabel', json=body,
+    resp = requests.post(f'{API_BASE}/orders/createlabelfororder', json=body,
                          auth=(api_key, api_secret), timeout=60)
     resp.raise_for_status()
     return resp.json()
