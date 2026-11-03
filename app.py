@@ -902,7 +902,13 @@ def build_sage_sales_orders(df):
             if is_batch:
                 desc = (f"[{r.get('Purchase Order Number', '')}] "
                         f"{r.get('Ship To', '')} - {desc}")
-            s_name, s_l1, s_l2, s_city, s_state, s_zip = _split_ship_to(r.get('Ship To', ''))
+            if is_batch:
+                # ShipStation orders ship to the marketplace buyer - Sage
+                # fills ship-to from the customer record, leave it blank.
+                s_name = s_l1 = s_l2 = s_city = s_state = s_zip = ''
+            else:
+                s_name, s_l1, s_l2, s_city, s_state, s_zip = _split_ship_to(
+                    r.get('Ship To', ''))
             cust_id = (r.get('Vendor', '') or mkt_cust) if is_batch else r.get('Vendor', '')
             out.append({
                 'Customer ID': cust_id,
@@ -1853,6 +1859,21 @@ if page == "Order Processing":
                     file_name="batch-labels.pdf",
                     mime="application/pdf",
                     type="primary")
+                if st.button("🖨️ Print labels", key="batch_print"):
+                    st.session_state._print_batch = True
+                    st.rerun()
+                # Fire the browser print dialog on the merged PDF once -
+                # set right after the batch completes and via the button.
+                if st.session_state.get('_print_batch'):
+                    import base64 as _b64
+                    components.html(
+                        '<iframe src="data:application/pdf;base64,'
+                        + _b64.b64encode(
+                            st.session_state.ss_batch_pdf).decode()
+                        + '" style="display:none" '
+                          'onload="this.contentWindow.print()"></iframe>',
+                        height=0)
+                    st.session_state._print_batch = False
                 if st.button("Clear batch"):
                     st.session_state.ss_batch_pdf = None
                     st.session_state.ss_batch_results = []
@@ -2023,7 +2044,7 @@ if page == "Order Processing":
                                     st.session_state.ss_store_map)['df']
                                  for _o2 in so_orders], ignore_index=True))
                             _sent, _skipped = sage_queue_push(_sdf)
-                            create_open_orders(_sdf)
+                            # Already shipped - no packing row needed.
                             results.append(('ok',
                                 f"🧾 Sage: {len(_sent)} sales order(s) queued"
                                 + (f" ({len(_skipped)} already queued)"
@@ -2033,6 +2054,7 @@ if page == "Order Processing":
                                 f"⚠️ Sage sales orders failed: {e3}"))
                     if pdfs:
                         st.session_state.ss_batch_pdf = _merge_pdfs(pdfs)
+                        st.session_state._print_batch = True
                     else:
                         for kind, line in results:
                             st.write(line)
