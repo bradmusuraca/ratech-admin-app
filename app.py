@@ -1046,8 +1046,8 @@ def _label_sheet(orders, label_pdf, dims=None):
         W, M, GRAY = 612, 40, (0.45, 0.45, 0.45)
 
         # --- carrier label, rotated into the top half ---
-        page.show_pdf_page(fitz.Rect(M - 8, 16, W - M + 8, 400), src, 0,
-                           rotate=90)
+        # Scaled down ~80% so it fits sticky label stock with margin.
+        page.show_pdf_page(fitz.Rect(70, 28, W - 70, 356), src, 0, rotate=90)
 
         # --- packing slip ---
         bar = fitz.Rect(M, 416, W - M, 438)
@@ -1090,25 +1090,30 @@ def _label_sheet(orders, label_pdf, dims=None):
         # box dims line under ship-to
         if not dims:
             dims = orders[0].get('dimensions') or {}
-        if dims.get('length'):
+        try:
+            _dl = float(str(dims.get('length') or 0) or 0)
+            _dw = float(str(dims.get('width') or 0) or 0)
+            _dh = float(str(dims.get('height') or 0) or 0)
+        except (TypeError, ValueError):
+            _dl = _dw = _dh = 0.0
+        if _dl:
             st_y += 8
-            page.insert_text(
-                (M, st_y),
-                f"Box {dims.get('length'):g} x {dims.get('width'):g} x "
-                f"{dims.get('height'):g}", fontsize=9)
+            page.insert_text((M, st_y),
+                             f"Box {_dl:g} x {_dw:g} x {_dh:g}", fontsize=9)
             st_y += 6
         y = max(st_y, my) + 22
 
-        # --- item table ---
-        cols = [(M, 'Item', 'l'), (M + 70, 'Image', 'l'), (M + 118, 'Description', 'l'),
-                (W - M - 190, 'Price', 'r'), (W - M - 120, 'Qty', 'r'),
-                (W - M, 'Ext. Price', 'r')]
+        # --- item table: explicit column rects inside the margins ---
+        cols = [('Item', M, M + 65, 0), ('Image', M + 65, M + 115, 0),
+                ('Description', M + 115, 370, 0), ('Price', 370, 440, 2),
+                ('Qty', 440, 490, 2), ('Ext. Price', 490, W - M, 2)]
+        C = {n: (x1, x2) for n, x1, x2, _a in cols}
         hdr = fitz.Rect(M, y, W - M, y + 16)
         page.draw_rect(hdr, fill=GRAY, color=None)
-        for x, h, al in cols:
-            page.insert_textbox(fitz.Rect(x, y, x + 130, y + 16), h,
+        for h, x1, x2, al in cols:
+            page.insert_textbox(fitz.Rect(x1, y, x2, y + 16), h,
                                 fontsize=8, fontname='hebo', color=(1, 1, 1),
-                                align=2 if al == 'r' else 0)
+                                align=al)
         y += 16
         sub_total = 0.0
         for o in orders:
@@ -1122,32 +1127,35 @@ def _label_sheet(orders, label_pdf, dims=None):
                 ext = qty * price if isinstance(price, (int, float)) else None
                 if ext is not None:
                     sub_total += ext
-                page.insert_text((cols[0][0], y + 12), str(it.get('sku', '')),
-                                 fontsize=8)
+                page.insert_textbox(
+                    fitz.Rect(C['Item'][0], y + 2, C['Item'][1], y + rh),
+                    str(it.get('sku', '')), fontsize=8)
                 url = it.get('imageUrl')
                 if url:
                     try:
                         r = _rq.get(url, timeout=8)
                         if r.status_code == 200 and len(r.content) > 100:
                             page.insert_image(
-                                fitz.Rect(cols[1][0], y + 2,
-                                          cols[1][0] + 34, y + 36),
+                                fitz.Rect(C['Image'][0] + 2, y + 2,
+                                          C['Image'][0] + 36, y + 36),
                                 stream=r.content)
                     except Exception:
                         pass
                 page.insert_textbox(
-                    fitz.Rect(cols[2][0], y + 2, W - M - 200, y + rh),
+                    fitz.Rect(C['Description'][0], y + 2,
+                              C['Description'][1], y + rh),
                     str(it.get('name', '')), fontsize=8)
                 if isinstance(price, (int, float)):
                     page.insert_textbox(
-                        fitz.Rect(cols[3][0] - 130, y + 12, cols[3][0], y + 12 + 12),
+                        fitz.Rect(C['Price'][0], y + 12, C['Price'][1], y + 24),
                         f"${price:.2f}", fontsize=8, align=2)
                 page.insert_textbox(
-                    fitz.Rect(cols[4][0] - 60, y + 12, cols[4][0], y + 24),
+                    fitz.Rect(C['Qty'][0], y + 12, C['Qty'][1], y + 24),
                     f"{qty:g}", fontsize=8, align=2)
                 if ext is not None:
                     page.insert_textbox(
-                        fitz.Rect(cols[5][0] - 90, y + 12, cols[5][0], y + 24),
+                        fitz.Rect(C['Ext. Price'][0], y + 12,
+                                  C['Ext. Price'][1], y + 24),
                         f"${ext:.2f}", fontsize=8, align=2)
                 page.draw_line(fitz.Point(M, y + rh), fitz.Point(W - M, y + rh),
                                color=(0.8, 0.8, 0.8), width=0.4)
