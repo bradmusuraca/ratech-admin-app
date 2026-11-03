@@ -1706,6 +1706,8 @@ if page == "Order Processing":
 
         for order in st.session_state.ss_orders:
             oid = str(order.get('orderId') or order.get('orderKey') or '')
+            if oid in st.session_state.ss_labels:
+                continue  # already labeled - leaves the processing list
             _ldinv = next((i for i in st.session_state.invoices
                            if i['key'] == ('shipstation', oid)), None)
             n_items = len(order.get('items') or [])
@@ -1904,6 +1906,24 @@ if page == "Order Processing":
                                                 f"[🔧 Fix order in ShipStation]({order_web_url(oid)}) "
                                                 f"— search order **{order.get('orderNumber', oid)}** "
                                                 "and correct the ship-to address")
+
+        # Labeled orders leave the list above; their PDFs stay reachable
+        # here for reprints until cleared.
+        if st.session_state.ss_labels:
+            with st.expander(f"✅ {len(st.session_state.ss_labels)} labeled order(s)",
+                             expanded=False):
+                for _oid, _lb in st.session_state.ss_labels.items():
+                    _num = next(
+                        (str(o.get('orderNumber')) for o in st.session_state.ss_orders
+                         if str(o.get('orderId') or o.get('orderKey') or '') == _oid),
+                        _oid)
+                    st.download_button(
+                        f"📥 {_num} — {_lb.get('tracking','')}", _lb['pdf'],
+                        file_name=f"label-{_num}.pdf", mime="application/pdf",
+                        key=f"re_{_oid}")
+                if st.button("Clear labeled list", key="clear_labeled"):
+                    st.session_state.ss_labels = {}
+                    st.rerun()
 
         # --- Batch label printing ---
         _sel_orders = [
