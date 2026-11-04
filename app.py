@@ -947,6 +947,17 @@ def build_sage_sales_orders(df):
     return pd.DataFrame(out, columns=SAGE_SO_COLUMNS)
 
 
+def _auto_print_pdf(pdf_bytes):
+    """Open the browser print dialog on a PDF via a hidden iframe."""
+    import base64 as _b64
+    components.html(
+        '<iframe src="data:application/pdf;base64,'
+        + _b64.b64encode(pdf_bytes).decode()
+        + '" style="display:none" '
+          'onload="this.contentWindow.print()"></iframe>',
+        height=0)
+
+
 def _orders_print_html(sage_df):
     """Print-ready pick sheet — one page per Sage transaction, with an
     in-page Print button (opens the browser print dialog)."""
@@ -1912,9 +1923,10 @@ if page == "Order Processing":
                                                     sage_queue_push(_sdf)
                                                     create_open_orders(_sdf)
                                                 except Exception as e2:
-                                                    st.warning(
+                                                    st.session_state._card_warn = (
                                                         "Label created but the "
                                                         f"Sage push failed: {e2}")
+                                            st.session_state._print_card = oid
                                             st.rerun()
                                         except Exception as e:
                                             st.error(f"Label failed: {label_error_message(e)}")
@@ -1925,6 +1937,11 @@ if page == "Order Processing":
 
         # Labeled orders leave the list above; their PDFs stay reachable
         # here for reprints until cleared.
+        if st.session_state.get('_card_warn'):
+            st.warning(st.session_state.pop('_card_warn'))
+        _pc = st.session_state.pop('_print_card', None)
+        if _pc and _pc in st.session_state.ss_labels:
+            _auto_print_pdf(st.session_state.ss_labels[_pc]['pdf'])
         if st.session_state.ss_labels:
             with st.expander(f"✅ {len(st.session_state.ss_labels)} labeled order(s)",
                              expanded=False):
@@ -1933,10 +1950,16 @@ if page == "Order Processing":
                         (str(o.get('orderNumber')) for o in st.session_state.ss_orders
                          if str(o.get('orderId') or o.get('orderKey') or '') == _oid),
                         _oid)
-                    st.download_button(
-                        f"📥 {_num} — {_lb.get('tracking','')}", _lb['pdf'],
-                        file_name=f"label-{_num}.pdf", mime="application/pdf",
-                        key=f"re_{_oid}")
+                    _rc1, _rc2 = st.columns([4, 1])
+                    with _rc1:
+                        st.download_button(
+                            f"📥 {_num} — {_lb.get('tracking','')}", _lb['pdf'],
+                            file_name=f"label-{_num}.pdf", mime="application/pdf",
+                            key=f"re_{_oid}")
+                    with _rc2:
+                        if st.button("🖨️ Print", key=f"rp_{_oid}"):
+                            st.session_state._print_card = _oid
+                            st.rerun()
                 if st.button("Clear labeled list", key="clear_labeled"):
                     st.session_state.ss_labels = {}
                     st.rerun()
@@ -1968,14 +1991,7 @@ if page == "Order Processing":
                 # Fire the browser print dialog on the merged PDF once -
                 # set right after the batch completes and via the button.
                 if st.session_state.get('_print_batch'):
-                    import base64 as _b64
-                    components.html(
-                        '<iframe src="data:application/pdf;base64,'
-                        + _b64.b64encode(
-                            st.session_state.ss_batch_pdf).decode()
-                        + '" style="display:none" '
-                          'onload="this.contentWindow.print()"></iframe>',
-                        height=0)
+                    _auto_print_pdf(st.session_state.ss_batch_pdf)
                     st.session_state._print_batch = False
                 if st.button("Clear batch"):
                     st.session_state.ss_batch_pdf = None
