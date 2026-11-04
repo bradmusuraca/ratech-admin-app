@@ -1036,29 +1036,29 @@ def _label_sheet(orders, label_pdf, dims=None):
         page.show_pdf_page(fitz.Rect(70, 28, W - 70, 356), src, 0, rotate=90)
 
         # --- packing slip ---
-        bar = fitz.Rect(M, 416, W - M, 438)
+        bar = fitz.Rect(M, 416, W - M, 440)
         page.draw_rect(bar, fill=GRAY, color=None)
-        page.insert_textbox(bar, "Packing Slip", fontsize=10, fontname='hebo',
+        page.insert_textbox(bar, "Packing Slip", fontsize=13, fontname='hebo',
                             color=(1, 1, 1), align=1)
         y = 458
         page.insert_text((M, y), os.getenv('FEDEX_SHIPPER_STREET',
-                                           '11110 Adwood Drive'), fontsize=9)
-        page.insert_text((M, y + 12),
+                                           '11110 Adwood Drive'), fontsize=11)
+        page.insert_text((M, y + 14),
                          f"{os.getenv('FEDEX_SHIPPER_CITY', 'Cincinnati')}, "
                          f"{os.getenv('FEDEX_SHIPPER_STATE', 'OH')} "
                          f"{os.getenv('FEDEX_SHIPPER_ZIP', '45240')}",
-                         fontsize=9)
+                         fontsize=11)
 
-        y += 40
-        page.insert_text((M, y), "Ship To:", fontsize=9, fontname='hebo')
+        y += 44
+        page.insert_text((M, y), "Ship To:", fontsize=11, fontname='hebo')
         st_ = orders[0].get('shipTo') or {}
         st_y = y
         for ln in [st_.get('name'), st_.get('street1'), st_.get('street2'),
                    ' '.join(p for p in [st_.get('city'), st_.get('state'),
                                         st_.get('postalCode')] if p) + ' US']:
             if ln:
-                page.insert_text((M + 60, st_y), str(ln), fontsize=9)
-                st_y += 13
+                page.insert_text((M + 60, st_y), str(ln), fontsize=11)
+                st_y += 15
         # order meta, right side
         from datetime import date as _dd
         nums = ', '.join(str(o.get('orderNumber') or '') for o in orders)
@@ -1069,9 +1069,9 @@ def _label_sheet(orders, label_pdf, dims=None):
                  _dd.today().strftime('%m/%d/%Y').lstrip('0').replace('/0', '/'))]
         my = y
         for lab, val in meta:
-            page.insert_text((W - M - 200, my), lab, fontsize=9, fontname='hebo')
-            page.insert_text((W - M - 150, my), str(val), fontsize=9)
-            my += 16
+            page.insert_text((W - M - 200, my), lab, fontsize=11, fontname='hebo')
+            page.insert_text((W - M - 150, my), str(val), fontsize=11)
+            my += 18
 
         # box dims line under ship-to
         if not dims:
@@ -1085,7 +1085,7 @@ def _label_sheet(orders, label_pdf, dims=None):
         if _dl:
             st_y += 8
             page.insert_text((M, st_y),
-                             f"Box {_dl:g} x {_dw:g} x {_dh:g}", fontsize=9)
+                             f"Box {_dl:g} x {_dw:g} x {_dh:g}", fontsize=11)
             st_y += 6
         y = max(st_y, my) + 22
 
@@ -1094,13 +1094,13 @@ def _label_sheet(orders, label_pdf, dims=None):
                 ('Description', M + 115, 370, 0), ('Price', 370, 440, 2),
                 ('Qty', 440, 490, 2), ('Ext. Price', 490, W - M, 2)]
         C = {n: (x1, x2) for n, x1, x2, _a in cols}
-        hdr = fitz.Rect(M, y, W - M, y + 16)
+        hdr = fitz.Rect(M, y, W - M, y + 20)
         page.draw_rect(hdr, fill=GRAY, color=None)
         for h, x1, x2, al in cols:
-            page.insert_textbox(fitz.Rect(x1, y, x2, y + 16), h,
-                                fontsize=8, fontname='hebo', color=(1, 1, 1),
+            page.insert_textbox(fitz.Rect(x1, y, x2, y + 20), h,
+                                fontsize=10, fontname='hebo', color=(1, 1, 1),
                                 align=al)
-        y += 16
+        y += 20
         sub_total = 0.0
         for o in orders:
             for it in (o.get('items') or []):
@@ -1115,7 +1115,7 @@ def _label_sheet(orders, label_pdf, dims=None):
                     sub_total += ext
                 page.insert_textbox(
                     fitz.Rect(C['Item'][0], y + 2, C['Item'][1], y + rh),
-                    str(it.get('sku', '')), fontsize=8)
+                    str(it.get('sku', '')), fontsize=10)
                 url = it.get('imageUrl')
                 if url:
                     try:
@@ -1130,28 +1130,28 @@ def _label_sheet(orders, label_pdf, dims=None):
                 page.insert_textbox(
                     fitz.Rect(C['Description'][0], y + 2,
                               C['Description'][1], y + rh),
-                    str(it.get('name', '')), fontsize=8)
+                    str(it.get('name', '')), fontsize=10)
                 if isinstance(price, (int, float)):
                     page.insert_textbox(
-                        fitz.Rect(C['Price'][0], y + 12, C['Price'][1], y + 24),
-                        f"${price:.2f}", fontsize=8, align=2)
+                        fitz.Rect(C['Price'][0], y + 8, C['Price'][1], y + rh - 2),
+                        f"${price:.2f}", fontsize=10, align=2)
                 page.insert_textbox(
-                    fitz.Rect(C['Qty'][0], y + 12, C['Qty'][1], y + 24),
-                    f"{qty:g}", fontsize=8, align=2)
+                    fitz.Rect(C['Qty'][0], y + 8, C['Qty'][1], y + rh - 2),
+                    f"{qty:g}", fontsize=10, align=2)
                 if ext is not None:
                     page.insert_textbox(
-                        fitz.Rect(C['Ext. Price'][0], y + 12,
-                                  C['Ext. Price'][1], y + 24),
-                        f"${ext:.2f}", fontsize=8, align=2)
+                        fitz.Rect(C['Ext. Price'][0], y + 8,
+                                  C['Ext. Price'][1], y + rh - 2),
+                        f"${ext:.2f}", fontsize=10, align=2)
                 page.draw_line(fitz.Point(M, y + rh), fitz.Point(W - M, y + rh),
                                color=(0.8, 0.8, 0.8), width=0.4)
                 y += rh
         # sub total, bottom right
         y += 12
-        page.insert_textbox(fitz.Rect(W - M - 200, y, W - M - 100, y + 14),
-                            "Sub Total:", fontsize=9, fontname='hebo', align=2)
-        page.insert_textbox(fitz.Rect(W - M - 90, y, W - M, y + 14),
-                            f"${sub_total:.2f}", fontsize=9, align=2)
+        page.insert_textbox(fitz.Rect(W - M - 200, y, W - M - 100, y + 16),
+                            "Sub Total:", fontsize=11, fontname='hebo', align=2)
+        page.insert_textbox(fitz.Rect(W - M - 90, y, W - M, y + 16),
+                            f"${sub_total:.2f}", fontsize=11, align=2)
         return sheet.tobytes()
     except Exception:
         return label_pdf
