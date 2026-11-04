@@ -948,13 +948,41 @@ def build_sage_sales_orders(df):
 
 
 def _auto_print_pdf(pdf_bytes):
-    """Open the browser print dialog on a PDF via a hidden iframe."""
+    """Open the browser print dialog on a PDF.
+
+    Chrome won't let JS call print() on the built-in PDF viewer inside a
+    data: iframe (it's a cross-origin extension doc - silent no-op), so
+    rasterize the pages to PNGs and print those from the component's own
+    same-origin document instead."""
     import base64 as _b64
+    try:
+        import fitz as _fitz
+        _doc = _fitz.open(stream=pdf_bytes, filetype='pdf')
+        _pages = [(pg.rect.width, pg.rect.height,
+                   _b64.b64encode(
+                       pg.get_pixmap(matrix=_fitz.Matrix(200 / 72, 200 / 72))
+                       .tobytes('png')).decode())
+                  for pg in _doc]
+        _doc.close()
+    except Exception:
+        _pages = []
+    if not _pages:
+        st.warning("Couldn't render the print preview - use Download instead.")
+        return
+    _css = ''.join('@page _p%d {size:%.2fin %.2fin;margin:0} '
+                   % (i, w / 72, h / 72)
+                   for i, (w, h, _b) in enumerate(_pages))
+    _divs = ''.join(
+        '<div style="page:_p%d;width:%.2fin;height:%.2fin;'
+        'page-break-after:always"><img src="data:image/png;base64,%s" '
+        'style="width:100%%;height:100%%"></div>'
+        % (i, w / 72, h / 72, b64)
+        for i, (w, h, b64) in enumerate(_pages))
     components.html(
-        '<iframe src="data:application/pdf;base64,'
-        + _b64.b64encode(pdf_bytes).decode()
-        + '" style="display:none" '
-          'onload="this.contentWindow.print()"></iframe>',
+        '<style>body{margin:0}img{display:block}' + _css + '</style>' + _divs
+        + '<script>Promise.all(Array.from(document.images).map(function(i){'
+          'return i.decode?i.decode():Promise.resolve()}))'
+          '.then(function(){window.print()})</script>',
         height=0)
 
 
