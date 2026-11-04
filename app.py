@@ -1907,26 +1907,37 @@ if page == "Order Processing":
                                             if _lpdf[:4] == b'%PDF':
                                                 _lpdf = _label_sheet([order], _lpdf,
                                                                      dims=_pdims)
-                                            st.session_state.ss_labels[oid] = {
-                                                'tracking': resp.get('trackingNumber', ''),
-                                                'pdf': _lpdf}
-                                            # Queue the Sage sales order +
-                                            # packing row, same as batch.
-                                            if sage_queue_configured():
-                                                try:
-                                                    _sdf = build_sage_sales_orders(
-                                                        build_shipstation_order_invoice(
-                                                            order,
-                                                            ('shipstation', oid),
-                                                            st.session_state
-                                                            .ss_store_map)['df'])
-                                                    sage_queue_push(_sdf)
-                                                    create_open_orders(_sdf)
-                                                except Exception as e2:
-                                                    st.session_state._card_warn = (
-                                                        "Label created but the "
-                                                        f"Sage push failed: {e2}")
-                                            st.session_state._print_card = oid
+                                            if _test:
+                                                # Test label - print only. No
+                                                # Sage order, no packing row;
+                                                # order stays in the list.
+                                                st.session_state._print_test_pdf = _lpdf
+                                                st.session_state._card_info = (
+                                                    "Test label for "
+                                                    f"{order.get('orderNumber', oid)}"
+                                                    " - no Sage order created.")
+                                            else:
+                                                st.session_state.ss_labels[oid] = {
+                                                    'tracking': resp.get(
+                                                        'trackingNumber', ''),
+                                                    'pdf': _lpdf}
+                                                # Queue the Sage sales order +
+                                                # packing row, same as batch.
+                                                if sage_queue_configured():
+                                                    try:
+                                                        _sdf = build_sage_sales_orders(
+                                                            build_shipstation_order_invoice(
+                                                                order,
+                                                                ('shipstation', oid),
+                                                                st.session_state
+                                                                .ss_store_map)['df'])
+                                                        sage_queue_push(_sdf)
+                                                        create_open_orders(_sdf)
+                                                    except Exception as e2:
+                                                        st.session_state._card_warn = (
+                                                            "Label created but the "
+                                                            f"Sage push failed: {e2}")
+                                                st.session_state._print_card = oid
                                             st.rerun()
                                         except Exception as e:
                                             st.error(f"Label failed: {label_error_message(e)}")
@@ -1937,11 +1948,16 @@ if page == "Order Processing":
 
         # Labeled orders leave the list above; their PDFs stay reachable
         # here for reprints until cleared.
+        if st.session_state.get('_card_info'):
+            st.success(st.session_state.pop('_card_info'))
         if st.session_state.get('_card_warn'):
             st.warning(st.session_state.pop('_card_warn'))
         _pc = st.session_state.pop('_print_card', None)
         if _pc and _pc in st.session_state.ss_labels:
             _auto_print_pdf(st.session_state.ss_labels[_pc]['pdf'])
+        _tpdf = st.session_state.pop('_print_test_pdf', None)
+        if _tpdf:
+            _auto_print_pdf(_tpdf)
         if st.session_state.ss_labels:
             with st.expander(f"✅ {len(st.session_state.ss_labels)} labeled order(s)",
                              expanded=False):
@@ -2130,30 +2146,34 @@ if page == "Order Processing":
                                 if pdf[:4] == b'%PDF':
                                     pdf = _label_sheet(grp, pdf, dims=_dims)
                                     pdfs.append(pdf)
-                                st.session_state.ss_labels[oid2] = {
-                                    'tracking': track, 'pdf': pdf}
-                                for sib in grp[1:]:
-                                    sib_id = str(sib.get('orderId') or sib.get('orderKey') or '')
-                                    try:
-                                        ss_mark_as_shipped(
-                                            ss_key, ss_secret, sib_id,
-                                            _car, track,
-                                            notify_marketplace=True)
-                                        st.session_state.ss_labels[sib_id] = {
-                                            'tracking': track, 'pdf': pdf}
-                                    except Exception as e2:
-                                        results.append(('fail',
-                                            f"⚠️ {sib.get('orderNumber')}: label created but "
-                                            f"not marked shipped - {label_error_message(e2)}"))
+                                if not _btest:
+                                    # Test labels leave orders listed and
+                                    # unshipped - no Sage/marketplace effects.
+                                    st.session_state.ss_labels[oid2] = {
+                                        'tracking': track, 'pdf': pdf}
+                                    for sib in grp[1:]:
+                                        sib_id = str(sib.get('orderId') or sib.get('orderKey') or '')
+                                        try:
+                                            ss_mark_as_shipped(
+                                                ss_key, ss_secret, sib_id,
+                                                _car, track,
+                                                notify_marketplace=True)
+                                            st.session_state.ss_labels[sib_id] = {
+                                                'tracking': track, 'pdf': pdf}
+                                        except Exception as e2:
+                                            results.append(('fail',
+                                                f"⚠️ {sib.get('orderNumber')}: label created but "
+                                                f"not marked shipped - {label_error_message(e2)}"))
                                 tag = f" (combined {len(grp)} orders)" if len(grp) > 1 else ""
-                                results.append(('ok', f"✅ {nums}{tag}: {track}"))
+                                results.append(('ok',
+                                    f"✅ {'TEST ' if _btest else ''}{nums}{tag}: {track}"))
                                 so_orders.extend(grp)
                             except Exception as e:
                                 results.append(('fail', f"❌ {nums}: {label_error_message(e)}"))
                         done += len(grp)
                         prog.progress(done / total_units)
                     prog.empty()
-                    if _bso and so_orders:
+                    if _bso and not _btest and so_orders:
                         try:
                             _sdf = build_sage_sales_orders(pd.concat(
                                 [build_shipstation_order_invoice(
