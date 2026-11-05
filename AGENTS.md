@@ -31,3 +31,30 @@ Streamlit order-management app (Streamlit Cloud: `ratech-app.streamlit.app`, rep
 ## Verification
 - PostgREST: `curl -H "apikey: $KEY" "$URL/rest/v1/open_orders?order_key=eq.X&select=lines"`.
 - Order keys are content hashes (`_order_key(tx)`) — e.g. SO 57300 = `c0757921f3917c1dbdff0101d96a1778`, SO 57302 = `6f631828d8e8cb87f111cba721f1f843`.
+
+## Field lessons (mined from production sessions — full transcripts in C:\dev\session-archive\)
+
+### ShipStation
+- **v1 label endpoint is `POST /orders/createlabelfororder`** — `/orders/createlabel` does not exist (404 "No HTTP resource ... createlabel"). `shipDate` is required; default to today. Batch labels never worked before this fix — all prior labels went through FedEx.
+- **`carriers/listpackages` returns only the carrier's standard boxes.** Custom package names/dims live under the **v2 API** (`/v2/packages`, separate `SHIPSTATION_V2_API_KEY` from Settings → Account → API Settings). v1 `/packages` 404s on this plan. A custom box preset lands on an order as generic `package` code + dimensions — no name.
+- Order line `description` embeds `[order#] name/address` — replace with synced Sage item descriptions (see `get_item_descriptions`).
+
+### FedEx
+- One API project covers Rates + Address Validation + Ship — just enable the APIs on the same project; same client ID/secret. Test key verifies plumbing only; **for production delete `FEDEX_BASE_URL` entirely** (default = `apis.fedex.com`). Negotiated rates come back automatically when quoting with the account number.
+
+### Sage bridge (Windows PC, `C:\sage_bridge`)
+- `build_assembly` jobs mark `done` when the CSV row is *written* — actual Sage posting is a separate step: `import_assemblies.ps1` + AutoIt journal import. Invoice waits on "waiting on assembly stock" until the build posts.
+- **`SKIP: Sage (peachw.exe) not running`** in `assembly_import.log` → open Sage, run `powershell -ExecutionPolicy Bypass -File C:\sage_bridge\import_assemblies.ps1` manually; invoice completes itself after stock posts. **`FAIL: import exit N`** → row moved to `C:\sage_bridge\failed\`.
+- Hung import: `Get-Process AutoIt3 | Stop-Process -Force`, then re-run the import script.
+- **AV on the Sage PC (Norton/Malwarebytes/Defender) can block/quarantine `bridge.ps1`** — renamed copy `sage_bridge_run.ps1` worked around it. Bridge runs as scheduled task `RatechBridge`; `pause_bridge.ps1` toggles it for backups.
+- Adding a queue status requires `alter table sage_order_queue drop/add constraint sage_order_queue_status_check` (SQL appended in `sage_bridge/supabase_setup.sql`).
+
+### Streamlit
+- `st.data_editor` inside fragments: editing refreshes the editor column but NOT sections below it — exports/CSVs must rebuild from `inv['df']` at click time, and edits can take two Enters / cause scroll jumps. Keep export rendering outside the editing fragment.
+- Cloud deploys can go **stale/partial** (new `app.py` + old `sage_queue.py`) — commit dependent files together; on weird ImportErrors, redeploy cleanly.
+- A dead/changed streamlit.app hostname just spins forever — check the URL first. `/api/v2/app/status` returning 200 + `{"status":"running"}` means awake; `/api/v2/user/details` 404 is normal for logged-out visitors.
+- Supabase list endpoints may wrap rows in a `value` array — check the shape before assuming empty.
+
+### Customer data quality
+- Vendor numbers come from OUR customer list, never the order doc (DTS printed our phone number in their Account field). Match-on-"their code for us" columns rot into false positives — don't match on data nobody maintains.
+- Part-number prefixes matter: Amazon SKUs arrive as `AM…`, Ratech items are `ATV…` — rewrite on the item, not the order number. `CR 13988`-style numbers are the vendor's internal code, not the customer's part number.
