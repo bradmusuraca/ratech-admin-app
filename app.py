@@ -215,7 +215,11 @@ def _package_options(ss_key, ss_secret, carrier_code):
             pkgs = ss_list_packages(ss_key, ss_secret, carrier_code)
             st.session_state.ss_opts_cache[carrier_code + '_pkg'] = pkgs
         for p in pkgs:
-            opts[p.get('name', p.get('code'))] = (p.get('code'), None)
+            _d = p.get('dimensions') or {}
+            _dims = ({'units': 'inches', 'length': _d.get('length'),
+                      'width': _d.get('width'), 'height': _d.get('height')}
+                     if _d else None)
+            opts[p.get('name', p.get('code'))] = (p.get('code'), _dims)
     except Exception:
         pass
     v2k = os.getenv('SHIPSTATION_V2_API_KEY')
@@ -1057,7 +1061,7 @@ def _merge_pdfs(pdf_blobs):
     return buf.getvalue()
 
 
-def _label_sheet(orders, label_pdf, dims=None):
+def _label_sheet(orders, label_pdf, dims=None, pkg_name=None):
     """ShipStation-style combined sheet on portrait 8.5x11: carrier label
     rotated into the top half; a 'Packing Slip' below - return address,
     ship-to, order meta, box dims and an item table (thumbnails, prices,
@@ -1121,10 +1125,12 @@ def _label_sheet(orders, label_pdf, dims=None):
             _dh = float(str(dims.get('height') or 0) or 0)
         except (TypeError, ValueError):
             _dl = _dw = _dh = 0.0
-        if _dl:
+        _box = f"Box {_dl:g} x {_dw:g} x {_dh:g}" if _dl else ""
+        if pkg_name:
+            _box = (_box + " — " if _box else "Box ") + str(pkg_name)
+        if _box:
             st_y += 8
-            page.insert_text((M, st_y),
-                             f"Box {_dl:g} x {_dw:g} x {_dh:g}", fontsize=11)
+            page.insert_text((M, st_y), _box, fontsize=11)
             st_y += 6
         y = max(st_y, my) + 22
 
@@ -1933,8 +1939,11 @@ if page == "Order Processing":
                                                 dimensions=_pdims)
                                             _lpdf = label_pdf_bytes(resp)
                                             if _lpdf[:4] == b'%PDF':
-                                                _lpdf = _label_sheet([order], _lpdf,
-                                                                     dims=_pdims)
+                                                _lpdf = _label_sheet(
+                                                    [order], _lpdf, dims=_pdims,
+                                                    pkg_name=(_pname
+                                                              if _pname != '(none)'
+                                                              else None))
                                             if _test:
                                                 # Test label - print only. No
                                                 # Sage order, no packing row;
@@ -2161,6 +2170,26 @@ if page == "Order Processing":
                                 f"⚠️ {nums}: no shipping preset in ShipStation — "
                                 "set carrier/service/package there first"))
                         else:
+                            # Resolve a display name (and dims for standard
+                            # packages) for the sheet's box line. _sdims is
+                            # display-only - the API call keeps _dims as-is.
+                            _pname2 = (st.session_state.get(f"cbp_{_ak}")
+                                       if len(grp) > 1 else None)
+                            if _pname2 == '(none)':
+                                _pname2 = None
+                            _sdims = _dims
+                            if not _pname2 and _pkg_code != 'package':
+                                for _n2, (_c2, _d2) in _package_options(
+                                        ss_key, ss_secret, _car).items():
+                                    if _c2 == _pkg_code:
+                                        _pname2 = _n2
+                                        if not _sdims:
+                                            _sdims = _d2
+                                        break
+                            if not _pname2 and _sdims:
+                                _pname2 = custom_package_names().get(_dims_key(
+                                    _sdims.get('length'), _sdims.get('width'),
+                                    _sdims.get('height')))
                             try:
                                 resp = ss_create_label(
                                     ss_key, ss_secret, oid2,
@@ -2172,7 +2201,8 @@ if page == "Order Processing":
                                 track = resp.get('trackingNumber', '')
                                 pdf = label_pdf_bytes(resp)
                                 if pdf[:4] == b'%PDF':
-                                    pdf = _label_sheet(grp, pdf, dims=_dims)
+                                    pdf = _label_sheet(grp, pdf, dims=_sdims,
+                                                       pkg_name=_pname2)
                                     pdfs.append(pdf)
                                 if not _btest:
                                     # Test labels leave orders listed and
