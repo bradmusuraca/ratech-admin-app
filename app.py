@@ -2588,6 +2588,17 @@ elif page == "Create Invoices":
                 _dis = (list(df.columns) if o['status'] == 'complete'
                         else ['Line Total Amount'])
                 _pv = st.session_state.setdefault(f"packver_{o['order_key']}", 0)
+                _fc1, _fc2 = st.columns([4, 1])
+                with _fc2:
+                    if st.button("✅ All fulfilled",
+                                 key=f"fulfill_{o['order_key']}",
+                                 help="Set every line's Packed = Required",
+                                 disabled=(o['status'] == 'complete'),
+                                 use_container_width=True):
+                        st.session_state[f"lastpack_{o['order_key']}"] = [
+                            l.get('qty_required') for l in raw_lines]
+                        st.session_state[f"packver_{o['order_key']}"] = _pv + 1
+                        st.rerun()
                 ed = st.data_editor(
                     df, use_container_width=True,
                     key=f"open_{o['order_key']}_{_pv}",
