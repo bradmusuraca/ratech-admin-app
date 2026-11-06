@@ -271,6 +271,9 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
     is_ford = ('ford motor company' in full_text.lower()
                or 'purchase notification' in full_text.lower())
 
+    # Check if it's a Motor State Distributing purchase order
+    is_motorstate = 'motor state distributing' in full_text.lower()
+
     # Check if it's a simple emailed order: "CUSTOMER ID: 208" header +
     # lines like "26) 9132" (qty) part
     is_simple_email = (bool(re.search(r'CUSTOMER\s*ID', extracted_text, re.IGNORECASE))
@@ -312,7 +315,7 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
             items.append(item)
         return items
 
-    known_format = is_summit or is_dts or is_ss_truck or is_ford
+    known_format = is_summit or is_dts or is_ss_truck or is_ford or is_motorstate
 
     # Known layouts always use the hand-tuned deterministic parsers below -
     # a model will happily copy the wrong column (e.g. DTS's "CR 13988"
@@ -670,6 +673,103 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
                     'Quantity': qty,
                     'Unit Price': safe_float(m.group(5)),
                     'Total': safe_float(m.group(6))
+                }
+                item.update(order_info)
+                items.append(item)
+
+    elif is_motorstate:
+        # Motor State Distributing purchase order. The vendor-copy barcode
+        # prints the PO as '1509302-00' - most reliable anchor for PO #.
+        po_match = (re.search(r'\b(\d{5,})-\d{2}\b', extracted_text)
+                    or re.search(r'PO\s*#[^\d]*?(\d+)', extracted_text)
+                    or re.search(r'\d{1,2}/\d{1,2}/\d{2,4}\s*\n?\s*(\d{5,})',
+                                 extracted_text))
+        if po_match:
+            order_info['Purchase Order Number'] = po_match.group(1)
+
+        # Header cells draw labels then values (Page / PO Date / PO #), so a
+        # label-anchored date regex can skip across cells - first date on the
+        # doc is the PO Date.
+        date_match = re.search(r'\b(\d{1,2}/\d{1,2}/\d{2,4})\b', extracted_text)
+        if date_match:
+            order_info['Date of Order'] = date_match.group(1)
+
+        # Ship To block sits between the two-cell "Ship\nTo" label and the
+        # Reference/PO# header table.
+        ship_match = re.search(
+            r'Ship\s*\n?\s*To\s*\n\s*(.*?)(?=\n\s*(?:PO #|Reference|Seller|Line\b))',
+            extracted_text, re.DOTALL)
+        if ship_match:
+            order_info['Ship To'] = '\n'.join(
+                l.strip() for l in ship_match.group(1).split('\n') if l.strip())
+            order_info['Invoice Address'] = order_info['Ship To']
+
+        # "Our Account: 204" is THEIR code for Ratech, not a Sage customer
+        # number - leave Vendor blank so resolve_vendor() name-matches
+        # 'Motor State Distributing' from the customer list.
+
+        via_match = re.search(r'\bVia\s*\n?\s*([A-Z][A-Z0-9 .\-\n]*?)\s*\n', extracted_text)
+        if via_match:
+            order_info['Shipping Instructions'] = via_match.group(1).strip()
+
+        comments = []
+        bo_match = re.search(r'Backorder\s*\n?\s*(Yes|No)', extracted_text, re.IGNORECASE)
+        if bo_match:
+            comments.append('Backorder: ' + bo_match.group(1))
+        fr_match = re.search(r'Freight\s*\n?\s*([^\n]+)', extracted_text)
+        if fr_match:
+            comments.append('Freight: ' + fr_match.group(1).strip())
+        pt_match = re.search(r'Payment Terms\s*\n?\s*([^\n]+)', extracted_text)
+        if pt_match:
+            comments.append('Terms: ' + pt_match.group(1).strip())
+        col_match = re.search(r'Preferred:\s*FEDEX\s*#(\d+)', extracted_text)
+        if col_match:
+            comments.append('Ship collect: FEDEX #' + col_match.group(1))
+        if comments:
+            order_info['Comments'] = ' | '.join(comments)
+
+        # Items zone: between the "Amount" column header and the "Lines
+        # Total" footer. The ATTENTION-VENDOR instructions live in the same
+        # column but never match the row pattern.
+        zone_m = re.search(r'Amount(.*?)Lines Total', extracted_text, re.DOTALL)
+        if zone_m:
+            tz = [l.strip() for l in zone_m.group(1).split('\n') if l.strip()]
+            # Row on one line:  "1 6111 1 11.60 each 11.60"
+            row_re = re.compile(
+                r'^(\d{1,3})\s+([A-Za-z0-9][\w.\-]*)\s+(\d+(?:\.\d+)?)\s+'
+                r'([\d,]+\.\d{2,4})\s+([A-Za-z]{1,10})\s+([\d,]+\.\d{2,4})\s*(.*)$')
+            # Cell per line:   "1" / "6111" / "1" / "11.60" / "each" / "11.60"
+            cell_res = [re.compile(r'^\d{1,3}$'),
+                        re.compile(r'^[A-Za-z0-9][\w.\-]*$'),
+                        re.compile(r'^\d+(?:\.\d+)?$'),
+                        re.compile(r'^[\d,]+\.\d{2,4}$'),
+                        re.compile(r'^[A-Za-z]{1,10}$'),
+                        re.compile(r'^[\d,]+\.\d{2,4}$')]
+            anchors = []  # (start_idx, part, qty, unit, amount, desc_start)
+            for i, l in enumerate(tz):
+                m = row_re.match(l)
+                if m:
+                    anchors.append((i, m.group(2), safe_float(m.group(3)),
+                                    safe_float(m.group(4)),
+                                    safe_float(m.group(6)), i + 1,
+                                    m.group(7).strip()))
+                elif (i + 6 <= len(tz)
+                        and all(cr.match(tz[i + k]) for k, cr in enumerate(cell_res))):
+                    anchors.append((i, tz[i + 1], safe_float(tz[i + 2]),
+                                    safe_float(tz[i + 3]),
+                                    safe_float(tz[i + 5]), i + 6, ''))
+            for n, (ai, part, qty, unit, amt, dstart, d0) in enumerate(anchors):
+                # Description follows the row (in-cell second line); gather
+                # until the next row anchor. Row on one line may also carry
+                # a trailing fragment in d0.
+                dend = anchors[n + 1][0] if n + 1 < len(anchors) else len(tz)
+                desc = ' '.join(([d0] if d0 else []) + tz[dstart:dend]).strip()
+                item = {
+                    'Inventory Item': re.sub(r'(?i)^rat-?', '', part),
+                    'Description': html.unescape(html.unescape(desc)),
+                    'Quantity': int(qty) if qty == int(qty) else qty,
+                    'Unit Price': unit,
+                    'Total': amt
                 }
                 item.update(order_info)
                 items.append(item)
