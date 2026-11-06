@@ -1512,6 +1512,30 @@ for _label, _ok in [
     st.sidebar.markdown(f"{'🟢' if _ok else '⚪'} {_label}")
 st.sidebar.caption(f"🗂 {len(st.session_state.invoices)} order(s) in queue")
 
+# Bridge health: jobs stuck 'pending' >30 min usually means the Sage PC's
+# poller is down (reboot, or a Sage update needing a first manual open).
+# Checked every 5 min so a banner shows before someone misses an SO.
+if sage_queue_configured():
+    _bh = st.session_state.setdefault('_bridge_health', {'t': 0, 'n': 0})
+    import time as _time
+    from datetime import datetime as _dt, timezone as _tz
+    if _time.time() - _bh['t'] > 300:
+        _bh['t'] = _time.time()
+        try:
+            _bh['n'] = sum(
+                1 for j in sage_queue_status()
+                if j.get('status') == 'pending'
+                and (_dt.now(_tz.utc)
+                     - _dt.fromisoformat(
+                         str(j['created_at']).replace('Z', '+00:00')))
+                .total_seconds() > 1800)
+        except Exception:
+            _bh['n'] = 0
+    if _bh['n']:
+        st.sidebar.warning(
+            f"⚠️ {_bh['n']} Sage job(s) pending >30 min — "
+            "check the bridge on the Sage PC")
+
 if _users and st.session_state.user:
     st.sidebar.divider()
     st.sidebar.caption(f"Signed in as **{st.session_state.user['name']}**")

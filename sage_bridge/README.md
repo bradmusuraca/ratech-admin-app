@@ -27,7 +27,17 @@ no SDK install, no COM registration, no Python.
    C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass -File .\bridge.ps1
    ```
 
-   Leave running, or register as a Scheduled Task at logon.
+   Leave running, or register `start_bridge.ps1` as a Scheduled Task.
+   Recommended task settings so the bridge survives reboots and crashes:
+   trigger **At system startup** + repeat **every 5 min indefinitely**,
+   with **"Run whether user is logged on or not"** enabled (a logon-only
+   trigger never fires if nobody signs in).
+
+   **After any Sage 50 update:** open Sage 50 manually once first - the
+   post-update company conversion / integration re-approval runs on first
+   launch, and the API refuses connections until it's done. Then verify
+   the bridge picks up the queue (the app sidebar warns when jobs sit
+   pending >30 min).
 
 ## Flow
 
