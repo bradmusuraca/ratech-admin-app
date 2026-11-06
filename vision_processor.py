@@ -271,8 +271,10 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
     is_ford = ('ford motor company' in full_text.lower()
                or 'purchase notification' in full_text.lower())
 
-    # Check if it's a Motor State Distributing purchase order
-    is_motorstate = 'motor state distributing' in full_text.lower()
+    # Check if it's a Motor State Distributing purchase order (whitespace-
+    # tolerant: extraction can merge or split the logo text).
+    is_motorstate = ('motorstatedistributing'
+                     in re.sub(r'\s+', '', full_text.lower()))
 
     # Check if it's a simple emailed order: "CUSTOMER ID: 208" header +
     # lines like "26) 9132" (qty) part
@@ -688,11 +690,16 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
             order_info['Purchase Order Number'] = po_match.group(1)
 
         # Header cells draw labels then values (Page / PO Date / PO #), so a
-        # label-anchored date regex can skip across cells - first date on the
-        # doc is the PO Date.
-        date_match = re.search(r'\b(\d{1,2}/\d{1,2}/\d{2,4})\b', extracted_text)
+        # label-anchored match is preferred; fall back to the first date on
+        # the doc. Slashes may extract with spaces around them.
+        date_match = (
+            re.search(r'PO\s*Date[\s\S]{0,40}?'
+                      r'(\d{1,2}\s*/\s*\d{1,2}\s*/\s*\d{2,4})(?!\d)', extracted_text)
+            or re.search(r'(\d{1,2}\s*/\s*\d{1,2}\s*/\s*\d{2,4})(?!\d)',
+                         extracted_text))
         if date_match:
-            order_info['Date of Order'] = date_match.group(1)
+            order_info['Date of Order'] = re.sub(r'\s*/\s*', '/',
+                                                 date_match.group(1))
 
         # Ship To block sits between the two-cell "Ship\nTo" label and the
         # Reference/PO# header table.
