@@ -3222,7 +3222,11 @@ elif page == "Inventory Management":
     if src is not None:
         img_bytes = bytes(src.getbuffer())
         rid = hashlib.sha256(img_bytes).hexdigest()
-        if st.session_state.receipt_id != rid:
+        # Re-parse when the image is new OR the parser changed since the
+        # receipt was built - otherwise an old (bad) result gets replayed.
+        _pver = 2
+        _stale = ((st.session_state.receipt or {}).get('v') or 0) < _pver
+        if st.session_state.receipt_id != rid or _stale:
             google_credentials = os.getenv('GOOGLE_CREDENTIALS')
             if not google_credentials:
                 st.warning("Google Cloud credentials not configured - needed to read photos. Add them in Settings.")
@@ -3249,7 +3253,8 @@ elif page == "Inventory Management":
                                      ('Date', parsed.get('date', ''))):
                             if v and (df[c].astype(str).str.strip() == '').all():
                                 df[c] = v
-                        st.session_state.receipt = {'image': img_bytes, 'text': text, 'df': df}
+                        st.session_state.receipt = {'image': img_bytes, 'text': text,
+                                                  'df': df, 'v': _pver}
                         st.session_state.receipt_id = rid
                         st.session_state._receipt_posted = False
                         st.success(f"✅ Read {len(df)} line item(s) from the packing slip")
