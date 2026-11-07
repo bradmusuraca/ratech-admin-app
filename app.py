@@ -3194,6 +3194,7 @@ elif page == "Inventory Management":
                                 df[c] = v
                         st.session_state.receipt = {'image': img_bytes, 'text': text, 'df': df}
                         st.session_state.receipt_id = rid
+                        st.session_state._receipt_posted = False
                         st.success(f"✅ Read {len(df)} line item(s) from the packing slip")
                         st.rerun()
                     except Exception as e:
@@ -3295,6 +3296,51 @@ elif page == "Inventory Management":
                                     st.error(f"Failed to send: {e}")
                 elif not len(pending):
                     st.success("✅ All counts match expected quantities")
+
+                # Push verified counts into Sage as +qty inventory
+                # adjustments. Received Qty wins when filled in (verified
+                # counts); Expected is already verified when the slip was
+                # checked off with no variance notes.
+                _rq = work.copy()
+                _rq['_recv'] = _rq['Received Qty'].fillna(
+                    _rq['Expected Qty']).fillna(0)
+                _recv = _rq[(_rq['_recv'] > 0)
+                            & _rq['Inventory Item'].astype(str).str.strip().ne('')]
+                if len(_recv):
+                    if sage_queue_configured():
+                        _posted = bool(st.session_state.get('_receipt_posted'))
+                        if st.button(
+                                f"📥 Receive {_recv['_recv'].sum():g} unit(s) into Sage",
+                                key='recv_sage', type='primary',
+                                disabled=_posted,
+                                help="Queues +qty inventory adjustments - the "
+                                     "bridge imports them to the Inventory "
+                                     "Adjustments Journal"):
+                            _po = str(work.iloc[0].get('PO Number', '')).strip()
+                            _vend = str(work.iloc[0].get('Vendor', '')).strip()
+                            _why = ' '.join(x for x in (
+                                'received',
+                                f"PO {_po}" if _po else '', _vend) if x)
+                            _ok, _errs = 0, []
+                            for _, _r in _recv.iterrows():
+                                try:
+                                    queue_inventory_adjustment(
+                                        str(_r['Inventory Item']).strip(),
+                                        float(_r['_recv']), _why)
+                                    _ok += 1
+                                except Exception as _e:
+                                    _errs.append(f"{_r['Inventory Item']}: {_e}")
+                            if _ok:
+                                st.session_state._receipt_posted = True
+                                st.success(f"Queued {_ok} adjustment(s) - "
+                                           "bridge imports on next sweep.")
+                            for _e in _errs:
+                                st.error(_e)
+                        if _posted:
+                            st.caption("✓ Received - clear the receipt when done.")
+                    else:
+                        st.caption("Sage queue not configured - receipt can "
+                                   "only be exported to CSV.")
 
             st.divider()
             ex1, ex2 = st.columns(2)
