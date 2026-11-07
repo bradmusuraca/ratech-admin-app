@@ -32,7 +32,8 @@ from sage_queue import (is_configured as sage_queue_configured,
                         get_order_ship_to, get_order_payload,
                         store_order_docs, get_order_doc,
                         get_fedex_profile, save_fedex_profile,
-                        delete_fedex_profile, get_item_descriptions)
+                        delete_fedex_profile, get_item_descriptions,
+                        queue_po_lookup, get_queue_job)
 from fedex import (is_configured as fedex_configured,
                    get_rates as fedex_get_rates,
                    validate_address as fedex_validate_address,
@@ -3156,6 +3157,62 @@ elif page == "Inventory Management":
     if 'receipt_id' not in st.session_state:
         st.session_state.receipt_id = None
 
+    st.subheader("🔢 Receive by Sage PO")
+    st.caption("The PO's own item IDs and quantities - more reliable than "
+               "reading the bill of lading, whose 'part number' is the "
+               "vendor's description.")
+    pol1, pol2 = st.columns([1, 2])
+    with pol1:
+        po_in = st.text_input("Purchase order #", key='po_lookup_in',
+                              placeholder="e.g. 5604")
+    with pol2:
+        st.write("")
+        st.write("")
+        if st.button("🔎 Look up PO in Sage", key='po_lookup_btn',
+                     type='primary', disabled=not sage_queue_configured()):
+            _po = po_in.strip()
+            if not _po:
+                st.error("Enter a PO number.")
+            else:
+                try:
+                    _jk = queue_po_lookup(_po)
+                    import time as _t
+                    _res = None
+                    with st.spinner("Asking Sage for the PO lines..."):
+                        _end = _t.time() + 90
+                        while _t.time() < _end:
+                            _j = get_queue_job(_jk)
+                            if _j and _j.get('status') in ('done', 'error'):
+                                _res = _j
+                                break
+                            _t.sleep(4)
+                    if not _res:
+                        st.warning("Still pending - the bridge hasn't "
+                                   "answered in 90s. Check it's running, "
+                                   "then try again.")
+                    elif _res.get('status') == 'error':
+                        st.error(f"Sage lookup failed: {_res.get('error')}")
+                    else:
+                        _pl = _res.get('payload') or {}
+                        df = pd.DataFrame([{
+                            'PO Number': _pl.get('po_number') or _po,
+                            'Vendor': _pl.get('vendor') or '',
+                            'Date': _pl.get('date') or '',
+                            'Inventory Item': l.get('item_id'),
+                            'Description': l.get('description') or '',
+                            'Expected Qty': l.get('qty'),
+                            'Received Qty': '',
+                            'Notes': '',
+                        } for l in (_pl.get('lines') or [])])
+                        st.session_state.receipt = {'image': None,
+                                                  'text': '', 'df': df}
+                        st.session_state.receipt_id = f"po-{_po}"
+                        st.session_state._receipt_posted = False
+                        st.success(f"✅ PO {_po}: {len(df)} line(s) from Sage")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"PO lookup failed: {e}")
+    st.divider()
     st.subheader("📷 Capture Packing Slip")
     src = st.file_uploader("Take or upload a photo of the packing slip",
                            type=['png', 'jpg', 'jpeg', 'webp'],
@@ -3206,16 +3263,19 @@ elif page == "Inventory Management":
         col_img, col_tbl = st.columns([1, 1])
 
         with col_img:
-            st.caption("Packing slip photo")
-            try:
-                img_container = st.container(height=600)
-            except TypeError:
-                img_container = st.container()
-            with img_container:
+            if rec.get('image'):
+                st.caption("Packing slip photo")
                 try:
-                    st.image(rec['image'], width='stretch')
+                    img_container = st.container(height=600)
                 except TypeError:
-                    st.image(rec['image'], use_container_width=True)
+                    img_container = st.container()
+                with img_container:
+                    try:
+                        st.image(rec['image'], width='stretch')
+                    except TypeError:
+                        st.image(rec['image'], use_container_width=True)
+            else:
+                st.caption("Receipt from Sage PO lookup (no photo)")
             if rec.get('text'):
                 with st.expander("Raw Extracted Text"):
                     st.text_area("Raw Extracted Text", rec['text'], height=250,

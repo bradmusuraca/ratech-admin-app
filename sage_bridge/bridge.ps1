@@ -768,6 +768,47 @@ if ($env:PAUSE_DAYS) {
         }
     }
 }
+# PO lookup: return a Sage purchase order's lines so the app can fill a
+# receiving table with Sage's own item IDs/qtys instead of trusting the
+# vendor's printed part description on the bill of lading.
+function Get-PurchaseOrderLines($company, [string]$poNo) {
+    if ($null -eq $script:poList) {
+        Write-Host "  [.] loading PO list..." -ForegroundColor DarkGray
+        $script:poList = $company.Factories.PurchaseOrderFactory.List()
+        $script:poList.Load()
+        Write-Host "  [.] PO list loaded ($($script:poList.Count))" -ForegroundColor DarkGray
+    }
+    $hit = $script:poList | Where-Object { "$($_.ReferenceNumber)" -eq $poNo } | Select-Object -First 1
+    if (-not $hit) { throw "Purchase order '$poNo' not found in Sage" }
+    $po = $company.Factories.PurchaseOrderFactory.Load($hit.Key)
+    $coll = $null
+    foreach ($pn in 'PurchaseOrderLines','LineItems','Lines') {
+        try { $cand = $po.$pn; if ($cand -and $cand.Count) { $coll = $cand; break } } catch { }
+    }
+    if (-not $coll) { throw "PO $poNo has no readable line items" }
+    $vendor = ''
+    try { $vendor = "$($company.Factories.VendorFactory.Load($po.VendorReference).Name)".Trim() } catch { }
+    $lines = @()
+    foreach ($l in $coll) {
+        $iid = Get-LineItemId $l $company (Get-ItemKeyMap $company)
+        $desc = ''
+        try { $desc = "$($l.Description)".Trim() } catch { }
+        $qty = 0
+        try { $qty = [decimal]$l.Quantity } catch { }
+        $lines += [pscustomobject]@{ item_id = $iid; description = $desc; qty = $qty }
+    }
+    $dt = ''
+    try { $dt = $po.Date.ToString('M/d/yyyy') } catch { }
+    return [pscustomobject]@{ po_number = $poNo; vendor = $vendor; date = $dt; lines = $lines }
+}
+
+# Overwrite a queue row's payload (the PO lookup response lives there).
+function Set-JobPayload($key, $payload) {
+    $body = @{ payload = $payload; updated_at = 'now()' } | ConvertTo-Json -Depth 8
+    Invoke-RestMethod -Uri "$SUPABASE_URL/rest/v1/$TABLE`?order_key=eq.$key" `
+        -Method Patch -Headers (Headers) -Body $body -TimeoutSec 20 | Out-Null
+}
+
 function Test-PauseWindow {
     if ($null -eq $script:pwStart -or $null -eq $script:pwEnd) { return $false }
     if ($script:pwDays.Count -gt 0 -and $script:pwDays -notcontains (Get-Date).DayOfWeek) { return $false }
@@ -909,6 +950,11 @@ while ($true) {
                     Finish-Order $key 'done' $null $adjWarn
                     $script:adjNeedsImport = $true
                     Write-Host "[+] $($key.Substring(0,8)) -> inventory adjustment row(s) queued$(if($adjWarn){" ($adjWarn)"})"
+                } elseif ($row.job_type -eq 'po_lookup') {
+                    $res = Get-PurchaseOrderLines $sess.Company "$($row.payload.po_number)"
+                    Set-JobPayload $key $res
+                    Finish-Order $key 'done'
+                    Write-Host "[+] $($key.Substring(0,8)) -> PO $($res.po_number) lookup ($($res.lines.Count) line(s))"
                 } elseif ($row.job_type -eq 'void_order') {
                     $warn = Remove-SalesOrder $sess.Company "$($row.payload.sage_order_no)"
                     Finish-Order $key 'done' $null $warn

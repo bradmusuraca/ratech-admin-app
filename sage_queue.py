@@ -424,3 +424,32 @@ def queue_qty_update(order_key, sage_order_no, lines):
         }], timeout=20)
     resp.raise_for_status()
     return upd_key
+
+
+def queue_po_lookup(po_number):
+    """Queue a PO lookup job; the bridge fills the row's payload with the
+    Sage purchase order's lines (item_id, description, qty) + vendor/date."""
+    import uuid
+    key = f"pol-{po_number}-{uuid.uuid4().hex[:8]}"
+    resp = requests.post(
+        _url(),
+        headers={**_headers(), 'Prefer': 'resolution=ignore-duplicates,return=representation'},
+        json=[{
+            'order_key': key,
+            'job_type': 'po_lookup',
+            'status': 'pending',
+            'payload': {'po_number': po_number},
+        }], timeout=20)
+    resp.raise_for_status()
+    return key
+
+
+def get_queue_job(order_key):
+    """Fetch a single queue row by order_key (status + payload + error)."""
+    resp = requests.get(
+        _url(select='order_key,status,error,payload',
+             order_key=f'eq.{order_key}', limit='1'),
+        headers=_headers(), timeout=20)
+    resp.raise_for_status()
+    rows = resp.json()
+    return rows[0] if rows else None
