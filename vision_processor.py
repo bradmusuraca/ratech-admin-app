@@ -271,6 +271,9 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
     is_ford = ('ford motor company' in full_text.lower()
                or 'purchase notification' in full_text.lower())
 
+    # Check if it's a Currie Enterprises PO.
+    is_currie = 'currie enterprises' in full_text.lower()
+
     # Check if it's a Power Train Truck & Auto Parts PO (also emails from
     # libertygearandaxle.com).
     is_powertrain = ('power train truck' in full_text.lower()
@@ -323,7 +326,7 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
         return items
 
     known_format = (is_summit or is_dts or is_ss_truck or is_ford
-                    or is_motorstate or is_powertrain)
+                    or is_motorstate or is_powertrain or is_currie)
 
     # Known layouts always use the hand-tuned deterministic parsers below -
     # a model will happily copy the wrong column (e.g. DTS's "CR 13988"
@@ -846,6 +849,57 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
                 continue
             if cur is not None and line:
                 cur['desc'].append(html.unescape(line))
+
+    elif is_currie:
+        # Currie Enterprises PO - label/value stacked header; item blocks:
+        # part / EA / unit price / /line# / ext price / description /
+        # order qty / EACH. Ship-by lives in the 'Due Date' release block.
+        po_match = re.search(r'PO Number:\s*\n?\s*(\d+)', extracted_text)
+        if po_match:
+            order_info['Purchase Order Number'] = po_match.group(1)
+        d_match = re.search(r'Order Date:\s*\n?\s*(\d{1,2}/\d{1,2}/\d{2,4})',
+                            extracted_text)
+        if d_match:
+            order_info['Date of Order'] = d_match.group(1)
+        due = re.search(r'Due Date[\s\S]{0,40}?(\d{1,2}/\d{1,2}/\d{2,4})',
+                        extracted_text)
+        if due:
+            order_info['Ship By Date'] = due.group(1)
+        ship = re.search(r'Ship To:\s*\n((?:[^\n]*\n){1,4}?USA)', extracted_text)
+        if ship:
+            order_info['Ship To'] = '\n'.join(
+                l.strip() for l in ship.group(1).split('\n') if l.strip())
+            order_info['Invoice Address'] = order_info['Ship To']
+        sv = re.search(r'Ship Via:\s*\n?\s*([^\n]+)', extracted_text)
+        if sv:
+            order_info['Shipping Instructions'] = sv.group(1).strip()
+        comments = []
+        t = re.search(r'Terms:\s*\n?\s*([^\n]+)', extracted_text)
+        if t:
+            comments.append('Terms: ' + t.group(1).strip())
+        b = re.search(r'Buyer:\s*\n?\s*([^\n]+)', extracted_text)
+        if b:
+            comments.append('Buyer: ' + b.group(1).strip())
+        rn = re.search(r'Resale No:\s*\n?\s*(\S+)', extracted_text)
+        if rn:
+            comments.append('Resale No: ' + rn.group(1))
+        if comments:
+            order_info['Comments'] = ' | '.join(comments)
+
+        for m in re.finditer(
+                r'(?m)^([A-Za-z0-9][\w.\-/]*)\s*\nEA\s*\n([\d.]+)\s*\n/\d+\s*\n'
+                r'([\d,]+\.\d+)\s*\n([^\n]+)\s*\n([\d,]+\.\d+)\s*\nEA(?:CH)?',
+                extracted_text):
+            part, unit, ext, desc, qty = m.groups()
+            q = safe_float(qty)
+            item = {
+                'Inventory Item': re.sub(r'(?i)^rat-?', '', part),
+                'Description': html.unescape(desc).strip(),
+                'Quantity': int(q) if q == int(q) else q,
+                'Unit Price': safe_float(unit),
+                'Total': safe_float(ext)}
+            item.update(order_info)
+            items.append(item)
 
     elif is_ss_truck:
         # S&S Truck Parts specific parsing
