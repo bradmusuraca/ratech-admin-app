@@ -1166,7 +1166,34 @@ def parse_packing_slip_text(extracted_text: str, gemini_api_key: Optional[str] =
     import re
     result = {'po_number': '', 'vendor': '', 'date': '', 'items': []}
 
-    if gemini_api_key:
+    is_jtekt = ('jtekt' in extracted_text.lower()
+                or 'pack slip report' in extracted_text.lower())
+
+    if is_jtekt:
+        # JTEKT/Koyo 'Pack Slip Report'. Cells OCR in column position, not
+        # row order. Header labels stack as CUSTOMER NO / PURCHASE ORDER
+        # NO. / END USER PO then the values - PO# is the second number.
+        po = (re.search(r'END USER PO\s*\n\d+\s*\n(\d+)', extracted_text)
+              or re.search(r'PURCHASE ORDER NO\.?\s*\n?\s*(\d+)', extracted_text))
+        if po:
+            result['po_number'] = po.group(1)
+        result['vendor'] = 'JTEKT'
+        d = re.search(r'PRINT DATE:\s*\n?\s*(\d{4}-\d{2}-\d{2})', extracted_text)
+        if d:
+            result['date'] = d.group(1)
+        # Item rows arrive as: description (dashed) / customer part (no
+        # dash) / COO / oracle item / total qty - e.g.
+        # DK-68328 / DK68328 / US / 16805 / 100
+        for m in re.finditer(
+                r'([A-Za-z0-9]+-[A-Za-z0-9]+)\s*\n([A-Za-z0-9]+)\s*\n'
+                r'[A-Z]{2}\s*\n\d+\s*\n(\d+)', extracted_text):
+            result['items'].append({
+                'Inventory Item': m.group(2),
+                'Description': m.group(1),
+                'Expected Quantity': int(m.group(3)),
+                'Received Quantity': None})
+
+    if gemini_api_key and not result['items']:
         try:
             gem = parse_packing_slip_with_gemini(extracted_text, gemini_api_key)
             if gem.get('items'):
