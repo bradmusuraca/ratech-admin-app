@@ -991,6 +991,17 @@ def _auto_print_pdf(pdf_bytes):
         height=0)
 
 
+def _auto_print_html(html_doc):
+    """Fire the browser print dialog on an HTML document in a hidden
+    component iframe (waits for images before printing)."""
+    components.html(
+        html_doc
+        + '<script>Promise.all(Array.from(document.images).map(function(i){'
+          'return i.decode?i.decode():Promise.resolve()}))'
+          '.then(function(){window.print()})</script>',
+        height=0)
+
+
 def _orders_print_html(sage_df):
     """Print-ready pick sheet — one page per Sage transaction, with an
     in-page Print button (opens the browser print dialog)."""
@@ -2493,6 +2504,10 @@ if page == "Order Processing":
                                     except Exception:
                                         pass
                                     st.success(msg)
+                                    # Auto-open the print dialog on the
+                                    # order pick sheets right after send.
+                                    _auto_print_html(
+                                        _orders_print_html(sage_df))
                                 except Exception as e:
                                     st.error(f"Queue push failed: {e}")
                     else:
