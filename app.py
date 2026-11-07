@@ -3320,11 +3320,21 @@ elif page == "Inventory Management":
                                  label_visibility="collapsed", key="receipt_raw")
 
         with col_tbl:
+            _ev = st.session_state.setdefault('receipt_edver', 0)
+            _rc1, _rc2 = st.columns([4, 1])
+            with _rc2:
+                if st.button("✅ All received", key='recv_all',
+                             help="Set every line's Received Qty = Expected Qty",
+                             use_container_width=True):
+                    rec['df'] = rec['df'].copy()
+                    rec['df']['Received Qty'] = rec['df']['Expected Qty']
+                    st.session_state.receipt_edver = _ev + 1
+                    st.rerun()
             edited = st.data_editor(
                 rec['df'],
                 num_rows="dynamic",
                 use_container_width=True,
-                key="receipt_editor"
+                key=f"receipt_editor_{_ev}"
             )
             rec['df'] = edited
 
