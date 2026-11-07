@@ -790,9 +790,16 @@ def build_pick_list_pdf(orders):
         pdf.ln()
 
     header_row()
+    _first = True
     for name, df in orders:
         if df is None or df.empty:
             continue
+        if _first:
+            _first = False
+        else:
+            # Each order's pick list gets its own sheet.
+            pdf.add_page()
+            header_row()
         for _, r in df.iterrows():
             if pdf.get_y() > pdf.page_break_trigger - 10:
                 pdf.add_page()
@@ -1038,7 +1045,8 @@ def _orders_print_html(sage_df):
             f"{lines}</table></div>")
     return ("<!doctype html><html><head><style>"
             "body{font-family:Arial,sans-serif;margin:8px}"
-            ".page{page-break-after:always;padding:12px}"
+            ".page{break-after:page;page-break-after:always;padding:12px}"
+            ".page:last-child{break-after:auto;page-break-after:auto}"
             ".hdr{width:100%;border-collapse:collapse}"
             ".hdr td{padding:2px 10px 2px 0;font-size:13px;white-space:nowrap}"
             ".lines{width:100%;border-collapse:collapse;margin-top:10px}"
