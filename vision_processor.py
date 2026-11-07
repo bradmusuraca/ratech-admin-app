@@ -271,6 +271,11 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
     is_ford = ('ford motor company' in full_text.lower()
                or 'purchase notification' in full_text.lower())
 
+    # Check if it's a Power Train Truck & Auto Parts PO (also emails from
+    # libertygearandaxle.com).
+    is_powertrain = ('power train truck' in full_text.lower()
+                     or 'libertygearandaxle' in full_text.lower())
+
     # Check if it's a Motor State Distributing purchase order (whitespace-
     # tolerant: extraction can merge or split the logo text).
     is_motorstate = ('motorstatedistributing'
@@ -317,7 +322,8 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
             items.append(item)
         return items
 
-    known_format = is_summit or is_dts or is_ss_truck or is_ford or is_motorstate
+    known_format = (is_summit or is_dts or is_ss_truck or is_ford
+                    or is_motorstate or is_powertrain)
 
     # Known layouts always use the hand-tuned deterministic parsers below -
     # a model will happily copy the wrong column (e.g. DTS's "CR 13988"
@@ -780,6 +786,66 @@ def parse_order_text(extracted_text: str, gemini_api_key: Optional[str] = None) 
                 }
                 item.update(order_info)
                 items.append(item)
+
+    elif is_powertrain:
+        # Power Train Truck & Auto Parts. Columns flatten right-to-left:
+        # "1,542.5061.7025 Ea   <desc>" = Amount / Price / Qty / unit /
+        # description. Continuation description lines follow, then the
+        # stock-code line '203B Vend: 203B' - our part# is after 'Vend:'.
+        po_match = re.search(r'Purchase Order\s*(\d+)', extracted_text)
+        if po_match:
+            order_info['Purchase Order Number'] = po_match.group(1)
+        d_match = re.search(r'Date\s*(\d{1,2}/\d{1,2}/\d{2,4})', extracted_text)
+        if d_match:
+            order_info['Date of Order'] = d_match.group(1)
+        ship = re.search(
+            r'(\d+[^\n]+\n[^\n]+,\s*[A-Z]{2}\s+[\d\-]+\s*\nUSA)', extracted_text)
+        if ship:
+            order_info['Ship To'] = '\n'.join(
+                l.strip() for l in ship.group(1).split('\n') if l.strip())
+            order_info['Invoice Address'] = order_info['Ship To']
+        sv = re.search(r'(?im)^(UPS Ground|FedEx|Ground)$', extracted_text)
+        if sv:
+            order_info['Shipping Instructions'] = sv.group(1)
+        comments = []
+        t = re.search(r'(\d+%\s*\d+\s*Net\s*\d+)', extracted_text)
+        if t:
+            comments.append('Terms: ' + t.group(1))
+        rb = re.search(r"Net\s*\d+\s*([A-Z][a-z]+)", extracted_text)
+        if rb:
+            comments.append("Req'd by: " + rb.group(1))
+        if comments:
+            order_info['Comments'] = ' | '.join(comments)
+
+        row_re = re.compile(
+            r'^\$?([\d,]+\.\d{2})\$?([\d,]+\.\d{2})(\d+)\s+Ea\b\s*(.*)$')
+        vend_re = re.compile(r'Vend:\s*(\S+)')
+        cur = None
+        for line in extracted_text.split('\n'):
+            line = line.strip()
+            rm = row_re.match(line)
+            if rm:
+                cur = {'qty': safe_int(rm.group(3)),
+                       'price': safe_float(rm.group(2)),
+                       'total': safe_float(rm.group(1)),
+                       'desc': ([html.unescape(rm.group(4).strip())]
+                                if rm.group(4).strip() else []),
+                       'part': ''}
+                continue
+            vm = vend_re.search(line)
+            if cur is not None and vm:
+                item = {
+                    'Inventory Item': re.sub(r'(?i)^rat-?', '', vm.group(1)),
+                    'Description': html.unescape(' '.join(cur['desc'])).strip(),
+                    'Quantity': cur['qty'],
+                    'Unit Price': cur['price'],
+                    'Total': cur['total']}
+                item.update(order_info)
+                items.append(item)
+                cur = None
+                continue
+            if cur is not None and line:
+                cur['desc'].append(html.unescape(line))
 
     elif is_ss_truck:
         # S&S Truck Parts specific parsing
