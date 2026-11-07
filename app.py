@@ -3253,6 +3253,39 @@ elif page == "Inventory Management":
                                      ('Date', parsed.get('date', ''))):
                             if v and (df[c].astype(str).str.strip() == '').all():
                                 df[c] = v
+                        # Authoritative items: when the slip carried a PO
+                        # number, pull the PO's real item IDs/qtys from
+                        # Sage - the BOL's printed 'part number' is the
+                        # vendor's description, not our item.
+                        _po = str(parsed.get('po_number') or '').strip()
+                        if _po and sage_queue_configured():
+                            try:
+                                _jk = queue_po_lookup(_po)
+                                import time as _t
+                                _res = None
+                                _end = _t.time() + 60
+                                while _t.time() < _end:
+                                    _j = get_queue_job(_jk)
+                                    if _j and _j.get('status') in ('done', 'error'):
+                                        _res = _j
+                                        break
+                                    _t.sleep(4)
+                                _pl = (_res or {}).get('payload') or {}
+                                _sl = _pl.get('lines') or []
+                                if _res and _res.get('status') == 'done' and _sl:
+                                    df = pd.DataFrame([{
+                                        'PO Number': _pl.get('po_number') or _po,
+                                        'Vendor': _pl.get('vendor') or '',
+                                        'Date': _pl.get('date') or '',
+                                        'Inventory Item': l.get('item_id'),
+                                        'Description': l.get('description') or '',
+                                        'Expected Qty': l.get('qty'),
+                                        'Received Qty': '', 'Notes': '',
+                                    } for l in _sl])[cols]
+                                    st.info(f"Items pulled from Sage PO {_po}")
+                            except Exception as _e:
+                                st.caption(f"Sage PO lookup failed - "
+                                           f"using slip text: {_e}")
                         st.session_state.receipt = {'image': img_bytes, 'text': text,
                                                   'df': df, 'v': _pver}
                         st.session_state.receipt_id = rid
