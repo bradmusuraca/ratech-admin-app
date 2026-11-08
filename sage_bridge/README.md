@@ -39,6 +39,16 @@ no SDK install, no COM registration, no Python.
    the bridge picks up the queue (the app sidebar warns when jobs sit
    pending >30 min).
 
+## Pausing (single-user Sage tasks)
+
+The bridge keeps a Sage session open, which Sage counts as another user,
+so bulk price changes and backups report that someone else is in the
+company. Click **Pause Sage bridge** in the app sidebar: the bridge
+releases Sage within a few seconds and the sidebar confirms when Sage is
+free. Click **Resume** when done; orders queued meanwhile post then.
+On this PC, `pause_bridge.ps1` (PAUSE file) and `PAUSE_START`/`PAUSE_END`
+in `.env` do the same.
+
 ## Flow
 
 App pushes a validated order → queue row `status=pending` → bridge claims

@@ -20,6 +20,7 @@ OPEN_TABLE = 'open_orders'
 DOCS_TABLE = 'order_docs'
 PROFILES_TABLE = 'fedex_profiles'
 ITEMS_TABLE = 'items'
+CONTROL_TABLE = 'bridge_control'
 
 
 def is_configured():
@@ -453,3 +454,33 @@ def get_queue_job(order_key):
     resp.raise_for_status()
     rows = resp.json()
     return rows[0] if rows else None
+
+
+# ---- Bridge pause switch ----
+
+def get_bridge_control():
+    """Single bridge_control row: paused flag (set by the app) plus the
+    bridge's own bridge_state/bridge_seen_at. None when unconfigured or
+    the table hasn't been created yet."""
+    if not is_configured():
+        return None
+    resp = requests.get(
+        _url(CONTROL_TABLE, id='eq.1', limit='1',
+             select='paused,paused_by,paused_at,bridge_state,bridge_seen_at'),
+        headers=_headers(), timeout=10)
+    if resp.status_code >= 400:
+        return None
+    rows = resp.json()
+    return rows[0] if rows else {'paused': False}
+
+
+def set_bridge_paused(paused, by=''):
+    """Ask the bridge to release (paused=True) or reopen its Sage session."""
+    h = _headers()
+    h['Prefer'] = 'resolution=merge-duplicates'
+    resp = requests.post(
+        _url(CONTROL_TABLE, on_conflict='id'), headers=h,
+        json=[{'id': 1, 'paused': bool(paused), 'paused_by': by or None,
+               'paused_at': datetime.utcnow().isoformat() + 'Z'}],
+        timeout=10)
+    resp.raise_for_status()

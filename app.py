@@ -33,7 +33,8 @@ from sage_queue import (is_configured as sage_queue_configured,
                         store_order_docs, get_order_doc,
                         get_fedex_profile, save_fedex_profile,
                         delete_fedex_profile, get_item_descriptions,
-                        queue_po_lookup, get_queue_job)
+                        queue_po_lookup, get_queue_job,
+                        get_bridge_control, set_bridge_paused)
 from fedex import (is_configured as fedex_configured,
                    get_rates as fedex_get_rates,
                    validate_address as fedex_validate_address,
@@ -1532,6 +1533,112 @@ for _label, _ok in [
     st.sidebar.markdown(f"{'🟢' if _ok else '⚪'} {_label}")
 st.sidebar.caption(f"🗂 {len(st.session_state.invoices)} order(s) in queue")
 
+# Sage bridge pause switch: the bridge keeps Sage open all day, which Sage
+# counts as another user - single-user tasks (bulk price changes, backups)
+# refuse to run. Pausing makes the bridge release Sage; it reports back via
+# bridge_control so we only say "Sage is free" once it actually let go.
+def _bridge_ctl(fresh=False):
+    import time as _time
+    c = st.session_state.get('_bridge_ctl')
+    if fresh or not c or _time.time() - c[0] > 30:
+        try:
+            v = get_bridge_control()
+        except Exception:
+            v = None
+        c = (_time.time(), v)
+        st.session_state['_bridge_ctl'] = c
+    return c[1]
+
+
+def _bridge_pause_panel(fresh=False):
+    """Renders the pause/resume control; returns True while waiting for the
+    bridge to confirm a change (so the caller keeps polling)."""
+    import time as _time
+    from datetime import datetime as _dt, timezone as _tz
+    ctl = _bridge_ctl(fresh=fresh)
+    if ctl is None:
+        st.caption("⏸ Bridge pause unavailable - run the `bridge_control` "
+                   "SQL from `sage_bridge/supabase_setup.sql` in Supabase")
+        return False
+
+    def _age(ts):
+        try:
+            return (_dt.now(_tz.utc) - _dt.fromisoformat(
+                str(ts).replace('Z', '+00:00'))).total_seconds()
+        except Exception:
+            return None
+
+    _who = (st.session_state.get('user') or {}).get('name', '')
+    want = bool(ctl.get('paused'))
+    seen = _age(ctl.get('bridge_seen_at')) if ctl.get('bridge_seen_at') else None
+    alive = seen is not None and seen < 180
+    is_paused = alive and ctl.get('bridge_state') == 'paused'
+    # Only poll for ~2 min after a click - an offline bridge never confirms.
+    clicked = _time.time() - st.session_state.get('_bridge_poll', 0) < 120
+    waiting = False
+
+    if want:
+        if is_paused:
+            mins = int((_age(ctl.get('paused_at')) or 0) // 60)
+            by = f" by {ctl['paused_by']}" if ctl.get('paused_by') else ''
+            st.success(f"⏸ Bridge paused{by} ({mins} min) - Sage is free for "
+                       "single-user tasks. Orders to Sage wait until you resume.")
+        elif alive and clicked:
+            st.info("⏳ Pausing - waiting for the bridge to release Sage...")
+            waiting = True
+        else:
+            st.warning("⏸ Pause requested, but the bridge hasn't reported in "
+                       "recently - it may be offline (if so, Sage is already "
+                       "free).")
+        if st.button("▶️ Resume Sage bridge", use_container_width=True,
+                     key='_bridge_resume_btn'):
+            set_bridge_paused(False, _who)
+            st.session_state['_bridge_poll'] = _time.time()
+            _bridge_ctl(fresh=True)
+            st.rerun()
+    else:
+        if is_paused and clicked:
+            st.info("⏳ Resuming - waiting for the bridge to reopen Sage...")
+            waiting = True
+        elif is_paused:
+            st.info("⏸ Bridge is paused on the Sage PC (PAUSE file or quiet "
+                    "window).")
+        if st.button("⏸ Pause Sage bridge", use_container_width=True,
+                     key='_bridge_pause_btn',
+                     help="Releases the bridge's Sage connection so tasks that "
+                          "need everyone out of Sage (bulk price changes, "
+                          "backups) can run. Orders queue up and post when "
+                          "you resume."):
+            set_bridge_paused(True, _who)
+            st.session_state['_bridge_poll'] = _time.time()
+            _bridge_ctl(fresh=True)
+            st.rerun()
+    return waiting
+
+
+@st.fragment(run_every=5)
+def _bridge_pause_live():
+    # Poll until the bridge confirms, then one full rerun drops back to
+    # the static (non-polling) panel.
+    if not _bridge_pause_panel(fresh=True):
+        st.session_state.pop('_bridge_poll', None)
+        st.rerun()
+
+
+@st.fragment
+def _bridge_pause_static():
+    _bridge_pause_panel()
+
+
+if sage_queue_configured():
+    st.sidebar.divider()
+    st.sidebar.caption("Sage bridge")
+    with st.sidebar:
+        if st.session_state.get('_bridge_poll'):
+            _bridge_pause_live()
+        else:
+            _bridge_pause_static()
+
 # Bridge health: jobs stuck 'pending' >30 min usually means the Sage PC's
 # poller is down (reboot, or a Sage update needing a first manual open).
 # Checked every 5 min so a banner shows before someone misses an SO.
@@ -1552,9 +1659,11 @@ if sage_queue_configured():
         except Exception:
             _bh['n'] = 0
     if _bh['n']:
+        _c = _bridge_ctl()
         st.sidebar.warning(
             f"⚠️ {_bh['n']} Sage job(s) pending >30 min — "
-            "check the bridge on the Sage PC")
+            + ("the bridge is paused; resume it above" if _c and _c.get('paused')
+               else "check the bridge on the Sage PC"))
 
 if _users and st.session_state.user:
     st.sidebar.divider()

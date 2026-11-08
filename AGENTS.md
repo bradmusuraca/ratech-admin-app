@@ -46,6 +46,7 @@ Streamlit order-management app (Streamlit Cloud: `ratech-app.streamlit.app`, rep
 - `build_assembly` jobs mark `done` when the CSV row is *written* — actual Sage posting is a separate step: `import_assemblies.ps1` + AutoIt journal import. Invoice waits on "waiting on assembly stock" until the build posts.
 - **`SKIP: Sage (peachw.exe) not running`** in `assembly_import.log` → open Sage, run `powershell -ExecutionPolicy Bypass -File C:\sage_bridge\import_assemblies.ps1` manually; invoice completes itself after stock posts. **`FAIL: import exit N`** → row moved to `C:\sage_bridge\failed\`.
 - Hung import: `Get-Process AutoIt3 | Stop-Process -Force`, then re-run the import script.
+- **Sage "another user" errors** (bulk price changes, backups): the bridge's open SDK session counts as a user. App sidebar **Pause Sage bridge** sets `bridge_control.paused`; bridge releases Sage within one poll and reports `bridge_state`/`bridge_seen_at` back (heartbeat 60 s). Needs the `bridge_control` SQL from `supabase_setup.sql`. `PAUSE` file / quiet window still work too.
 - **AV on the Sage PC (Norton/Malwarebytes/Defender) can block/quarantine `bridge.ps1`** — renamed copy `sage_bridge_run.ps1` worked around it. Bridge runs as scheduled task `RatechBridge`; `pause_bridge.ps1` toggles it for backups.
 - Adding a queue status requires `alter table sage_order_queue drop/add constraint sage_order_queue_status_check` (SQL appended in `sage_bridge/supabase_setup.sql`).
 
