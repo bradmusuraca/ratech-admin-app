@@ -30,6 +30,7 @@ Streamlit order-management app (Streamlit Cloud: `ratech-app.streamlit.app`, rep
 
 ## Verification
 - PostgREST: `curl -H "apikey: $KEY" "$URL/rest/v1/open_orders?order_key=eq.X&select=lines"`.
+- **Arbitrary SQL (incl. DDL) goes through the `exec_sql` RPC** — PostgREST can't run raw SQL and the VPN blocks direct Postgres ports. Call it via `run_sql.ps1` (`powershell -ExecutionPolicy Bypass -File run_sql.ps1 -Query "select now()"`, run from repo root — reads creds from `sage_bridge/.env`) or `POST $URL/rest/v1/rpc/exec_sql -d '{"query":"..."}'`. SELECTs/`RETURNING` return JSON rows; DDL/DML return `{"ok":true}`. One statement per call; service_role only, so it bypasses RLS — never use it for anything user-facing. If the RPC 404s, the `exec_sql` block at the bottom of `sage_bridge/supabase_setup.sql` hasn't been run in the SQL Editor yet.
 - Order keys are content hashes (`_order_key(tx)`) — e.g. SO 57300 = `c0757921f3917c1dbdff0101d96a1778`, SO 57302 = `6f631828d8e8cb87f111cba721f1f843`.
 
 ## Field lessons (mined from production sessions — full transcripts in C:\dev\session-archive\)

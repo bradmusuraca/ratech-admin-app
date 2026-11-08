@@ -89,3 +89,35 @@ create table if not exists bridge_control (
 
 alter table bridge_control enable row level security;
 insert into bridge_control (id) values (1) on conflict (id) do nothing;
+
+-- exec_sql: lets agents run arbitrary SQL through PostgREST (DDL included)
+-- instead of needing the SQL Editor or a direct Postgres connection (the
+-- VPN on Brad's machine blocks non-443 ports anyway).
+--   POST /rest/v1/rpc/exec_sql  {"query": "select now()"}
+-- SELECT/INSERT...RETURNING return rows as jsonb; DDL/DML return {"ok":true}.
+-- SECURITY DEFINER + execute granted only to service_role, so it inherits
+-- the key's full access - never expose the service key client-side.
+create or replace function exec_sql(query text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+    rows jsonb;
+begin
+    -- try as a row-returning statement first; the __r alias must be unusual
+    -- so a column literally named 't' can't shadow the whole-row reference
+    execute 'select coalesce(jsonb_agg(__r), ''[]''::jsonb) from (' || query || ') __r'
+        into rows;
+    return rows;
+exception when others then
+    -- DDL / DML without RETURNING can't be wrapped in a subquery - run it
+    -- directly. If the query itself was bad, this re-raises the real error.
+    execute query;
+    return jsonb_build_object('ok', true);
+end;
+$$;
+
+revoke all on function exec_sql(text) from public, anon, authenticated;
+grant execute on function exec_sql(text) to service_role;
