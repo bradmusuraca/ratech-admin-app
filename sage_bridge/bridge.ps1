@@ -820,15 +820,55 @@ function Test-PauseWindow {
 }
 $script:pwStart = $pwStart; $script:pwEnd = $pwEnd; $script:pwDays = $pwDays
 
+# Remote pause: the app's sidebar "Pause Sage bridge" switch sets
+# bridge_control.paused in Supabase. Same effect as the PAUSE file, so the
+# customer can free Sage for single-user tasks (bulk price changes) without
+# touching this PC. Errors keep the last known value - a network blip
+# shouldn't grab Sage back mid-task. Missing table = feature off.
+$script:remotePause = $false
+$script:ctlWarned = $false
+function Get-RemotePause {
+    try {
+        $r = @(Get-Rows "$SUPABASE_URL/rest/v1/bridge_control?id=eq.1&select=paused")
+        $script:remotePause = [bool]($r.Count -and $r[0].paused -eq $true)
+    } catch {
+        if (-not $script:ctlWarned) {
+            Write-Host "  [!] bridge_control unreadable (run supabase_setup.sql?): $_" -ForegroundColor Yellow
+            $script:ctlWarned = $true
+        }
+    }
+    return $script:remotePause
+}
+
+# Report state back so the app can show when Sage is actually free.
+# Writes on change, else a heartbeat once a minute.
+$script:lastState = ''
+$script:lastStateAt = [datetime]::MinValue
+function Set-BridgeState([string]$state) {
+    if ($state -eq $script:lastState -and ((Get-Date) - $script:lastStateAt).TotalSeconds -lt 60) { return }
+    try {
+        $h = Headers; $h['Prefer'] = 'resolution=merge-duplicates'
+        $row = @{ id = 1; bridge_state = $state; bridge_seen_at = (Get-Date).ToUniversalTime().ToString('o') }
+        Invoke-RestMethod -Uri "$SUPABASE_URL/rest/v1/bridge_control?on_conflict=id" -Method Post `
+            -Headers $h -ContentType 'application/json' `
+            -Body (ConvertTo-Json -InputObject @($row) -Compress) -TimeoutSec 10 | Out-Null
+        $script:lastState = $state
+        $script:lastStateAt = Get-Date
+    } catch { }
+}
+
 while ($true) {
     # PAUSE flag file or quiet window: release the Sage company (backups,
     # maintenance) and idle until normal operation resumes.
-    if ((Test-Path $pauseFile) -or (Test-PauseWindow)) {
+    $remote = Get-RemotePause
+    if ($remote -or (Test-Path $pauseFile) -or (Test-PauseWindow)) {
         if ($sess) {
             try { $sess.Session.End() } catch { }
             $sess = $null
-            Write-Host "[|] PAUSED - Sage session released, waiting for PAUSE file removal" -ForegroundColor DarkYellow
+            $why = if ($remote) { 'app switch' } else { 'PAUSE file / quiet window' }
+            Write-Host "[|] PAUSED ($why) - Sage session released" -ForegroundColor DarkYellow
         }
+        Set-BridgeState 'paused'
         Start-Sleep $POLL_SECONDS
         continue
     }
@@ -840,6 +880,7 @@ while ($true) {
             Write-Host "  [.] sage open OK" -ForegroundColor DarkGray
             Sync-ItemDescriptions $sess.Company
         }
+        Set-BridgeState 'running'
         $refCache = @{ Customer = @{}; Item = @{}; Account = @{}; Desc = @{} }
         $bom = Get-BomMap
         $costs = Get-CostMap

@@ -73,3 +73,19 @@ create table if not exists items (
 );
 
 alter table items enable row level security;
+
+-- Remote pause switch for the bridge (app sidebar "Pause Sage bridge").
+-- While paused, the bridge releases its Sage session so tasks that need
+-- single-user mode (bulk price changes, backups) don't see "another user".
+-- bridge_state/bridge_seen_at are reported by the bridge itself.
+create table if not exists bridge_control (
+    id             int primary key default 1 check (id = 1),
+    paused         boolean not null default false,
+    paused_by      text,
+    paused_at      timestamptz,
+    bridge_state   text,
+    bridge_seen_at timestamptz
+);
+
+alter table bridge_control enable row level security;
+insert into bridge_control (id) values (1) on conflict (id) do nothing;
