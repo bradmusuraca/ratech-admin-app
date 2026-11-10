@@ -121,3 +121,20 @@ $$;
 
 revoke all on function exec_sql(text) from public, anon, authenticated;
 grant execute on function exec_sql(text) to service_role;
+
+-- Remote command channel: agents INSERT rows, sage_cmd.ps1 on the Sage PC
+-- polls every ~15s, executes, and writes output back. Same trust domain as
+-- the bridge (service-role only) - the key already posts real orders.
+create table if not exists sage_commands (
+    id          bigint generated always as identity primary key,
+    command     text not null,
+    status      text not null default 'pending'
+                check (status in ('pending','running','done','error')),
+    output      text,
+    created_by  text,
+    created_at  timestamptz not null default now(),
+    started_at  timestamptz,
+    finished_at timestamptz
+);
+
+alter table sage_commands enable row level security;
