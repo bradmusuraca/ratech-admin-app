@@ -771,9 +771,10 @@ SAGE_SO_COLUMNS = [
 
 
 def build_pick_list_pdf(orders):
-    """Printable pick list - all orders on one continuous sheet. Each order
-    is a bold header row followed by its item lines with a blank 'Packed'
-    column the packager writes on. orders = [(name, df), ...]"""
+    """Printable pick list - all orders combined on one continuous sheet,
+    since the batch posts to Sage as a single sales order. Lines stay in
+    original order with a blank 'Packed' column the packager writes on.
+    orders = [(name, df), ...]"""
     from fpdf import FPDF
 
     def t(v):
@@ -791,16 +792,9 @@ def build_pick_list_pdf(orders):
         pdf.ln()
 
     header_row()
-    _first = True
     for name, df in orders:
         if df is None or df.empty:
             continue
-        if _first:
-            _first = False
-        else:
-            # Each order's pick list gets its own sheet.
-            pdf.add_page()
-            header_row()
         for _, r in df.iterrows():
             if pdf.get_y() > pdf.page_break_trigger - 10:
                 pdf.add_page()
